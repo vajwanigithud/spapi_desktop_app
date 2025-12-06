@@ -1,0 +1,223 @@
+================================================================================
+                 RELIABILITY & ERROR-HANDLING SCAN SUMMARY
+                      SP-API Desktop App - Full Review
+================================================================================
+
+TOP 10 WEAKEST POINTS (in order of severity):
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #1 CRITICAL: Missing Retry Logic on Auth Token Failures                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : auth/spapi_auth.py (lines 26-50)                              │
+│ WHAT FAILS  : Network timeout → requests.post() fails → whole app crashes   │
+│ SCENARIO    : Transient network hiccup on LWA endpoint                      │
+│ FIX         : Add @retry decorator (3 attempts, exponential backoff)         │
+│              + 15s timeout to auth requests                                 │
+│ IMPACT      : App is non-functional without auth; prevents ALL API calls    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #2 HIGH: Unprotected SQLite Access Without Pooling/Timeout                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : services/db.py (lines 7-10)                                   │
+│ WHAT FAILS  : Concurrent writes → SQLITE_BUSY → app crashes                │
+│ SCENARIO    : Forecast sync + user endpoint both write to DB simultaneously │
+│ FIX         : Context manager with timeout, WAL mode, write serialization   │
+│ IMPACT      : Data loss, crashes under concurrent load, resource leak       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #3 HIGH: Blocking I/O in FastAPI Sync Endpoints                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : main.py (lines 611, 786, 839); desktop.py (lines 28-37)      │
+│ WHAT FAILS  : Long catalog fetch or vendor sync blocks ALL other requests  │
+│ SCENARIO    : User clicks "Sync", UI hangs for 10+ minutes, app appears    │
+│              unresponsive                                                    │
+│ FIX         : Convert to background tasks, return immediately w/ status     │
+│ IMPACT      : User experience degradation, perceived app crash             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #4 CRITICAL: Missing Validation of External Config                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : config.py (lines 10-12)                                       │
+│ WHAT FAILS  : Missing LWA_CLIENT_ID/SECRET/TOKEN → silent None values      │
+│ SCENARIO    : User forgets to set .env, app starts but crashes on API call  │
+│ FIX         : Validate config at import time, print clear error msg, exit  │
+│ IMPACT      : Fail-fast vs. mysterious crash hours later                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #5 HIGH: Silent JSON Parsing Failures (No Fallback/Validation)              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : services/forecast_sync.py (lines 45-73, 151-251)              │
+│ WHAT FAILS  : parse_report_tsv/json returns [] silently on parse error     │
+│ SCENARIO    : Malformed CSV from Amazon → app proceeds with 0 rows, user   │
+│              sees empty dashboard and doesn't know data failed              │
+│ FIX         : Raise ParseError instead of returning [], log what was lost   │
+│ IMPACT      : Silent data loss, user makes decisions on empty forecast     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #6 MEDIUM-HIGH: No Timeout on Long-Running Forecast Sync                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : services/forecast_sync.py (lines 940-1021)                    │
+│              desktop.py (lines 28-37)                                       │
+│ WHAT FAILS  : Forecast sync takes 10-15 min → poll timeout 600s each       │
+│ SCENARIO    : Network issue mid-sync → request hangs, user can't cancel    │
+│ FIX         : Queue in background, return immediately, add 30-min timeout   │
+│ IMPACT      : UI freeze, user has no way to stop operation                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #7 MEDIUM: No Request Timeout on Some API Calls                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : main.py (line 811), some in spapi_reports.py                  │
+│ WHAT FAILS  : requests.get() with no timeout → hangs forever if network    │
+│              fails                                                           │
+│ SCENARIO    : Network partition, request never returns                      │
+│ FIX         : Add timeout to ALL requests (20-30s standard, 60s for download)
+│ IMPACT      : Unresponsive app, user has to force-kill process             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #8 MEDIUM: Race Condition in Forecast Sync Lock                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : services/forecast_sync.py (lines 31-32, 801, 945, 1019-1020)  │
+│ WHAT FAILS  : _sync_lock.locked() check, then .release() → TOCTOU race    │
+│ SCENARIO    : Two threads check lock status simultaneously, both proceed   │
+│ FIX         : Use proper context manager, never call .locked() to check    │
+│ IMPACT      : Concurrent DB writes → SQLITE_BUSY, data corruption         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #9 MEDIUM: Missing Error Context in JSON Deserialization                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : main.py (lines 564-576, 815-830)                              │
+│              routes/forecast_api.py (line 138, 144)                         │
+│ WHAT FAILS  : json.load(open(...)) fails → raw exception, no context       │
+│ SCENARIO    : vendor_pos_cache.json corrupted → app crashes with unhelpful │
+│              error message                                                  │
+│ FIX         : load_json_file() wrapper with error context logging           │
+│ IMPACT      : Hard to debug, user doesn't know which file/why it failed    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ #10 MEDIUM: No Circuit Breaker on SP-API Rate Limits                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ FILE        : services/spapi_reports.py (lines 43-53)                       │
+│              services/forecast_sync.py (lines 687-711)                      │
+│ WHAT FAILS  : Hit 429 rate limit → app keeps retrying and hammering API    │
+│ SCENARIO    : Quota exceeded → multiple endpoints try to sync concurrently │
+│              → cascade of failures                                          │
+│ FIX         : Global circuit breaker with exponential backoff (10m→30m→2h) │
+│ IMPACT      : Prevents API ban, reduces unnecessary load                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+                         PRIORITIZED FIX PLAN
+================================================================================
+
+PRIORITY #1 (DO FIRST): Auth Retry + Config Validation
+─────────────────────────────────────────────────────────
+FILES    : auth/spapi_auth.py, config.py
+EFFORT   : 2-3 hours
+IMPACT   : Prevents complete app non-functionality
+
+WHAT TO DO:
+  ✓ Add @retry decorator (tenacity) to get_lwa_access_token()
+    - 3 attempts, exponential backoff (1s, 2s, 4s)
+  ✓ Add 15s timeout to requests.post() in auth
+  ✓ Add _validate_config() in config.py
+    - Check LWA_CLIENT_ID, LWA_CLIENT_SECRET, LWA_REFRESH_TOKEN
+    - Print clear error on startup if missing
+    - Exit with code 1 (fail-fast)
+
+WHY FIRST:
+  - Without credentials: app is 100% non-functional
+  - Without retry: transient network = total failure
+  - Catches errors at import time (fail-fast best practice)
+
+
+PRIORITY #2 (DO SECOND): Database Layer Hardening
+──────────────────────────────────────────────────
+FILES    : services/db.py + all sqlite3.connect() calls in main.py
+EFFORT   : 3-4 hours
+IMPACT   : Prevents SQLITE_BUSY crashes under concurrent load
+
+WHAT TO DO:
+  ✓ Rewrite get_db_connection() as context manager
+    - Add timeout=10 to sqlite3.connect()
+    - Enable WAL mode (better concurrency)
+    - Ensure cleanup on exception
+  ✓ Add global _db_write_lock for all INSERT/UPDATE/DELETE
+  ✓ Replace all bare sqlite3.connect() with context manager
+
+WHY SECOND:
+  - SQLite is single-writer, shared reader
+  - Multiple sync threads cause deadlock
+  - This prevents data loss and crashes
+
+
+PRIORITY #3 (DO THIRD): Async/Timeout for Long Operations
+───────────────────────────────────────────────────────────
+FILES    : main.py (catalog fetch), routes/forecast_api.py, desktop.py
+EFFORT   : 3-4 hours
+IMPACT   : Improves responsiveness, prevents UI freeze
+
+WHAT TO DO:
+  ✓ Convert /api/catalog/fetch/{asin} to background task
+  ✓ Convert /api/forecast/sync to background task
+  ✓ Add /api/forecast/sync-status polling endpoint
+  ✓ Add timeouts to ALL requests:
+    - 20-30s for normal API calls
+    - 60s for document downloads
+  ✓ Update desktop.py to wait 10s for API health before UI
+
+WHY THIRD:
+  - Prevents UI freeze during long operations
+  - Allows user to continue using app
+  - Non-blocking UX critical for production
+
+================================================================================
+                            QUICK WINS (~2 hours)
+                    Can be done in parallel with main fixes
+================================================================================
+
+  ✓ Add timeout to requests.get() in fetch_vendor_pos_from_api() [15 min]
+  ✓ Add load_json_file() wrapper with error context [30 min]
+  ✓ Fix race condition in _sync_lock (use context manager) [30 min]
+  ✓ Standardize error logging format across modules [60 min]
+
+================================================================================
+                              TESTING CHECKLIST
+================================================================================
+
+After implementing Priority #1:
+  □ Test missing LWA_CLIENT_ID → should exit with clear error
+  □ Test network timeout → should retry 3 times then fail
+  □ Test valid credentials → should succeed
+
+After implementing Priority #2:
+  □ Run 5 concurrent forecast syncs → should not cause SQLITE_BUSY
+  □ Simulate DB lock → requests should wait 10s then timeout
+  □ Verify connections properly closed on exception
+
+After implementing Priority #3:
+  □ Start forecast sync, make 10 other API calls → should not block
+  □ Simulate slow network (30+ second response) → request should timeout
+  □ Check /api/forecast/sync-status returns current progress
+  □ Verify desktop.py checks API health before showing UI
+
+================================================================================
+                          ESTIMATED TIMELINE
+================================================================================
+
+Priority #1 (Auth/Config)      : 2-3 hours    →  Monday
+Priority #2 (DB)               : 3-4 hours    →  Tuesday
+Priority #3 (Async/Timeout)    : 3-4 hours    →  Wednesday
+Quick wins (in parallel)       : 2 hours      →  Throughout
+
+TOTAL: ~12 hours for production-hardened version
+
+================================================================================

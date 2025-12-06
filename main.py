@@ -92,7 +92,7 @@ except ImportError:
 
 import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
@@ -608,6 +608,8 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     """
     Single call to SP-API Catalog Items for a given ASIN.
     Stores title/image into local catalog DB.
+    
+    FIX #3A: Added 30s timeout to prevent infinite hangs on network failure.
     """
     if not asin:
         raise HTTPException(status_code=400, detail="Missing ASIN")
@@ -630,7 +632,16 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
         "user-agent": "sp-api-desktop-app/1.0",
         "accept": "application/json",
     }
-    resp = requests.get(url, headers=headers, params=params)
+    # HARDENING: Add 30s timeout to prevent infinite hang
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+    except requests.exceptions.Timeout:
+        logger.error(f"[Catalog] Timeout fetching {asin} after 30s")
+        raise HTTPException(status_code=504, detail=f"Catalog fetch timeout for {asin}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[Catalog] Network error fetching {asin}: {e}")
+        raise HTTPException(status_code=503, detail=f"Catalog fetch network error: {str(e)}")
+    
     if resp.status_code == 429:
         raise HTTPException(status_code=429, detail="Catalog rate limit hit. Try again later.")
     if resp.status_code >= 400:
@@ -784,6 +795,11 @@ def extract_purchase_orders(obj: Any) -> List[Dict[str, Any]] | None:
 
 
 def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages: int = 5):
+    """
+    Fetch Vendor POs from SP-API.
+    
+    FIX #3D: Added 20s timeout to prevent infinite hangs on network failure.
+    """
     if not MARKETPLACE_IDS:
         raise HTTPException(status_code=400, detail="MARKETPLACE_IDS not configured")
     marketplace = MARKETPLACE_IDS[0].strip()
@@ -808,7 +824,16 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             "accept": "application/json",
             "user-agent": "sp-api-desktop-app/1.0",
         }
-        resp = requests.get(url, headers=headers, params=params)
+        # HARDENING: Add 20s timeout to prevent infinite hang
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+        except requests.exceptions.Timeout:
+            logger.error(f"[VendorPO] Timeout fetching POs after 20s on page {page}")
+            raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[VendorPO] Network error fetching POs: {e}")
+            raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}")
+        
         if resp.status_code >= 400:
             print(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
             raise HTTPException(status_code=resp.status_code, detail=f"Vendor PO fetch failed: {resp.text}")
@@ -1300,34 +1325,62 @@ def list_catalog_asins():
 
 
 @app.post("/api/catalog/fetch/{asin}")
-def fetch_catalog_for_asin(asin: str):
+def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
     """
-    Fetch catalog data for one ASIN from SP-API and persist locally.
+    Queue catalog fetch in background and return immediately.
+    
+    FIX #3B: Convert long-running catalog fetch to background task.
+    Returns immediately with status="queued" instead of blocking request.
+    Client can poll /api/catalog/asins to check if fetch completed.
     """
-    fetched = spapi_catalog_status()
-    if asin in fetched:
-        return {"asin": asin, "status": "cached"}
-    result = fetch_spapi_catalog_item(asin)
-    return {"asin": asin, "status": result.get("source", "spapi"), "title": result.get("title"), "image": result.get("image")}
+    try:
+        fetched = spapi_catalog_status().get(asin)
+        if fetched and (fetched.get("title") or fetched.get("image")):
+            return {"asin": asin, "status": "cached", "title": fetched.get("title"), "image": fetched.get("image")}
+    except Exception as e:
+        logger.warning(f"[Catalog] Error checking cache for {asin}: {e}")
+    
+    # Queue in background to avoid blocking request
+    background_tasks.add_task(_fetch_catalog_background, asin)
+    return {"asin": asin, "status": "queued"}
+
+
+def _fetch_catalog_background(asin: str):
+    """Helper function to fetch catalog in background thread."""
+    try:
+        fetch_spapi_catalog_item(asin)
+        logger.info(f"[Catalog] Background fetch completed for {asin}")
+    except HTTPException as e:
+        logger.warning(f"[Catalog] Background fetch failed for {asin}: {e.detail}")
+    except Exception as e:
+        logger.error(f"[Catalog] Unexpected error fetching {asin}: {e}", exc_info=True)
 
 
 @app.post("/api/catalog/fetch-all")
-def fetch_catalog_for_missing():
+def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
     """
-    Fetch catalog data for all ASINs present in vendor POs but not yet fetched.
+    Queue catalog fetch for all missing ASINs in background.
+    
+    FIX #3C: Convert batch catalog fetch to background task.
+    Returns immediately with count of queued ASINs instead of blocking.
     """
-    asins, _ = extract_asins_from_pos()
-    fetched = spapi_catalog_status()
-    missing = [a for a in asins if a not in fetched]
-    successes = []
-    errors = []
+    try:
+        asins, _ = extract_asins_from_pos()
+        fetched = spapi_catalog_status()
+        missing = [a for a in asins if a not in fetched]
+    except Exception as exc:
+        logger.error(f"[Catalog] Error listing missing ASINs: {exc}")
+        return {"fetched": 0, "queued": 0, "errors": [{"error": str(exc)}]}
+    
+    if not missing:
+        return {"fetched": 0, "queued": 0, "message": "All ASINs already fetched"}
+    
+    # Queue all missing ASINs in background
     for asin in missing:
-        try:
-            fetch_spapi_catalog_item(asin)
-            successes.append(asin)
-        except Exception as exc:
-            errors.append({"asin": asin, "error": str(exc)})
-    return {"fetched": len(successes), "errors": errors, "missingProcessed": len(missing)}
+        background_tasks.add_task(_fetch_catalog_background, asin)
+    
+    logger.info(f"[Catalog] Queued {len(missing)} ASINs for background fetch")
+    return {"fetched": 0, "queued": len(missing), "missingTotal": len(missing)}
 
 
 @app.get("/api/catalog/item/{asin}")
