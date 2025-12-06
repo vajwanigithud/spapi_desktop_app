@@ -224,13 +224,9 @@ SALES_MIN_WINDOW_DAYS = 7
 def resolve_catalog_host(marketplace_id: str) -> str:
     """
     Resolve the correct SP-API host for Catalog API calls based on marketplace.
-    UAE (A2VIGQ35RCS4UG) and other EU marketplaces use the EU endpoint.
+    Reuses resolve_vendor_host to ensure consistency across all SP-API calls.
     """
-    if marketplace_id in EU_MARKETPLACE_IDS:
-        return "https://sellingpartnerapi-eu.amazon.com"
-    if marketplace_id in FE_MARKETPLACE_IDS:
-        return "https://sellingpartnerapi-fe.amazon.com"
-    return "https://sellingpartnerapi-na.amazon.com"
+    return resolve_vendor_host(marketplace_id)
 
 
 def load_asin_cache() -> Dict[str, Any]:
