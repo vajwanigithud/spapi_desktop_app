@@ -208,6 +208,11 @@ auth_client = SpApiAuth()
 # Catalog DB
 CATALOG_DB_PATH = Path(__file__).parent / "catalog.db"
 CATALOG_API_HOST = os.getenv("CATALOG_API_HOST", "https://sellingpartnerapi-na.amazon.com")
+
+# Marketplace region mappings for SP-API endpoints
+# UAE (A2VIGQ35RCS4UG) belongs to EU region along with DE, ES, and UK marketplaces
+EU_MARKETPLACE_IDS = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1RKKUPIHCS9HS", "A1F83G8C2ARO7P"}
+FE_MARKETPLACE_IDS = {"A1VC38T7YXB528"}  # JP
 PO_TRACKER_PATH = Path(__file__).parent / "po_tracker.json"
 OOS_STATE_PATH = Path(__file__).parent / "oos_state.json"
 SAFETY_BUFFER_DAYS = 7
@@ -221,11 +226,9 @@ def resolve_catalog_host(marketplace_id: str) -> str:
     Resolve the correct SP-API host for Catalog API calls based on marketplace.
     UAE (A2VIGQ35RCS4UG) and other EU marketplaces use the EU endpoint.
     """
-    eu_ids = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1RKKUPIHCS9HS", "A1F83G8C2ARO7P"}
-    fe_ids = {"A1VC38T7YXB528"}  # JP
-    if marketplace_id in eu_ids:
+    if marketplace_id in EU_MARKETPLACE_IDS:
         return "https://sellingpartnerapi-eu.amazon.com"
-    if marketplace_id in fe_ids:
+    if marketplace_id in FE_MARKETPLACE_IDS:
         return "https://sellingpartnerapi-fe.amazon.com"
     return "https://sellingpartnerapi-na.amazon.com"
 
@@ -750,11 +753,9 @@ async def catalog_cache_stats():
 
 
 def resolve_vendor_host(marketplace_id: str) -> str:
-    eu_ids = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1RKKUPIHCS9HS", "A1F83G8C2ARO7P"}
-    fe_ids = {"A1VC38T7YXB528"}  # JP
-    if marketplace_id in eu_ids:
+    if marketplace_id in EU_MARKETPLACE_IDS:
         return "https://sellingpartnerapi-eu.amazon.com"
-    if marketplace_id in fe_ids:
+    if marketplace_id in FE_MARKETPLACE_IDS:
         return "https://sellingpartnerapi-fe.amazon.com"
     return "https://sellingpartnerapi-na.amazon.com"
 
