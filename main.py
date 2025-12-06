@@ -196,7 +196,46 @@ async def forecast_page(request: Request):
 
 
 # -------------------------------
+# ====================================================================
+# VENDOR POs SYNC ARCHITECTURE
+# ====================================================================
+# Main entry point:  sync_vendor_pos() @ line 912
+# Called by:         POST /api/vendor-pos/sync (triggered by UI button)
+#
+# Flow:
+# 1. sync_vendor_pos()
+#    - Calls fetch_vendor_pos_from_api() to get list of POs
+#    - Merges with cached POs and writes to vendor_pos_cache.json
+#    - Calls sync_vendor_po_lines_batch() with fetched PO numbers
+#
+# 2. sync_vendor_po_lines_batch(po_numbers)
+#    - For EACH PO in the list:
+#    - Calls _sync_vendor_po_lines_for_po(po_number)
+#
+# 3. _sync_vendor_po_lines_for_po(po_number)
+#    - Fetches detailed PO with item status from SP-API
+#    - Parses ordered/received/pending/shortage quantities per line item
+#    - SCOPED DELETE: DELETE FROM vendor_po_lines WHERE po_number = ?
+#      (Only deletes lines for THIS PO, never a global wipe)
+#    - Inserts new line records into vendor_po_lines
+#
+# Aggregation:
+# 4. _aggregate_vendor_po_lines(pos_list)
+#    - Called by GET /api/vendor-pos to compute totals
+#    - SUM(ordered_qty), SUM(received_qty), etc. grouped by po_number
+#    - Adds computed fields to each PO for UI display
+#
+# Rebuild operation:
+# 5. rebuild_all_vendor_po_lines()
+#    - Queries ALL POs from vendor_pos table
+#    - Resyncs line data for each using _sync_vendor_po_lines_for_po
+#    - Used as one-time backfill or after data corruption
+#    - Run via: python main.py --rebuild-po-lines
+#
+# ====================================================================
+
 # Vendor POs (raw JSON)
+
 # -------------------------------
 VENDOR_POS_CACHE = Path(__file__).parent / "vendor_pos_cache.json"
 ASIN_CACHE_PATH = Path(__file__).parent / "asin_image_cache.json"
@@ -1169,6 +1208,80 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     return {"item": po}
 
 
+@app.get("/api/vendor-po-lines")
+def get_vendor_po_lines(po_number: str):
+    """
+    Return line-item details for a PO from vendor_po_lines table.
+    Used by the "Line Items Inventory Breakdown" modal in the UI.
+    
+    Response format:
+    {
+        "po_number": "...",
+        "lines": [
+            {
+                "asin": "...",
+                "sku": "...",
+                "ordered_qty": N,
+                "received_qty": N,
+                "pending_qty": N,
+                "shortage_qty": N,
+                "last_changed_utc": "..."
+            },
+            ...
+        ],
+        "message": "..." (optional, if no lines found)
+    }
+    
+    Returns HTTP 200 with empty lines list if no data found (never 404).
+    """
+    from services.db import get_db_connection
+    
+    if not po_number:
+        raise HTTPException(status_code=400, detail="po_number parameter required")
+    
+    try:
+        with get_db_connection() as conn:
+            cur = conn.execute(
+                """SELECT po_number, asin, sku, ordered_qty, received_qty, 
+                          pending_qty, shortage_qty, last_changed_utc
+                   FROM vendor_po_lines 
+                   WHERE po_number = ?
+                   ORDER BY asin""",
+                (po_number,)
+            )
+            rows = cur.fetchall()
+            
+            lines = []
+            if rows:
+                for row in rows:
+                    lines.append({
+                        "asin": row["asin"] or "",
+                        "sku": row["sku"] or "",
+                        "ordered_qty": row["ordered_qty"] or 0,
+                        "received_qty": row["received_qty"] or 0,
+                        "pending_qty": row["pending_qty"] or 0,
+                        "shortage_qty": row["shortage_qty"] or 0,
+                        "last_changed_utc": row["last_changed_utc"] or ""
+                    })
+                logger.info(f"[VendorPO] Retrieved {len(lines)} lines for PO {po_number}")
+            else:
+                logger.warning(f"[VendorPO] No vendor_po_lines found for PO {po_number}")
+            
+            return {
+                "po_number": po_number,
+                "items": lines,
+                "message": "No line items found for this PO." if not lines else None
+            }
+    
+    except Exception as e:
+        logger.error(f"[VendorPO] Error fetching lines for PO {po_number}: {e}", exc_info=True)
+        return {
+            "po_number": po_number,
+            "items": [],
+            "message": "Failed to fetch line details. Please try again."
+        }
+
+
 @app.post("/api/po-status/{po_number}")
 def update_po_status(po_number: str, payload: PoStatusUpdate):
     """
@@ -1897,8 +2010,114 @@ def sync_vendor_po_lines_batch(po_numbers: List[str]):
             continue
 
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
+def rebuild_all_vendor_po_lines():
+    """
+    Rebuild vendor_po_lines for ALL existing POs in vendor_pos_cache.json.
+    
+    This is a maintenance operation to backfill line quantities for POs that may have been
+    created before the line-syncing logic was fixed, or to refresh all data.
+    
+    Steps:
+    1. Read vendor_pos_cache.json and normalize PO entries
+    2. For each PO:
+       - Fetch detailed PO info from SP-API
+       - Call _sync_vendor_po_lines_for_po to refresh line data
+       - Log progress every ~10% of completion
+    3. Report final counts
+    
+    Does NOT modify vendor_pos_cache.json, only refreshes vendor_po_lines table.
+    
+    Typical usage:
+        python main.py --rebuild-po-lines
+    """
+    from services.db import get_db_connection
+    
+    logger.info("[VendorPO] Starting rebuild of vendor_po_lines for ALL POs...")
+    print("\n[VendorPO] Rebuilding all vendor PO lines from SP-API...")
+    
+    # Initialize vendor_po_lines table
+    init_vendor_po_lines_table()
+    
+    # Get all PO numbers from vendor_pos_cache.json
+    try:
+        if not VENDOR_POS_CACHE.exists():
+            logger.info("[VendorPO] vendor_pos_cache.json not found")
+            print("[VendorPO] vendor_pos_cache.json not found - no POs to rebuild")
+            return
+        
+        cache_data = json.loads(VENDOR_POS_CACHE.read_text(encoding="utf-8"))
+        normalized = normalize_pos_entries(cache_data)
+        
+        # Sort by date (newest first, matching the grid behavior)
+        normalized.sort(key=parse_po_date, reverse=True)
+        
+        po_numbers = [po.get("purchaseOrderNumber") for po in normalized if po.get("purchaseOrderNumber")]
+        
+    except Exception as e:
+        logger.error(f"[VendorPO] Failed to read vendor_pos_cache.json: {e}")
+        print(f"[ERROR] Failed to read vendor_pos_cache.json: {e}")
+        return
+    
+    if not po_numbers:
+        logger.info("[VendorPO] No POs found in vendor_pos_cache.json")
+        print("[VendorPO] No POs found in vendor_pos_cache.json")
+        return
+    
+    logger.info(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from cache")
+    print(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from cache")
+    
+    # Rebuild lines for each PO
+    success_count = 0
+    error_count = 0
+    progress_interval = max(1, len(po_numbers) // 10)  # Log every ~10% progress
+    
+    for idx, po_num in enumerate(po_numbers, 1):
+        try:
+            _sync_vendor_po_lines_for_po(po_num)
+            success_count += 1
+            
+            # Log progress periodically
+            if idx % progress_interval == 0 or idx == len(po_numbers):
+                pct = (idx * 100) // len(po_numbers)
+                logger.info(f"[VendorPO] Rebuild progress: {idx}/{len(po_numbers)} POs ({pct}%)")
+                print(f"[VendorPO] Progress: {idx}/{len(po_numbers)} POs ({pct}%)")
+        
+        except Exception as e:
+            logger.error(f"[VendorPO] Error rebuilding lines for PO {po_num}: {e}")
+            error_count += 1
+            continue
+    
+    # Final summary
+    try:
+        with get_db_connection() as conn:
+            cur = conn.execute("SELECT COUNT(*) as cnt FROM vendor_po_lines")
+            row = cur.fetchone()
+            line_count = row["cnt"] if row else 0
+    except Exception as e:
+        logger.warning(f"[VendorPO] Could not query final line count: {e}")
+        line_count = 0
+    
+    summary = (
+        f"[VendorPO] Rebuild complete: {success_count} POs processed, "
+        f"{error_count} errors, {line_count} total vendor_po_lines rows"
+    )
+    logger.info(summary)
+    print(f"[COMPLETE] {summary}")
+    if error_count > 0:
+        print(f"[WARNING] {error_count} errors encountered (see logs for details)")
 
+
+if __name__ == "__main__":
+    import sys
+    
+    # Check for CLI arguments for maintenance operations
+    if "--rebuild-po-lines" in sys.argv:
+        # Maintenance: rebuild all PO lines from existing POs in vendor_pos
+        # Useful after schema changes or to backfill older POs
+        rebuild_all_vendor_po_lines()
+        sys.exit(0)
+    
+    # Normal mode: start the FastAPI server
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
 
 

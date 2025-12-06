@@ -776,7 +776,7 @@
         const lines = data.items || [];
 
         if (!lines.length) {
-          bodyEl.innerHTML = '<div style="padding:16px; text-align:center; color:#6b7280;">No line details available</div>';
+          bodyEl.innerHTML = '<div style="padding:16px; text-align:center; color:#6b7280;">No line items found for this PO in the database.</div>';
           return;
         }
 
@@ -839,7 +839,7 @@
         `;
       } catch (err) {
         console.error("Failed to load PO lines", err);
-        bodyEl.innerHTML = `<div style="padding:16px; color:#dc2626;">Failed to load line details: ${err}</div>`;
+        bodyEl.innerHTML = `<div style="padding:16px; color:#dc2626;">⚠️ Failed to load line details: ${err.message || err}</div>`;
       }
     }
 
