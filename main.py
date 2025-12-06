@@ -217,7 +217,17 @@ SALES_MIN_WINDOW_DAYS = 7
 
 
 def resolve_catalog_host(marketplace_id: str) -> str:
-    return CATALOG_API_HOST
+    """
+    Resolve the correct SP-API host for Catalog API calls based on marketplace.
+    UAE (A2VIGQ35RCS4UG) and other EU marketplaces use the EU endpoint.
+    """
+    eu_ids = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1RKKUPIHCS9HS", "A1F83G8C2ARO7P"}
+    fe_ids = {"A1VC38T7YXB528"}  # JP
+    if marketplace_id in eu_ids:
+        return "https://sellingpartnerapi-eu.amazon.com"
+    if marketplace_id in fe_ids:
+        return "https://sellingpartnerapi-fe.amazon.com"
+    return "https://sellingpartnerapi-na.amazon.com"
 
 
 def load_asin_cache() -> Dict[str, Any]:
