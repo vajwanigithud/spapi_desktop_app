@@ -640,6 +640,13 @@ def spapi_catalog_status() -> Dict[str, Dict[str, Any]]:
 # Ensure DB exists at import time
 init_catalog_db()
 
+# Migrate vendor_po_lines schema if needed
+try:
+    from migrate_vendor_po_schema import migrate_vendor_po_lines_schema
+    migrate_vendor_po_lines_schema()
+except Exception as e:
+    logger.warning(f"[Startup] Schema migration skipped or failed (non-critical): {e}")
+
 
 
 
@@ -1854,6 +1861,50 @@ def debug_catalog_sample(asin: str):
     return result
 
 
+def debug_dump_vendor_po(po_number: str, output_path: str = None):
+    """
+    Fetch raw JSON for a single vendor PO from SP-API and dump to file.
+    
+    Args:
+        po_number: PO number to fetch
+        output_path: File path to write JSON. Defaults to debug_po_{po_number}.json
+    
+    Usage:
+        python main.py --debug-po 8768LE6D
+    """
+    if not output_path:
+        output_path = f"debug_po_{po_number}.json"
+    
+    detailed_po = fetch_detailed_po_with_status(po_number)
+    if not detailed_po:
+        print(f"[DebugDump] Failed to fetch PO {po_number}")
+        return
+    
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(detailed_po, f, indent=2, ensure_ascii=False)
+        print(f"[DebugDump] Dumped PO {po_number} to {output_path}")
+        
+        # Also print item count and structure preview
+        items = detailed_po.get("itemStatus", [])
+        print(f"[DebugDump] PO has {len(items)} items")
+        if items and len(items) > 0:
+            first_item = items[0]
+            print(f"[DebugDump] First item keys: {list(first_item.keys())}")
+            if 'orderedQuantity' in first_item:
+                oq = first_item['orderedQuantity']
+                print(f"[DebugDump] orderedQuantity structure: {json.dumps(oq, ensure_ascii=False, indent=2)[:300]}")
+            if 'receivingStatus' in first_item:
+                rs = first_item['receivingStatus']
+                print(f"[DebugDump] receivingStatus structure: {json.dumps(rs, ensure_ascii=False, indent=2)[:300]}")
+            if 'acknowledgementStatus' in first_item:
+                acks = first_item['acknowledgementStatus']
+                print(f"[DebugDump] acknowledgementStatus structure: {json.dumps(acks, ensure_ascii=False, indent=2)[:300]}")
+    except Exception as e:
+        logger.error(f"[DebugDump] Error dumping PO {po_number}: {e}", exc_info=True)
+        print(f"[DebugDump] Error: {e}")
+
+
 def init_vendor_po_lines_table():
     """Create vendor_po_lines table if it doesn't exist."""
     from services.db import execute_write
@@ -1865,7 +1916,7 @@ def init_vendor_po_lines_table():
         asin TEXT,
         sku TEXT,
         ordered_qty INTEGER DEFAULT 0,
-        acknowledged_qty INTEGER DEFAULT 0,
+        accepted_qty INTEGER DEFAULT 0,
         cancelled_qty INTEGER DEFAULT 0,
         shipped_qty INTEGER DEFAULT 0,
         received_qty INTEGER DEFAULT 0,
@@ -1881,41 +1932,218 @@ def init_vendor_po_lines_table():
         logger.error(f"[VendorPO] Failed to initialize vendor_po_lines table: {e}")
 
 
-def _sync_vendor_po_lines_for_po(po_number: str):
+def verify_vendor_po_mapping(po_number: str):
     """
-    FIX: Sync vendor_po_lines for a single PO.
+    Verify vendor PO quantity mapping by comparing SP-API raw JSON totals
+    against database aggregates.
     
     Steps:
-    1. Fetch detailed PO using getPurchaseOrder endpoint
-    2. Parse items and their status (ordered, acknowledged, received, cancelled)
-    3. Clear and re-populate vendor_po_lines for this PO
+    1. Fetch raw PO JSON from SP-API
+    2. Extract and aggregate line quantities using CORRECT schema fields
+    3. Query database aggregates for the same PO
+    4. Log comparison report to console
+    
+    SP-API Schema (Vendor Orders API):
+    CASE 1: If itemStatus[] available (full status):
+    - itemStatus[].orderedQuantity.orderedQuantity.amount = Original ordered qty
+    - itemStatus[].orderedQuantity.cancelledQuantity.amount = Cancelled qty
+    - itemStatus[].acknowledgementStatus.acceptedQuantity.amount = Accepted/confirmed qty
+    - itemStatus[].receivingStatus.receivedQuantity.amount = Received qty
+    
+    CASE 2: If itemStatus[] NOT available (fallback to items):
+    - orderDetails.items[].orderedQuantity.amount = Ordered qty
+    - No other status data available; accepted = ordered, received = 0
+    - pending = 0, shortage = 0
+    
+    Calculations:
+    - pending = accepted - received (qty awaiting delivery)
+    - shortage = ordered - accepted - cancelled (qty not confirmed)
+    """
+    from services.db import get_db_connection
+    
+    # Fetch raw PO from SP-API
+    detailed_po = fetch_detailed_po_with_status(po_number)
+    if not detailed_po:
+        print(f"[VerifyPO {po_number}] ERROR: Could not fetch PO from SP-API")
+        return
+    
+    # Try itemStatus first, fallback to items
+    item_status_list = detailed_po.get("itemStatus", [])
+    use_item_status = bool(item_status_list)
+    
+    if not use_item_status:
+        item_status_list = detailed_po.get("orderDetails", {}).get("items", [])
+        if not item_status_list:
+            print(f"[VerifyPO {po_number}] ERROR: No itemStatus or items in response")
+            return
+    
+    # Extract quantities from raw JSON
+    api_ordered_total = 0
+    api_accepted_total = 0
+    api_cancelled_total = 0
+    api_received_total = 0
+    api_pending_total = 0
+    api_shortage_total = 0
+    
+    data_source = "itemStatus" if use_item_status else "orderDetails.items (fallback)"
+    print(f"\n[VerifyPO {po_number}] ===== SP-API LINE DETAILS (from {data_source}) =====")
+    
+    for idx, item in enumerate(item_status_list, 1):
+        item_seq = item.get("itemSequenceNumber", "?")
+        asin = item.get("amazonProductIdentifier", "?")
+        
+        if use_item_status:
+            # Extract from itemStatus structure
+            # Extract ordered quantity
+            ordered = 0
+            oq_obj = item.get("orderedQuantity", {})
+            if isinstance(oq_obj, dict):
+                oq_inner = oq_obj.get("orderedQuantity", {})
+                if isinstance(oq_inner, dict):
+                    ordered = int(oq_inner.get("amount", 0) or 0)
+            
+            # Extract cancelled quantity
+            cancelled = 0
+            oq_obj = item.get("orderedQuantity", {})
+            if isinstance(oq_obj, dict):
+                can_inner = oq_obj.get("cancelledQuantity", {})
+                if isinstance(can_inner, dict):
+                    cancelled = int(can_inner.get("amount", 0) or 0)
+            
+            # Extract accepted quantity
+            accepted = 0
+            ack_obj = item.get("acknowledgementStatus", {})
+            if isinstance(ack_obj, dict):
+                acc_qty = ack_obj.get("acceptedQuantity", {})
+                if isinstance(acc_qty, dict):
+                    accepted = int(acc_qty.get("amount", 0) or 0)
+            
+            # Extract received quantity
+            received = 0
+            recv_obj = item.get("receivingStatus", {})
+            if isinstance(recv_obj, dict):
+                recv_qty = recv_obj.get("receivedQuantity", {})
+                if isinstance(recv_qty, dict):
+                    received = int(recv_qty.get("amount", 0) or 0)
+        else:
+            # Extract from items structure (fallback)
+            ordered = 0
+            oq = item.get("orderedQuantity", {})
+            if isinstance(oq, dict):
+                ordered = int(oq.get("amount", 0) or 0)
+            
+            cancelled = 0
+            accepted = ordered  # Assume all ordered is accepted if no status
+            received = 0
+        
+        # Calculate derived
+        pending = max(0, accepted - received)
+        shortage = max(0, ordered - accepted - cancelled)
+        
+        print(f"  [Item {idx} seq={item_seq} asin={asin}] " 
+              f"ordered={ordered} accepted={accepted} cancelled={cancelled} "
+              f"received={received} pending={pending} shortage={shortage}")
+        
+        api_ordered_total += ordered
+        api_accepted_total += accepted
+        api_cancelled_total += cancelled
+        api_received_total += received
+        api_pending_total += pending
+        api_shortage_total += shortage
+    
+    print(f"[VerifyPO {po_number}] SP-API TOTALS: "
+          f"ordered={api_ordered_total} accepted={api_accepted_total} "
+          f"cancelled={api_cancelled_total} received={api_received_total} "
+          f"pending={api_pending_total} shortage={api_shortage_total}")
+    
+    # Query database aggregates
+    try:
+        with get_db_connection() as conn:
+            cur = conn.execute(
+                """SELECT 
+                   COALESCE(SUM(ordered_qty), 0) as total_ordered,
+                   COALESCE(SUM(accepted_qty), 0) as total_accepted,
+                   COALESCE(SUM(cancelled_qty), 0) as total_cancelled,
+                   COALESCE(SUM(received_qty), 0) as total_received,
+                   COALESCE(SUM(pending_qty), 0) as total_pending,
+                   COALESCE(SUM(shortage_qty), 0) as total_shortage
+                FROM vendor_po_lines
+                WHERE po_number = ?""",
+                (po_number,)
+            )
+            row = cur.fetchone()
+            if row:
+                db_ordered = row["total_ordered"]
+                db_accepted = row["total_accepted"]
+                db_cancelled = row["total_cancelled"]
+                db_received = row["total_received"]
+                db_pending = row["total_pending"]
+                db_shortage = row["total_shortage"]
+                
+                print(f"[VerifyPO {po_number}] DB TOTALS: "
+                      f"ordered={db_ordered} accepted={db_accepted} "
+                      f"cancelled={db_cancelled} received={db_received} "
+                      f"pending={db_pending} shortage={db_shortage}")
+                
+                # Compare
+                print(f"\n[VerifyPO {po_number}] ===== COMPARISON =====")
+                ordered_match = "✓" if api_ordered_total == db_ordered else f"✗ (api={api_ordered_total} vs db={db_ordered})"
+                accepted_match = "✓" if api_accepted_total == db_accepted else f"✗ (api={api_accepted_total} vs db={db_accepted})"
+                cancelled_match = "✓" if api_cancelled_total == db_cancelled else f"✗ (api={api_cancelled_total} vs db={db_cancelled})"
+                received_match = "✓" if api_received_total == db_received else f"✗ (api={api_received_total} vs db={db_received})"
+                pending_match = "✓" if api_pending_total == db_pending else f"✗ (api={api_pending_total} vs db={db_pending})"
+                shortage_match = "✓" if api_shortage_total == db_shortage else f"✗ (api={api_shortage_total} vs db={db_shortage})"
+                
+                print(f"  ordered:   {ordered_match}")
+                print(f"  accepted:  {accepted_match}")
+                print(f"  cancelled: {cancelled_match}")
+                print(f"  received:  {received_match}")
+                print(f"  pending:   {pending_match}")
+                print(f"  shortage:  {shortage_match}")
+            else:
+                print(f"[VerifyPO {po_number}] ERROR: No rows found in database for this PO")
+    except Exception as e:
+        logger.error(f"[VerifyPO {po_number}] Error querying database: {e}", exc_info=True)
+        print(f"[VerifyPO {po_number}] ERROR: {e}")
+
+
+def _sync_vendor_po_lines_for_po(po_number: str):
+    """
+    Sync vendor_po_lines for a single PO using correct SP-API schema mapping.
+    
+    IMPORTANT: Quantity Mapping (from Vendor Orders API schema)
+    =========================================================
+    CASE 1: If itemStatus[] is available (PO has been acknowledged):
+    - orderedQuantity.orderedQuantity.amount = Original ordered quantity
+    - orderedQuantity.cancelledQuantity.amount = Cancelled quantity
+    - acknowledgementStatus.acceptedQuantity.amount = Accepted/confirmed quantity
+    - receivingStatus.receivedQuantity.amount = Received quantity
+    
+    CASE 2: If itemStatus[] is NOT available (fallback to orderDetails.items):
+    - Use orderDetails.items[].orderedQuantity.amount as ordered quantity
+    - No acknowledgement/receiving data available yet
+    - Set accepted_qty = ordered_qty, received_qty = 0, pending = 0, shortage = 0
+    
+    Derived Calculations:
+    - pending_qty = accepted_qty - received_qty (awaiting delivery)
+    - shortage_qty = ordered_qty - accepted_qty - cancelled_qty (not confirmed by vendor)
+    
+    This matches Amazon Vendor Central terminology:
+    - Quantity Submitted = orderedQuantity (what was ordered)
+    - Accepted quantity = acknowledgementStatus.acceptedQuantity (what vendor confirmed)
+    - Quantity received = receivingStatus.receivedQuantity (what was received)
+    - Quantity outstanding = pending_qty (confirmed but not yet received)
     """
     from services.db import execute_write
     
-    # Fetch detailed PO with itemStatus
+    # Fetch detailed PO from SP-API
     detailed_po = fetch_detailed_po_with_status(po_number)
     if not detailed_po:
         logger.warning(f"[VendorPO] Could not fetch detailed PO {po_number}")
         return
     
-    order_details = detailed_po.get("orderDetails", {})
-    items = order_details.get("items", [])
-    
-    if not items:
-        logger.warning(f"[VendorPO] PO {po_number} has no items")
-        return
-    
-    ship_to_party = order_details.get("shipToParty", {})
+    ship_to_party = detailed_po.get("orderDetails", {}).get("shipToParty", {})
     ship_to_location = ship_to_party.get("partyId", "")
-    
-    # Get itemStatus map if available
-    item_status_map = {}
-    item_status_list = detailed_po.get("itemStatus", [])
-    if item_status_list:
-        for status in item_status_list:
-            item_seq = status.get("itemSequenceNumber", "")
-            if item_seq:
-                item_status_map[item_seq] = status
     
     # FIX: Clear only this PO's lines (scoped delete)
     try:
@@ -1924,72 +2152,379 @@ def _sync_vendor_po_lines_for_po(po_number: str):
         logger.error(f"[VendorPO] Failed to clear lines for PO {po_number}: {e}")
         return
     
+    # Try itemStatus first (full acknowledgement/receiving data)
+    item_status_list = detailed_po.get("itemStatus", [])
+    use_item_status = bool(item_status_list)
+    
+    # Fallback to orderDetails.items if itemStatus is not available
+    if not use_item_status:
+        item_status_list = detailed_po.get("orderDetails", {}).get("items", [])
+        if not item_status_list:
+            logger.warning(f"[VendorPO] PO {po_number} has neither itemStatus nor items")
+            return
+        logger.info(f"[VendorPO] PO {po_number} using fallback orderDetails.items (no itemStatus available)")
+    else:
+        logger.info(f"[VendorPO] PO {po_number} has itemStatus ({len(item_status_list)} items)")
+    
     # Process each item
     now_utc = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    for item in items:
+    for item in item_status_list:
         try:
             item_seq = item.get("itemSequenceNumber", "")
             asin = item.get("amazonProductIdentifier", "")
             sku = item.get("vendorProductIdentifier", "")
             
-            # Parse ordered quantity (is a dict with 'amount' key)
-            ordered_qty = 0
-            oq = item.get("orderedQuantity")
-            if isinstance(oq, dict):
-                ordered_qty = int(oq.get("amount", 0) or 0)
-            elif isinstance(oq, (int, float)):
-                ordered_qty = int(oq)
-            
-            # Get status quantities from itemStatus
-            status_info = item_status_map.get(item_seq, {})
-            acknowledged_qty = 0
-            cancelled_qty = 0
-            received_qty = 0
-            
-            # Parse acknowledgedQuantity
-            ack_qty = status_info.get("acknowledgedQuantity")
-            if isinstance(ack_qty, dict):
-                acknowledged_qty = int(ack_qty.get("amount", 0) or 0)
-            elif isinstance(ack_qty, (int, float)):
-                acknowledged_qty = int(ack_qty)
-            
-            # Parse cancelledQuantity
-            can_qty = status_info.get("cancelledQuantity")
-            if isinstance(can_qty, dict):
-                cancelled_qty = int(can_qty.get("amount", 0) or 0)
-            elif isinstance(can_qty, (int, float)):
-                cancelled_qty = int(can_qty)
-            
-            # Parse receivedQuantity
-            recv_qty = status_info.get("receivedQuantity")
-            if isinstance(recv_qty, dict):
-                received_qty = int(recv_qty.get("amount", 0) or 0)
-            elif isinstance(recv_qty, (int, float)):
-                received_qty = int(recv_qty)
-            
-            # Calculate derived quantities
-            shortage_qty = max(0, ordered_qty - (received_qty + cancelled_qty))
-            pending_qty = ordered_qty - received_qty
-            
+            if use_item_status:
+                # ============================================================
+                # CASE 1: Using itemStatus with full acknowledgement/receiving data
+                # ============================================================
+                # Extract ORDERED quantity (from orderedQuantity.orderedQuantity)
+                ordered_qty = 0
+                oq_wrapper = item.get("orderedQuantity", {})
+                if isinstance(oq_wrapper, dict):
+                    oq_inner = oq_wrapper.get("orderedQuantity", {})
+                    if isinstance(oq_inner, dict):
+                        ordered_qty = int(oq_inner.get("amount", 0) or 0)
+
+                # Extract CANCELLED quantity (from orderedQuantity.cancelledQuantity)
+                cancelled_qty = 0
+                oq_wrapper = item.get("orderedQuantity", {})
+                if isinstance(oq_wrapper, dict):
+                    can_inner = oq_wrapper.get("cancelledQuantity", {})
+                    if isinstance(can_inner, dict):
+                        cancelled_qty = int(can_inner.get("amount", 0) or 0)
+
+                # Extract ACCEPTED quantity (from acknowledgementStatus.acceptedQuantity)
+                accepted_qty = 0
+                ack_obj = item.get("acknowledgementStatus", {})
+                if isinstance(ack_obj, dict):
+                    acc_qty = ack_obj.get("acceptedQuantity", {})
+                    if isinstance(acc_qty, dict):
+                        accepted_qty = int(acc_qty.get("amount", 0) or 0)
+
+                # Extract RECEIVED quantity (from receivingStatus.receivedQuantity)
+                received_qty = 0
+                recv_obj = item.get("receivingStatus", {})
+                if isinstance(recv_obj, dict):
+                    recv_qty = recv_obj.get("receivedQuantity", {})
+                    if isinstance(recv_qty, dict):
+                        received_qty = int(recv_qty.get("amount", 0) or 0)
+
+            else:
+                # ============================================================
+                # CASE 2: Fallback using orderDetails.items (minimal data)
+                # ============================================================
+                # Extract ORDERED quantity directly from orderedQuantity
+                ordered_qty = 0
+                oq = item.get("orderedQuantity", {})
+                if isinstance(oq, dict):
+                    ordered_qty = int(oq.get("amount", 0) or 0)
+                
+                # No acknowledgement/receiving data available
+                cancelled_qty = 0
+                accepted_qty = ordered_qty  # Assume all ordered is accepted if no status
+                received_qty = 0
+
+            # ============================================================
+            # Calculate DERIVED quantities
+            # ============================================================
+            # pending_qty = what's been accepted but not yet received
+            pending_qty = max(0, accepted_qty - received_qty)
+
+            # shortage_qty = what was ordered but not accepted/cancelled
+            shortage_qty = max(0, ordered_qty - accepted_qty - cancelled_qty)
+
             # Insert into vendor_po_lines
             sql = """
-            INSERT INTO vendor_po_lines 
-            (po_number, ship_to_location, asin, sku, ordered_qty, acknowledged_qty, 
+            INSERT INTO vendor_po_lines
+            (po_number, ship_to_location, asin, sku, ordered_qty, accepted_qty,
              cancelled_qty, shipped_qty, received_qty, shortage_qty, pending_qty, last_changed_utc)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
                 po_number, ship_to_location, asin, sku,
-                ordered_qty, acknowledged_qty, cancelled_qty, 0,  # shipped_qty = 0 for now
+                ordered_qty, accepted_qty, cancelled_qty, 0,  # shipped_qty = 0 (not in schema)
                 received_qty, shortage_qty, pending_qty, now_utc
             )
             execute_write(sql, params)
-            
+
         except Exception as e:
-            logger.error(f"[VendorPO] Error processing item {item_seq} in PO {po_number}: {e}")
+            logger.error(f"[VendorPO] Error processing item {item_seq} in PO {po_number}: {e}", exc_info=True)
             continue
+
+    logger.info(f"[VendorPO] Synced {len(item_status_list)} lines for PO {po_number}")
+
+
+def get_shipments_for_po(po_number: str) -> List[Dict[str, Any]]:
+    """
+    Fetch all vendor shipments related to a single PO number from Vendor Shipments API.
     
-    logger.info(f"[VendorPO] Synced {len(items)} lines for PO {po_number}")
+    Schema Reference (Vendor Shipments API):
+    - Filter by: buyerReferenceNumber (PO number)
+    - Shipment has: purchaseOrders[].purchaseOrderNumber, purchaseOrders[].items[]
+    - Per-item: vendorProductIdentifier, buyerProductIdentifier, shippedQuantity.amount
+    - Response pagination: nextToken
+    
+    Returns normalized list of line records:
+        {
+            "po_number": str,
+            "shipment_id": str,
+            "asin": str,
+            "vendor_sku": str,
+            "shipped_qty": int,
+        }
+    """
+    if not MARKETPLACE_IDS:
+        logger.warning("[Shipments] No MARKETPLACE_IDS configured")
+        return []
+    
+    try:
+        marketplace = MARKETPLACE_IDS[0].strip()
+        host = resolve_vendor_host(marketplace)
+        url = f"{host}/vendor/shipping/v1/shipments"
+        token = auth_client.get_lwa_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "x-amz-access-token": token,
+            "accept": "application/json",
+            "user-agent": "sp-api-desktop-app/1.0",
+        }
+        
+        params = {
+            "buyerReferenceNumber": po_number,
+            "limit": 50,
+        }
+        
+        all_lines = []
+        next_token = None
+        
+        while True:
+            if next_token:
+                params["nextToken"] = next_token
+            
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                payload = data.get("payload", {})
+                shipments = payload.get("shipments", [])
+                
+                # Extract line items from each shipment
+                for shipment in shipments:
+                    shipment_id = shipment.get("vendorShipmentIdentifier", "")
+                    purchase_orders = shipment.get("purchaseOrders", [])
+                    
+                    for po_info in purchase_orders:
+                        po_num = po_info.get("purchaseOrderNumber", "")
+                        if po_num != po_number:
+                            continue
+                        
+                        items = po_info.get("items", [])
+                        for item in items:
+                            try:
+                                asin = item.get("buyerProductIdentifier", "")
+                                sku = item.get("vendorProductIdentifier", "")
+                                
+                                shipped_qty = 0
+                                sq = item.get("shippedQuantity", {})
+                                if isinstance(sq, dict):
+                                    shipped_qty = int(sq.get("amount", 0) or 0)
+                                
+                                all_lines.append({
+                                    "po_number": po_number,
+                                    "shipment_id": shipment_id,
+                                    "asin": asin,
+                                    "vendor_sku": sku,
+                                    "shipped_qty": shipped_qty,
+                                })
+                            except Exception as e:
+                                logger.warning(f"[Shipments] Error processing item in PO {po_number}: {e}")
+                                continue
+                
+                # Check for pagination
+                pagination = payload.get("pagination", {})
+                next_token = pagination.get("nextToken")
+                if not next_token:
+                    break
+            elif resp.status_code == 404:
+                logger.info(f"[Shipments] No shipments found for PO {po_number} (404)")
+                break
+            else:
+                logger.warning(f"[Shipments] Failed to fetch shipments for PO {po_number}: {resp.status_code}")
+                break
+        
+        return all_lines
+    
+    except requests.exceptions.Timeout:
+        logger.warning(f"[Shipments] Timeout fetching shipments for PO {po_number}")
+        return []
+    except Exception as e:
+        logger.warning(f"[Shipments] Error fetching shipments for PO {po_number}: {e}", exc_info=True)
+        return []
+
+
+def aggregate_received_for_po(po_number: str) -> Dict[str, Any]:
+    """
+    For a given PO, aggregate shipment data by ASIN/vendor_sku.
+    
+    Returns:
+        {
+            "po_number": str,
+            "lines": [
+                {
+                    "asin": str,
+                    "vendor_sku": str,
+                    "total_shipped": int,
+                },
+                ...
+            ],
+            "totals": {
+                "shipped": int,
+            }
+        }
+    """
+    shipment_lines = get_shipments_for_po(po_number)
+    
+    # Group by (asin, vendor_sku)
+    grouped: Dict[tuple, Dict[str, Any]] = {}
+    total_shipped = 0
+    
+    for line in shipment_lines:
+        key = (line["asin"], line["vendor_sku"])
+        shipped = line["shipped_qty"]
+        
+        if key not in grouped:
+            grouped[key] = {
+                "asin": line["asin"],
+                "vendor_sku": line["vendor_sku"],
+                "total_shipped": 0,
+            }
+        
+        grouped[key]["total_shipped"] += shipped
+        total_shipped += shipped
+    
+    # Convert to list
+    lines_list = list(grouped.values())
+    lines_list.sort(key=lambda x: x["vendor_sku"])
+    
+    return {
+        "po_number": po_number,
+        "lines": lines_list,
+        "totals": {
+            "shipped": total_shipped,
+        }
+    }
+
+
+def verify_po_receipts_against_shipments(po_number: str) -> None:
+    """
+    Compare vendor_po_lines (DB) against Vendor Shipments API for one PO.
+    
+    Shows per-line and totals comparison:
+    - DB: ordered_qty, received_qty from vendor_po_lines table
+    - Shipments: shipped_qty from Vendor Shipments API
+    
+    Logs detailed comparison to console.
+    """
+    from services.db import get_db_connection
+    
+    print(f"\n[VerifyPOReceipts {po_number}] ===== COMPARING DB vs SHIPMENTS =====")
+    print(f"[VerifyPOReceipts {po_number}] Data sources:")
+    print(f"  DB (vendor_po_lines): Vendor Orders API -> Ordered/Received from itemStatus")
+    print(f"  Shipments API: /vendor/shipping/v1/shipments filtered by buyerReferenceNumber={po_number}")
+    
+    # Get DB data
+    db_lines = {}
+    db_ordered_total = 0
+    db_received_total = 0
+    
+    try:
+        with get_db_connection() as conn:
+            cur = conn.execute(
+                """SELECT asin, sku, ordered_qty, received_qty
+                   FROM vendor_po_lines
+                   WHERE po_number = ?
+                   ORDER BY asin""",
+                (po_number,)
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                asin = row["asin"]
+                sku = row["sku"]
+                key = (asin, sku)
+                db_lines[key] = {
+                    "asin": asin,
+                    "sku": sku,
+                    "ordered_qty": row["ordered_qty"],
+                    "received_qty": row["received_qty"],
+                }
+                db_ordered_total += row["ordered_qty"]
+                db_received_total += row["received_qty"]
+    except Exception as e:
+        logger.error(f"[VerifyPOReceipts {po_number}] Error querying DB: {e}", exc_info=True)
+        print(f"[VerifyPOReceipts {po_number}] ERROR querying DB: {e}")
+        return
+    
+    # Get Shipments data
+    shipments_agg = aggregate_received_for_po(po_number)
+    shipments_lines = {}
+    shipments_total = shipments_agg["totals"]["shipped"]
+    
+    for line in shipments_agg["lines"]:
+        key = (line["asin"], line["vendor_sku"])
+        shipments_lines[key] = {
+            "asin": line["asin"],
+            "vendor_sku": line["vendor_sku"],
+            "shipped_qty": line["total_shipped"],
+        }
+    
+    # Merge and compare
+    all_keys = set(db_lines.keys()) | set(shipments_lines.keys())
+    
+    print(f"\n[VerifyPOReceipts {po_number}] ===== PER-LINE COMPARISON =====")
+    print(f"{'ASIN':<15} {'SKU':<20} {'DB_Ordered':<12} {'DB_Rcvd':<10} {'Ship_Qty':<10} {'Delta':<8}")
+    print("-" * 90)
+    
+    comparison_rows = []
+    for key in sorted(all_keys):
+        db_line = db_lines.get(key, {})
+        ship_line = shipments_lines.get(key, {})
+        
+        asin = db_line.get("asin") or ship_line.get("asin", "")
+        sku = db_line.get("sku") or ship_line.get("vendor_sku", "")
+        
+        db_ordered = db_line.get("ordered_qty", 0)
+        db_received = db_line.get("received_qty", 0)
+        ship_qty = ship_line.get("shipped_qty", 0)
+        delta = ship_qty - db_received
+        
+        comparison_rows.append({
+            "asin": asin,
+            "sku": sku,
+            "db_ordered": db_ordered,
+            "db_received": db_received,
+            "ship_qty": ship_qty,
+            "delta": delta,
+        })
+        
+        delta_str = f"{delta:+d}" if delta != 0 else "0"
+        print(f"{asin:<15} {sku:<20} {db_ordered:<12} {db_received:<10} {ship_qty:<10} {delta_str:<8}")
+    
+    print("-" * 90)
+    print(f"\n[VerifyPOReceipts {po_number}] ===== TOTALS =====")
+    print(f"[VerifyPOReceipts {po_number}] DB (vendor_po_lines):")
+    print(f"  total_ordered  = {db_ordered_total}")
+    print(f"  total_received = {db_received_total}")
+    print(f"[VerifyPOReceipts {po_number}] Shipments API:")
+    print(f"  total_shipped  = {shipments_total}")
+    
+    delta_received = shipments_total - db_received_total
+    print(f"[VerifyPOReceipts {po_number}] Δ received (Shipments - DB) = {delta_received:+d}")
+    
+    if delta_received == 0:
+        print(f"[VerifyPOReceipts {po_number}] ✓ Received quantities match perfectly!")
+    else:
+        print(f"[VerifyPOReceipts {po_number}] ⚠ Discrepancy detected: {delta_received:+d} units difference")
 
 
 def sync_vendor_po_lines_batch(po_numbers: List[str]):
@@ -2116,6 +2651,39 @@ if __name__ == "__main__":
         # Useful after schema changes or to backfill older POs
         rebuild_all_vendor_po_lines()
         sys.exit(0)
+    
+    # Debug: dump raw JSON for a specific PO
+    if "--debug-po" in sys.argv:
+        try:
+            idx = sys.argv.index("--debug-po")
+            po_number = sys.argv[idx + 1]
+            debug_dump_vendor_po(po_number)
+            sys.exit(0)
+        except (IndexError, ValueError) as e:
+            print(f"Usage: python main.py --debug-po <PO_NUMBER>")
+            sys.exit(1)
+    
+    # Verify: check mapping against SP-API
+    if "--verify-po" in sys.argv:
+        try:
+            idx = sys.argv.index("--verify-po")
+            po_number = sys.argv[idx + 1]
+            verify_vendor_po_mapping(po_number)
+            sys.exit(0)
+        except (IndexError, ValueError) as e:
+            print(f"Usage: python main.py --verify-po <PO_NUMBER>")
+            sys.exit(1)
+    
+    # Verify receipts: compare vendor_po_lines (DB) against Vendor Shipments API
+    if "--verify-po-receipts" in sys.argv:
+        try:
+            idx = sys.argv.index("--verify-po-receipts")
+            po_number = sys.argv[idx + 1]
+            verify_po_receipts_against_shipments(po_number)
+            sys.exit(0)
+        except (IndexError, ValueError) as e:
+            print(f"Usage: python main.py --verify-po-receipts <PO_NUMBER>")
+            sys.exit(1)
     
     # Normal mode: start the FastAPI server
     uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
