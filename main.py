@@ -2272,6 +2272,7 @@ def get_shipments_for_po(po_number: str) -> List[Dict[str, Any]]:
             "asin": str,
             "vendor_sku": str,
             "shipped_qty": int,
+            "received_qty": int,
         }
     """
     if not MARKETPLACE_IDS:
@@ -2290,59 +2291,65 @@ def get_shipments_for_po(po_number: str) -> List[Dict[str, Any]]:
             "accept": "application/json",
             "user-agent": "sp-api-desktop-app/1.0",
         }
-        
-        params = {
-            "buyerReferenceNumber": po_number,
-            "limit": 50,
-        }
-        
-        all_lines = []
-        next_token = None
+        all_lines: List[Dict[str, Any]] = []
+        next_token: Optional[str] = None
         
         while True:
+            params = {
+                "buyerReferenceNumber": po_number,
+                "limit": 50,
+            }
             if next_token:
                 params["nextToken"] = next_token
             
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
+            except requests.exceptions.Timeout:
+                logger.warning(f"[Shipments] Timeout fetching shipments for PO {po_number}")
+                break
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"[Shipments] Error fetching shipments for PO {po_number}: {e}")
+                break
+            
             if resp.status_code == 200:
                 data = resp.json()
-                payload = data.get("payload", {})
-                shipments = payload.get("shipments", [])
+                payload = data.get("payload") or {}
+                shipments = payload.get("shipments") or []
                 
-                # Extract line items from each shipment
+                # Vendor Shipments fields: filter with buyerReferenceNumber, then pull
+                # purchaseOrders[].items[].{buyerProductIdentifier, vendorProductIdentifier, shippedQuantity.amount}
                 for shipment in shipments:
                     shipment_id = shipment.get("vendorShipmentIdentifier", "")
-                    purchase_orders = shipment.get("purchaseOrders", [])
+                    purchase_orders = shipment.get("purchaseOrders") or []
                     
                     for po_info in purchase_orders:
-                        po_num = po_info.get("purchaseOrderNumber", "")
+                        po_num = po_info.get("purchaseOrderNumber") or ""
                         if po_num != po_number:
                             continue
                         
-                        items = po_info.get("items", [])
+                        items = po_info.get("items") or []
                         for item in items:
-                            try:
-                                asin = item.get("buyerProductIdentifier", "")
-                                sku = item.get("vendorProductIdentifier", "")
-                                
-                                shipped_qty = 0
-                                sq = item.get("shippedQuantity", {})
-                                if isinstance(sq, dict):
-                                    shipped_qty = int(sq.get("amount", 0) or 0)
-                                
-                                all_lines.append({
-                                    "po_number": po_number,
-                                    "shipment_id": shipment_id,
-                                    "asin": asin,
-                                    "vendor_sku": sku,
-                                    "shipped_qty": shipped_qty,
-                                })
-                            except Exception as e:
-                                logger.warning(f"[Shipments] Error processing item in PO {po_number}: {e}")
-                                continue
+                            asin = item.get("buyerProductIdentifier") or ""
+                            sku = item.get("vendorProductIdentifier") or ""
+                            
+                            shipped_qty = 0
+                            sq = item.get("shippedQuantity") or {}
+                            if isinstance(sq, dict):
+                                shipped_qty = int(sq.get("amount") or 0)
+                            
+                            # Shipments payload does not carry a separate received quantity, so use shippedQuantity.
+                            received_qty = shipped_qty
+                            
+                            all_lines.append({
+                                "po_number": po_number,
+                                "shipment_id": shipment_id,
+                                "asin": asin,
+                                "vendor_sku": sku,
+                                "shipped_qty": shipped_qty,
+                                "received_qty": received_qty,
+                            })
                 
-                # Check for pagination
-                pagination = payload.get("pagination", {})
+                pagination = payload.get("pagination") or {}
                 next_token = pagination.get("nextToken")
                 if not next_token:
                     break
@@ -2355,9 +2362,6 @@ def get_shipments_for_po(po_number: str) -> List[Dict[str, Any]]:
         
         return all_lines
     
-    except requests.exceptions.Timeout:
-        logger.warning(f"[Shipments] Timeout fetching shipments for PO {po_number}")
-        return []
     except Exception as e:
         logger.warning(f"[Shipments] Error fetching shipments for PO {po_number}: {e}", exc_info=True)
         return []
@@ -2375,11 +2379,13 @@ def aggregate_received_for_po(po_number: str) -> Dict[str, Any]:
                     "asin": str,
                     "vendor_sku": str,
                     "total_shipped": int,
+                    "total_received": int,
                 },
                 ...
             ],
             "totals": {
                 "shipped": int,
+                "received": int,
             }
         }
     """
@@ -2388,30 +2394,36 @@ def aggregate_received_for_po(po_number: str) -> Dict[str, Any]:
     # Group by (asin, vendor_sku)
     grouped: Dict[tuple, Dict[str, Any]] = {}
     total_shipped = 0
+    total_received = 0
     
     for line in shipment_lines:
-        key = (line["asin"], line["vendor_sku"])
-        shipped = line["shipped_qty"]
+        key = (line.get("asin") or "", line.get("vendor_sku") or "")
+        shipped = int(line.get("shipped_qty", 0) or 0)
+        received = int(line.get("received_qty", 0) or 0)
         
         if key not in grouped:
             grouped[key] = {
-                "asin": line["asin"],
-                "vendor_sku": line["vendor_sku"],
+                "asin": line.get("asin") or "",
+                "vendor_sku": line.get("vendor_sku") or "",
                 "total_shipped": 0,
+                "total_received": 0,
             }
         
         grouped[key]["total_shipped"] += shipped
+        grouped[key]["total_received"] += received
         total_shipped += shipped
+        total_received += received
     
     # Convert to list
     lines_list = list(grouped.values())
-    lines_list.sort(key=lambda x: x["vendor_sku"])
+    lines_list.sort(key=lambda x: (x.get("vendor_sku") or "", x.get("asin") or ""))
     
     return {
         "po_number": po_number,
         "lines": lines_list,
         "totals": {
             "shipped": total_shipped,
+            "received": total_received,
         }
     }
 
@@ -2422,7 +2434,7 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     
     Shows per-line and totals comparison:
     - DB: ordered_qty, received_qty from vendor_po_lines table
-    - Shipments: shipped_qty from Vendor Shipments API
+    - Shipments: shipped/received quantities from Vendor Shipments API
     
     Logs detailed comparison to console.
     """
@@ -2434,7 +2446,7 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     print(f"  Shipments API: /vendor/shipping/v1/shipments filtered by buyerReferenceNumber={po_number}")
     
     # Get DB data
-    db_lines = {}
+    db_lines: Dict[Tuple[str, str], Dict[str, Any]] = {}
     db_ordered_total = 0
     db_received_total = 0
     
@@ -2449,17 +2461,19 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
             )
             rows = cur.fetchall()
             for row in rows:
-                asin = row["asin"]
-                sku = row["sku"]
+                asin = row["asin"] or ""
+                sku = row["sku"] or ""
                 key = (asin, sku)
+                ordered_qty = int(row["ordered_qty"] or 0)
+                received_qty = int(row["received_qty"] or 0)
                 db_lines[key] = {
                     "asin": asin,
                     "sku": sku,
-                    "ordered_qty": row["ordered_qty"],
-                    "received_qty": row["received_qty"],
+                    "ordered_qty": ordered_qty,
+                    "received_qty": received_qty,
                 }
-                db_ordered_total += row["ordered_qty"]
-                db_received_total += row["received_qty"]
+                db_ordered_total += ordered_qty
+                db_received_total += received_qty
     except Exception as e:
         logger.error(f"[VerifyPOReceipts {po_number}] Error querying DB: {e}", exc_info=True)
         print(f"[VerifyPOReceipts {po_number}] ERROR querying DB: {e}")
@@ -2467,48 +2481,89 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     
     # Get Shipments data
     shipments_agg = aggregate_received_for_po(po_number)
-    shipments_lines = {}
-    shipments_total = shipments_agg["totals"]["shipped"]
+    shipments_lines: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    shipments_totals = shipments_agg.get("totals", {})
+    shipments_total_shipped = int(shipments_totals.get("shipped", 0) or 0)
+    shipments_total_received = int(shipments_totals.get("received", 0) or 0)
     
     for line in shipments_agg["lines"]:
-        key = (line["asin"], line["vendor_sku"])
+        key = (line.get("asin") or "", line.get("vendor_sku") or "")
         shipments_lines[key] = {
-            "asin": line["asin"],
-            "vendor_sku": line["vendor_sku"],
-            "shipped_qty": line["total_shipped"],
+            "asin": line.get("asin") or "",
+            "vendor_sku": line.get("vendor_sku") or "",
+            "shipped_qty": int(line.get("total_shipped", 0) or 0),
+            "received_qty": int(line.get("total_received", 0) or 0),
         }
     
-    # Merge and compare
-    all_keys = set(db_lines.keys()) | set(shipments_lines.keys())
+    # Merge and compare (join by ASIN or vendor_sku)
+    def _match_key(key: Tuple[str, str], other_keys: List[Tuple[str, str]]):
+        asin, sku = key
+        if key in other_keys:
+            return key
+        if asin:
+            for ok in other_keys:
+                if ok[0] == asin:
+                    return ok
+        if sku:
+            for ok in other_keys:
+                if ok[1] == sku:
+                    return ok
+        return None
+    
+    def _find_line(line_map: Dict[Tuple[str, str], Dict[str, Any]], lookup: Tuple[str, str]) -> Dict[str, Any]:
+        if lookup in line_map:
+            return line_map[lookup]
+        asin, sku = lookup
+        if asin:
+            for (a, _), payload in line_map.items():
+                if a == asin:
+                    return payload
+        if sku:
+            for (_, s), payload in line_map.items():
+                if s == sku:
+                    return payload
+        return {}
+    
+    all_keys: set = set()
+    
+    shipment_keys_list = list(shipments_lines.keys())
+    for db_key in db_lines.keys():
+        matched = _match_key(db_key, shipment_keys_list)
+        all_keys.add(matched or db_key)
+    
+    db_keys_list = list(db_lines.keys())
+    for ship_key in shipments_lines.keys():
+        matched = _match_key(ship_key, db_keys_list)
+        all_keys.add(matched or ship_key)
     
     print(f"\n[VerifyPOReceipts {po_number}] ===== PER-LINE COMPARISON =====")
-    print(f"{'ASIN':<15} {'SKU':<20} {'DB_Ordered':<12} {'DB_Rcvd':<10} {'Ship_Qty':<10} {'Delta':<8}")
+    print(f"{'ASIN':<15} {'SKU':<20} {'DB_Ordered':<12} {'DB_Rcvd':<10} {'Ship_Rcvd':<11} {'Delta_R':<8}")
     print("-" * 90)
     
-    comparison_rows = []
+    comparison_rows: List[Dict[str, Any]] = []
     for key in sorted(all_keys):
-        db_line = db_lines.get(key, {})
-        ship_line = shipments_lines.get(key, {})
+        db_line = _find_line(db_lines, key)
+        ship_line = _find_line(shipments_lines, key)
         
         asin = db_line.get("asin") or ship_line.get("asin", "")
         sku = db_line.get("sku") or ship_line.get("vendor_sku", "")
         
         db_ordered = db_line.get("ordered_qty", 0)
         db_received = db_line.get("received_qty", 0)
-        ship_qty = ship_line.get("shipped_qty", 0)
-        delta = ship_qty - db_received
+        ship_received = ship_line.get("received_qty", 0)
+        delta = ship_received - db_received
         
         comparison_rows.append({
             "asin": asin,
             "sku": sku,
             "db_ordered": db_ordered,
             "db_received": db_received,
-            "ship_qty": ship_qty,
+            "ship_received": ship_received,
             "delta": delta,
         })
         
         delta_str = f"{delta:+d}" if delta != 0 else "0"
-        print(f"{asin:<15} {sku:<20} {db_ordered:<12} {db_received:<10} {ship_qty:<10} {delta_str:<8}")
+        print(f"{asin:<15} {sku:<20} {db_ordered:<12} {db_received:<10} {ship_received:<11} {delta_str:<8}")
     
     print("-" * 90)
     print(f"\n[VerifyPOReceipts {po_number}] ===== TOTALS =====")
@@ -2516,15 +2571,16 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     print(f"  total_ordered  = {db_ordered_total}")
     print(f"  total_received = {db_received_total}")
     print(f"[VerifyPOReceipts {po_number}] Shipments API:")
-    print(f"  total_shipped  = {shipments_total}")
+    print(f"  total_shipped  = {shipments_total_shipped}")
+    print(f"  total_received = {shipments_total_received}")
     
-    delta_received = shipments_total - db_received_total
-    print(f"[VerifyPOReceipts {po_number}] Δ received (Shipments - DB) = {delta_received:+d}")
+    delta_received = shipments_total_received - db_received_total
+    print(f"[VerifyPOReceipts {po_number}] Delta received (Shipments - DB) = {delta_received:+d}")
     
     if delta_received == 0:
-        print(f"[VerifyPOReceipts {po_number}] ✓ Received quantities match perfectly!")
+        print(f"[VerifyPOReceipts {po_number}] Received quantities match.")
     else:
-        print(f"[VerifyPOReceipts {po_number}] ⚠ Discrepancy detected: {delta_received:+d} units difference")
+        print(f"[VerifyPOReceipts {po_number}] Discrepancy detected: {delta_received:+d} units difference")
 
 
 def sync_vendor_po_lines_batch(po_numbers: List[str]):

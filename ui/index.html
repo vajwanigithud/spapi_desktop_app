@@ -106,10 +106,6 @@
                 <th>Order Date</th>
                 <th>Ship To</th>
                 <th style="text-align:center;">Ordered</th>
-                <th style="text-align:center;">Received</th>
-                <th style="text-align:center;">Pending</th>
-                <th style="text-align:center;">Shortage</th>
-                <th>Last Change</th>
               <th>Appointment Date</th>
               <th>In-House Status</th>
             </tr>
@@ -352,7 +348,7 @@
       tbody.innerHTML = "";
       const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="12" class="empty">No POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No POs</td></tr>';
         return;
       }
 
@@ -367,21 +363,7 @@
         const poNumber = po.purchaseOrderNumber || "";
         const shipTo = d.shipToParty?.partyId || "";
         const isChecked = selectedPoNumbers.includes(poNumber);
-
-        // NEW: Extract quantity fields from backend API
-        const totalOrdered = po.total_ordered_qty || 0;
-        const totalReceived = po.total_received_qty || 0;
-        const totalPending = po.total_pending_qty || 0;
-        const totalShortage = po.total_shortage_qty || 0;
-        const lastChanged = po.last_changed_utc || "";
-
-        // Determine cell styling based on quantities
-        const getQtyClass = (shortage, pending, ordered) => {
-          if (shortage > 0) return "qty-shortage";
-          if (pending > 0 && shortage === 0) return "qty-pending";
-          if (ordered > 0 && totalReceived === ordered) return "qty-good";
-          return "qty-neutral";
-        };
+        const totalOrdered = Number(po.total_ordered_qty) || 0;
 
         const tr = document.createElement("tr");
         tr.ondblclick = () => openModal(po);
@@ -415,36 +397,16 @@
       />
     `;
 
-        // Quantity cell styling
-        const orderedClass = getQtyClass(totalShortage, totalPending, totalOrdered);
-        const shortageClass = totalShortage > 0 ? "qty-shortage" : (totalPending > 0 ? "qty-pending" : "qty-good");
-        const pendingClass = totalPending > 0 ? "qty-pending" : "qty-neutral";
-
         tr.innerHTML = `
       <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
       <td>${poNumber}</td>
       <td>${po.purchaseOrderState || ""}</td>
       <td>${fmtDate(getPoDate(po))}</td>
       <td><strong>${shipTo}</strong></td>
-      <td class="${orderedClass}" style="text-align:center;">${totalOrdered}</td>
-      <td class="${orderedClass}" style="text-align:center;">${totalReceived}</td>
-      <td class="${pendingClass}" style="text-align:center;">${totalPending}</td>
-      <td class="${shortageClass}" style="text-align:center;">${totalShortage > 0 ? '⚠️ ' + totalShortage : totalShortage}</td>
-      <td style="font-size:12px; color:#6b7280;">${fmtDate(lastChanged)}</td>
+      <td style="text-align:center;">${totalOrdered}</td>
       <td>${appointmentDateHtml}</td>
       <td>${statusSelectHtml}</td>
     `;
-
-        // Add click handler to show line details on ASIN cell click
-        const shortageCell = tr.cells[8]; // shortage cell
-        if (shortageCell) {
-          shortageCell.style.cursor = "pointer";
-          shortageCell.title = "Click to see line-level details";
-          shortageCell.onclick = (e) => {
-            e.stopPropagation();
-            openPoLinesModal(poNumber);
-          };
-        }
 
         tbody.appendChild(tr);
       });
