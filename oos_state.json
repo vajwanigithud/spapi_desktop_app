@@ -1,0 +1,102 @@
+{
+  "38G9G38J::B09KQN5TNQ": {
+    "poNumber": "38G9G38J",
+    "asin": "B09KQN5TNQ",
+    "vendorSku": "B09KQN5TNQ",
+    "purchaseOrderDate": "2025-11-26T00:30:06Z",
+    "shipToPartyId": "DXB3",
+    "qty": "2",
+    "image": "https://m.media-amazon.com/images/I/715cVOjeV2L.jpg",
+    "isOutOfStock": true
+  },
+  "715RMQ7L::B0BWMSZ3MW": {
+    "poNumber": "715RMQ7L",
+    "asin": "B0BWMSZ3MW",
+    "vendorSku": "6299532702085",
+    "purchaseOrderDate": "2025-12-01T00:28:09Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/61g9fPm3MDL.jpg",
+    "isOutOfStock": true
+  },
+  "715RMQ7L::B0D5M3YZ31": {
+    "poNumber": "715RMQ7L",
+    "asin": "B0D5M3YZ31",
+    "vendorSku": "B0D5M3YZ31",
+    "purchaseOrderDate": "2025-12-01T00:28:09Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/61g7k6mz8VL.jpg",
+    "isOutOfStock": true
+  },
+  "715RMQ7L::B0DDXSKLBM": {
+    "poNumber": "715RMQ7L",
+    "asin": "B0DDXSKLBM",
+    "vendorSku": "B0DDXSKLBM",
+    "purchaseOrderDate": "2025-12-01T00:28:09Z",
+    "shipToPartyId": "DXB5",
+    "qty": "13",
+    "image": "https://m.media-amazon.com/images/I/81p8x6GePWL.jpg",
+    "isOutOfStock": true
+  },
+  "3CWTJWFJ::B0BYPCN51M": {
+    "poNumber": "3CWTJWFJ",
+    "asin": "B0BYPCN51M",
+    "vendorSku": "8692900606011",
+    "purchaseOrderDate": "2025-11-17T01:37:28Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/71QYyti9IzL.jpg",
+    "isOutOfStock": true
+  },
+  "84UWM1ZJ::B0CX8ZNJ6T": {
+    "poNumber": "84UWM1ZJ",
+    "asin": "B0CX8ZNJ6T",
+    "vendorSku": "B0CX8ZNJ6T",
+    "purchaseOrderDate": "2025-11-26T00:23:57Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/61jAHLJfXOL.jpg",
+    "isOutOfStock": true
+  },
+  "84UWM1ZJ::B09SF7F1DR": {
+    "poNumber": "84UWM1ZJ",
+    "asin": "B09SF7F1DR",
+    "vendorSku": "B09SF7F1DR",
+    "purchaseOrderDate": "2025-11-26T00:23:57Z",
+    "shipToPartyId": "DXB5",
+    "qty": "3",
+    "image": "https://m.media-amazon.com/images/I/61OF3AVxB6S.jpg",
+    "isOutOfStock": true
+  },
+  "3CWTJWFJ::B0CV12H1Q6": {
+    "poNumber": "3CWTJWFJ",
+    "asin": "B0CV12H1Q6",
+    "vendorSku": "B0CV12H1Q6",
+    "purchaseOrderDate": "2025-11-17T01:37:28Z",
+    "shipToPartyId": "DXB5",
+    "qty": "2",
+    "image": "https://m.media-amazon.com/images/I/51nvuqnrikL.jpg",
+    "isOutOfStock": true
+  },
+  "3CWTJWFJ::B0DT74V17Q": {
+    "poNumber": "3CWTJWFJ",
+    "asin": "B0DT74V17Q",
+    "vendorSku": "B0DT74V17Q",
+    "purchaseOrderDate": "2025-11-17T01:37:28Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/714388aRk+L.jpg",
+    "isOutOfStock": true
+  },
+  "73A7HE2A::B0BW46W3WS": {
+    "poNumber": "73A7HE2A",
+    "asin": "B0BW46W3WS",
+    "vendorSku": "6299532702030",
+    "purchaseOrderDate": "2025-11-10T00:33:09Z",
+    "shipToPartyId": "DXB5",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/817M+53Y5NL.jpg",
+    "isOutOfStock": true
+  }
+}

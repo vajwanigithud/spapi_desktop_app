@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SP-API Desktop App</title>
+  <style>
+    :root { --bg:#f8fafc; --panel:#fff; --border:#e5e7eb; --text:#0f172a; --muted:#6b7280; --accent:#2563eb; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:16px 20px; border-bottom:1px solid var(--border); background:var(--panel); display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:5; }
+    h1 { margin:0; font-size:18px; }
+    .btn { border:none; background:var(--accent); color:#fff; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
+    .layout { padding:16px 20px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+    .panel h2 { margin:0; padding:14px 16px; border-bottom:1px solid var(--border); font-size:16px; }
+    table { width:100%; border-collapse: collapse; font-size:13px; }
+    th, td { padding:8px 10px; border:1px solid var(--border); text-align:left; vertical-align: top; user-select: text; }
+    th { background:#f8fafc; position:sticky; top:0; z-index:1; }
+    th, td { user-select: text; }
+    tbody tr:hover { background:#f1f5f9; cursor:pointer; }
+    .empty { padding:14px; color:var(--muted); text-align:center; }
+    select.po-status-select { padding:6px 10px; border-radius:8px; font-size:13px; min-width:160px; }
+    input.po-date-input { padding:4px 8px; border-radius:8px; font-size:13px; border:1px solid var(--border); }
+    .tabs { display:flex; gap:8px; margin:6px 0 0; }
+    .tab-btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:600; }
+    .tab-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .forecast-source-status-strip { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:10px; }
+    .forecast-status-card { border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:#fff; font-size:13px; }
+    .forecast-meta-banner { margin-bottom:10px; font-size:13px; color:#475569; }
+    .forecast-table-wrapper { overflow:auto; max-height: calc(100vh - 260px); }
+    /* modal */
+    .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
+    .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+    .modal header { padding:12px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+    .modal-body { padding:12px 14px; overflow:auto; }
+    .json-block { background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:10px; white-space:pre-wrap; word-break:break-word; font-family: monospace; font-size:12px; user-select:text; }
+    </style>
+    <style>
+      .btn-fetch {
+        background: #dc2626;
+        color: #fff;
+      }
+      .btn-fetch:disabled {
+        background: #9ca3af;
+        color: #fff;
+        cursor: not-allowed;
+      }
+    </style>
+</head>
+<body>
+  <header>
+    <h1>Amazon SP-API Desktop</h1>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div id="sync-info" style="font-size:12px; color:#6b7280; display:flex; flex-direction:column; margin-right:12px;">
+        <span id="sync-last">Last Sync: —</span>
+        <span id="sync-next">Next Auto-Sync: —</span>
+      </div>
+      <button class="btn" id="sync-btn">Sync Vendor POs</button>
+    </div>
+  </header>
+
+  <div class="layout" style="padding-bottom:0;">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="pos" onclick="showTab('pos')">Vendor POs</button>
+      <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
+      <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
+      <button class="tab-btn" data-tab="forecast" onclick="showTab('forecast')">Forecast</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="panel" id="pos-tab">
+      <h2>Vendor POs (raw Amazon fields)</h2>
+      <div style="padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input id="po-search" type="text" placeholder="Search PO / SKU / F/C / Status" style="flex:1; min-width:240px; padding:8px 10px; border-radius:8px; border:1px solid var(--border);" />
+          <select id="po-filter-fc" style="padding:6px 8px; border-radius:8px; border:1px solid var(--border); font-size:13px;">
+            <option value="">All F/C</option>
+          </select>
+          <select id="po-filter-status" style="padding:6px 8px; border-radius:8px; border:1px solid var(--border); font-size:13px;">
+            <option value="">All Status</option>
+            <option value="Pending">Pending</option>
+            <option value="Preparing">Preparing</option>
+            <option value="Appointment Scheduled">Appointment Scheduled</option>
+          </select>
+          <button class="btn" id="picklist-btn" onclick="openPicklistPreview()" disabled style="background:#16a34a;">Export Pick List (PDF)</button>
+        </div>
+        <div id="inhouse-summary" style="font-size:12px; color:var(--muted); font-weight:600;"></div>
+      </div>
+      <div style="overflow:auto; max-height: calc(100vh - 200px);">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:32px;"><input type="checkbox" id="po-select-all" onchange="toggleSelectAllPos(this)" /></th>
+                <th>PO Number</th>
+                <th>Status</th>
+                <th>Order Date</th>
+                <th>Ship To</th>
+                <th>Items</th>
+              <th>Total Value</th>
+              <th>Appointment Date</th>
+              <th>In-House Status</th>
+            </tr>
+            </thead>
+            <tbody id="po-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    <div class="panel" id="catalog-tab" style="display:none; margin-top:14px;">
+      <h2>ASIN Catalog Fetcher</h2>
+      <div style="margin:10px 0; display:flex; gap:8px; align-items:center;">
+        <input id="manual-asin-input" type="text" placeholder="Enter ASIN (e.g., B00XXXXXXX)" style="padding:8px; border-radius:6px; border:1px solid #d1d5db; min-width:220px;" />
+        <button class="btn" style="background:#111827" onclick="addManualAsin()">Add ASIN</button>
+        <span id="manual-asin-msg" style="font-size:13px;color:#6b7280;"></span>
+      </div>
+      <div style="padding:12px; display:flex; gap:10px; align-items:center;">
+        <button class="btn" onclick="loadAsinList(true)">Refresh</button>
+        <button class="btn" style="background:#16a34a" onclick="fetchAllMissing()">Fetch All Missing</button>
+        <input id="asin-search" type="text" placeholder="Search ASIN / SKU / Title" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--border);" oninput="filterAsins()" />
+      </div>
+      <div style="padding:0 12px 12px 12px;">
+        <div style="overflow:auto; max-height: calc(100vh - 240px);">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:22%;">ASIN</th>
+                <th style="width:22%;">SKU</th>
+                <th style="width:26%;">Title</th>
+                <th style="width:12%;">Image</th>
+                <th style="width:10%;">Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="asin-rows">
+              <tr><td colspan="6" class="empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="panel" id="oos-tab" style="display:none; margin-top:14px;">
+      <h2>Out-of-Stock Items</h2>
+      <div style="padding:12px;">
+        <div style="margin-bottom:8px; display:flex; gap:8px; align-items:center;">
+          <button class="btn" onclick="loadOosItems()">Reload</button>
+          <span id="oos-status" style="font-size:12px; color:var(--muted); margin-left:8px;"></span>
+        </div>
+        <div style="overflow:auto; max-height: calc(100vh - 260px);">
+          <table>
+            <thead>
+            <tr>
+              <th>PO Number</th>
+              <th>PO Date</th>
+              <th>Ship To</th>
+              <th>ASIN</th>
+              <th>Image</th>
+              <th>Vendor SKU</th>
+              <th>Qty</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="oos-rows">
+              <tr><td colspan="8" class="empty">No OOS items</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+    <div class="panel" id="forecast-tab" style="display:none; margin-top:14px;">
+      <h2>Forecast Dashboard</h2>
+      <div class="forecast-toolbar" style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
+        <div>
+          <button id="btn-forecast-refresh" class="btn btn-primary btn-sm">
+            Sync Forecast Data
+          </button>
+        </div>
+        <div id="forecast-refresh-status" style="font-size: 12px; color: #666;"></div>
+      </div>
+      <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+        <!-- source status + debug -->
+        <div id="forecast-source-status" class="forecast-source-status-strip" style="margin-bottom: 8px; display:none;"></div>
+        <pre id="forecast-debug" style="display:none; font-size: 11px; color: #555; background:#fafafa; border:1px solid #eee; padding:4px; max-height:120px; overflow-y:auto; margin-bottom: 8px;"></pre>
+        <div id="forecast-meta-banner" class="forecast-meta-banner" style="font-size: 12px; color:#444; margin-bottom: 8px;"></div>
+        <div class="forecast-sort-controls" style="margin-bottom:8px; font-size:13px; display:none;">
+          <label style="margin-right:6px;">Sort by:</label>
+          <select id="forecast-sort-key" style="margin-right:6px;">
+            <option value="p70Demand" selected>P70 Demand (Horizon)</option>
+            <option value="last30dUnits">Last 30d Units</option>
+            <option value="weeksOfCover">Cover (wks @ P70)</option>
+            <option value="currentInventory">Current Inv</option>
+            <option value="avgWeeklyUnits">Avg Weekly</option>
+            <option value="next30dInbound">Next 30d Inbound</option>
+          </select>
+          <select id="forecast-sort-dir">
+            <option value="desc" selected>Desc</option>
+            <option value="asc">Asc</option>
+          </select>
+        </div>
+        <div class="forecast-table-wrapper">
+          <table class="table" id="forecast-table">
+            <thead>
+              <tr>
+                <th>ASIN</th>
+                <th class="sortable" data-sort="currentInventory">Current Inv</th>
+                <th class="sortable" data-sort="last30dUnits">Last 30d Units</th>
+                <th class="sortable" data-sort="avgWeeklyUnits">Avg Weekly</th>
+                <th class="sortable" data-sort="next30dInbound">Next 30d Inbound</th>
+                <th class="sortable" data-sort="p70Demand">P70 Demand (Horizon)</th>
+                <th class="sortable" data-sort="weeksOfCover">Cover (wks @ P70)</th>
+                <th>Risk</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="forecast-table-body">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <div class="backdrop" id="modal">
+    <div class="modal">
+      <header>
+        <div id="modal-title">PO Items</div>
+        <button class="btn" style="background:#111827" onclick="closeModal()">Close</button>
+      </header>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Catalog detail modal -->
+  <div class="backdrop" id="catalog-modal">
+    <div class="modal" style="max-width:1000px;">
+      <header>
+        <div id="catalog-modal-title">Catalog Details</div>
+        <button class="btn" style="background:#111827" onclick="closeCatalogModal()">Close</button>
+      </header>
+      <div class="modal-body" id="catalog-modal-body" style="font-family: monospace; white-space: pre-wrap; word-break: break-word; font-size:12px;"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/forecast.js"></script>
+  <script>
+    let vendorPOs = [];
+    let filteredPOs = [];
+    let asinList = [];
+    let filteredAsins = [];
+    let activeTab = "pos";
+    let oosItems = [];
+    let selectedPoNumbers = [];
+    let lastSyncTime = null;
+    let lastSyncFromSpapi = false;
+    let nextAutoSyncAt = null;
+    let autoSyncIntervalMs = 2 * 60 * 60 * 1000; // 2 hours
+
+    const INTERNAL_STATUS_OPTIONS = [
+      "Pending",
+      "Preparing",
+      "Appointment Scheduled",
+      "Delivered",
+    ];
+
+    function getRowColorForStatus(status) {
+      switch (status) {
+        case "Preparing":
+          return "#fef9c3"; // light yellow
+        case "Appointment Scheduled":
+          return "#e0f2fe"; // light blue
+        case "Delivered":
+          return "#dcfce7"; // light green
+        default:
+          return ""; // Pending = no color
+      }
+    }
+
+    async function loadPOs(sync = false) {
+      const btn = document.getElementById("sync-btn");
+      if (btn && sync) { btn.disabled = true; btn.textContent = "Syncing..."; }
+      try {
+        if (sync) {
+          const respSync = await fetch("/api/vendor-pos/sync", { method: "POST" });
+          let fetched = 0;
+          if (respSync.ok) {
+            const syncData = await respSync.json();
+            fetched = syncData.fetched || 0;
+          }
+          lastSyncTime = new Date();
+          lastSyncFromSpapi = true;
+          nextAutoSyncAt = Date.now() + autoSyncIntervalMs;
+          updateSyncInfo();
+          const hh = String(lastSyncTime.getHours()).padStart(2, "0");
+          const mi = String(lastSyncTime.getMinutes()).padStart(2, "0");
+          showToast(`Sync completed at ${hh}:${mi}, ${fetched} POs updated.`);
+        }
+        const resp = await fetch("/api/vendor-pos?enrich=1");
+        const data = await resp.json();
+        vendorPOs = (data.items || []).sort((a, b) => getPoDate(b).localeCompare(getPoDate(a)));
+        filteredPOs = vendorPOs;
+        const poSet = new Set(vendorPOs.map(p => p.purchaseOrderNumber).filter(Boolean));
+        selectedPoNumbers = selectedPoNumbers.filter(p => poSet.has(p));
+        renderTable();
+        updateInhouseSummary();
+        populateFcFilterOptions();
+        updatePicklistButtonState();
+        if (!sync) {
+          lastSyncTime = new Date();
+          lastSyncFromSpapi = data.source === "spapi";
+          if (!nextAutoSyncAt) {
+            nextAutoSyncAt = Date.now() + autoSyncIntervalMs;
+          }
+        }
+        updateSyncInfo();
+      } catch (err) {
+        console.error(err);
+        alert("Failed to load POs");
+      } finally {
+        if (btn && sync) { btn.disabled = false; btn.textContent = "Sync Vendor POs"; }
+      }
+    }
+
+    function getPoDate(po) {
+      return po.purchaseOrderDate || po.orderDetails?.purchaseOrderDate || "";
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById("po-rows");
+      tbody.innerHTML = "";
+      const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty">No POs</td></tr>';
+        return;
+      }
+
+      list.forEach(po => {
+        const d = po.orderDetails || {};
+        const agg = aggregate(d.items || []);
+
+        const internalStatus = po._internalStatus || "Pending";
+        const appointmentDate = po._appointmentDate || "";
+        const rowColor = getRowColorForStatus(internalStatus);
+
+        const poNumber = po.purchaseOrderNumber || "";
+        const shipTo = d.shipToParty?.partyId || "";
+        const isChecked = selectedPoNumbers.includes(poNumber);
+
+        const tr = document.createElement("tr");
+        tr.ondblclick = () => openModal(po);
+        if (rowColor) {
+          tr.style.backgroundColor = rowColor;
+        }
+
+        const statusSelectHtml = `
+      <select class="po-status-select" onchange="updatePoStatus('${poNumber}', this)">
+        ${INTERNAL_STATUS_OPTIONS
+          .map(
+            s =>
+              `<option value="${s}" ${
+                s === internalStatus ? "selected" : ""
+              }>${s}</option>`
+          )
+          .join("")}
+      </select>
+    `;
+
+        const dateDisabledAttr =
+      internalStatus === "Appointment Scheduled" ? "" : "disabled";
+
+        const appointmentDateHtml = `
+      <input
+        type="date"
+        class="po-date-input"
+        value="${appointmentDate || ""}"
+        onchange="updateAppointmentDate('${poNumber}', this)"
+        ${dateDisabledAttr}
+      />
+    `;
+
+        tr.innerHTML = `
+      <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
+      <td>${poNumber}</td>
+      <td>${po.purchaseOrderState || ""}</td>
+      <td>${fmtDate(getPoDate(po))}</td>
+      <td><strong>${shipTo}</strong></td>
+      <td>${(d.items || []).length}</td>
+      <td>${formatNum(agg.totalCost, agg.currency)}</td>
+      <td>${appointmentDateHtml}</td>
+      <td>${statusSelectHtml}</td>
+    `;
+
+        tbody.appendChild(tr);
+      });
+      updateSelectAllCheckbox();
+    }
+
+    async function openModal(po) {
+      const modal = document.getElementById("modal");
+      const body = document.getElementById("modal-body");
+      const titleEl = document.getElementById("modal-title");
+
+      const poNumber = po.purchaseOrderNumber || po.poNumber || "";
+      if (!poNumber) {
+        console.error("No purchaseOrderNumber on PO", po);
+        return;
+      }
+
+      let enrichedPo = po;
+      try {
+        const resp = await fetch(`/api/vendor-pos/${encodeURIComponent(poNumber)}?enrich=1`);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.item) {
+            enrichedPo = data.item;
+          }
+        }
+        else {
+          console.error("Failed to fetch enriched PO", resp.status, await resp.text());
+        }
+      } catch (e) {
+        console.error("Failed to fetch enriched PO", e);
+      }
+
+      const d = enrichedPo.orderDetails || {};
+      const items = d.items || [];
+      const poDate = getPoDate(enrichedPo);
+      const shipTo = d.shipToParty?.partyId || "";
+      const rows = items.map(it => {
+        const qty  = it.orderedQuantity || {};
+        const net  = it.netCost || {};
+        const rawImageUrl = it.image || "";
+        const img = rawImageUrl
+          ? `<img src="${rawImageUrl}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`
+          : "";
+
+        const qtyNum = Number(qty.amount) || 0;
+        const netNum = Number(net.amount) || 0;
+        const total  = qtyNum * netNum;
+        const asin = it.amazonProductIdentifier || "";
+        const vendorSku = it.vendorProductIdentifier || "";
+        const qtyAmount = qty.amount ?? "";
+        const encodedImage = encodeURIComponent(rawImageUrl);
+
+        return `<tr oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
+          <td>${asin}</td>
+          <td>${vendorSku}</td>
+          <td>${qtyAmount}</td>
+          <td>${img}</td>
+          <td>${net.currencyCode || ""}</td>
+          <td>${net.amount ?? ""}</td>
+          <td>${net.currencyCode || ""}</td>
+          <td>${Number.isFinite(total) ? total.toFixed(2) : ""}</td>
+        </tr>`;
+      }).join("");
+
+      titleEl.textContent = `PO ${poNumber} Items`;
+      body.innerHTML = `
+        <div style="overflow:auto; max-height:70vh;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>ASIN</th>
+                <th>Vendor Product ID</th>
+                <th>Qty</th>
+                <th>Image</th>
+                <th>Net Currency</th>
+                <th>Net Amount</th>
+                <th>Total Currency</th>
+                <th>Total Amount</th>
+              </tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="8" class="empty">No items</td></tr>'}</tbody>
+          </table>
+        </div>
+      `;
+      modal.style.display = "flex";
+    }
+
+    function closeModal() {
+      document.getElementById("modal").style.display = "none";
+    }
+
+    async function updatePoStatus(poNumber, selectEl) {
+      const newStatus = selectEl.value;
+      const tr = selectEl.closest("tr");
+      let appointmentDate = null;
+
+      if (tr) {
+        tr.style.backgroundColor = getRowColorForStatus(newStatus);
+
+        const dateInput = tr.querySelector("input.po-date-input");
+        if (dateInput) {
+          if (newStatus === "Appointment Scheduled") {
+            dateInput.disabled = false;
+            appointmentDate = dateInput.value || null;
+          } else {
+            dateInput.disabled = true;
+            dateInput.value = "";
+            appointmentDate = null;
+          }
+        }
+      }
+
+      try {
+        await fetch(`/api/po-status/${encodeURIComponent(poNumber)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: newStatus,
+            appointmentDate: appointmentDate,
+          }),
+        });
+        // update local cache so UI doesn't revert
+        updateLocalPoStatus(poNumber, newStatus, appointmentDate);
+        updateInhouseSummary();
+        filterPOs();
+      } catch (err) {
+        console.error("Failed to save PO status", err);
+        alert("Failed to save internal PO status. Check console for details.");
+      }
+    }
+
+    async function updateAppointmentDate(poNumber, inputEl) {
+      const newDate = inputEl.value || null;
+      const tr = inputEl.closest("tr");
+      let status = "Pending";
+
+      if (tr) {
+        const select = tr.querySelector("select.po-status-select");
+        if (select) {
+          status = select.value;
+        }
+      }
+
+      try {
+        await fetch(`/api/po-status/${encodeURIComponent(poNumber)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: status,
+            appointmentDate: newDate,
+          }),
+        });
+        updateLocalPoStatus(poNumber, status, newDate);
+        updateInhouseSummary();
+        filterPOs();
+      } catch (err) {
+        console.error("Failed to save appointment date", err);
+        alert("Failed to save appointment date. Check console for details.");
+      }
+    }
+
+    function updateLocalPoStatus(poNumber, status, appointmentDate) {
+      const lists = [vendorPOs, filteredPOs];
+      lists.forEach(list => {
+        if (!list) return;
+        const po = list.find(p => p.purchaseOrderNumber === poNumber);
+        if (po) {
+          po._internalStatus = status;
+          if (appointmentDate) {
+            po._appointmentDate = appointmentDate;
+          } else {
+            delete po._appointmentDate;
+          }
+        }
+      });
+    }
+
+    function filterPOs() {
+      const searchInput = document.getElementById("po-search");
+      const fcSelect    = document.getElementById("po-filter-fc");
+      const statusSelect = document.getElementById("po-filter-status");
+
+      const qRaw = (searchInput?.value || "").trim().toLowerCase();
+      const fcFilter = (fcSelect?.value || "").trim().toLowerCase();
+      const statusFilter = (statusSelect?.value || "").trim();
+
+      filteredPOs = (vendorPOs || []).filter(po => {
+        const d = po.orderDetails || {};
+        const items = d.items || [];
+        const shipTo = (d.shipToParty?.partyId || "").toLowerCase();
+        const poNumber = (po.purchaseOrderNumber || "").toLowerCase();
+        const state = (po.purchaseOrderState || "").toLowerCase();
+        const inhouseStatus = (po._internalStatus || po._inhouseStatus || po.inhouseStatus || "Pending").toLowerCase();
+
+        let asins = "";
+        let skus = "";
+        items.forEach(it => {
+          asins += " " + String(it.amazonProductIdentifier || "").toLowerCase();
+          skus  += " " + String(it.vendorProductIdentifier || "").toLowerCase();
+        });
+
+        const haystack = [
+          poNumber,
+          state,
+          inhouseStatus,
+          shipTo,
+          asins,
+          skus,
+        ].join(" ");
+
+        if (qRaw && !haystack.includes(qRaw)) {
+          return false;
+        }
+
+        if (fcFilter && shipTo !== fcFilter) {
+          return false;
+        }
+
+        const currentStatus = (po._internalStatus || po._inhouseStatus || po.inhouseStatus || "Pending");
+        if (statusFilter && currentStatus !== statusFilter) {
+          return false;
+        }
+
+        return true;
+      });
+
+      renderTable();
+      updateInhouseSummary();
+    }
+
+    function updateInhouseSummary() {
+      const el = document.getElementById("inhouse-summary");
+      if (!el) return;
+
+      const list = filteredPOs && filteredPOs.length ? filteredPOs : vendorPOs;
+      const counts = {
+        "Pending": 0,
+        "Preparing": 0,
+        "Appointment Scheduled": 0,
+        "Delivered": 0,
+      };
+
+      list.forEach(po => {
+        const status = po._internalStatus || po._inhouseStatus || po.inhouseStatus || "Pending";
+        if (counts.hasOwnProperty(status)) {
+          counts[status]++;
+        }
+      });
+
+      el.textContent =
+        `Pending: ${counts["Pending"]}  |  ` +
+        `Preparing: ${counts["Preparing"]}  |  ` +
+        `Appointment Scheduled: ${counts["Appointment Scheduled"]}  |  ` +
+        `Delivered: ${counts["Delivered"]}`;
+    }
+
+    function populateFcFilterOptions() {
+      const select = document.getElementById("po-filter-fc");
+      if (!select) return;
+
+      const values = new Set();
+      (vendorPOs || []).forEach(po => {
+        const d = po.orderDetails || {};
+        const fc = d.shipToParty?.partyId || "";
+        if (fc) values.add(fc);
+      });
+
+      const currentValue = select.value;
+      select.innerHTML = "";
+
+      const optAll = document.createElement("option");
+      optAll.value = "";
+      optAll.textContent = "All F/C";
+      select.appendChild(optAll);
+
+      Array.from(values).sort().forEach(fc => {
+        const opt = document.createElement("option");
+        opt.value = fc;
+        opt.textContent = fc;
+        select.appendChild(opt);
+      });
+
+      if (currentValue && values.has(currentValue)) {
+        select.value = currentValue;
+      }
+    }
+
+    async function showCatalogDetails(asin) {
+      const modal = document.getElementById("catalog-modal");
+      const body = document.getElementById("catalog-modal-body");
+      const titleEl = document.getElementById("catalog-modal-title");
+      titleEl.textContent = `Catalog Details: ${asin}`;
+      body.innerHTML = '<div class="json-block">Loading...</div>';
+      modal.style.display = "flex";
+      try {
+        const resp = await fetch(`/api/catalog/item/${asin}`);
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        body.innerHTML = `<pre id="catalog-json" class="json-block" ondblclick="copyCatalogJson()"></pre>`;
+        document.getElementById("catalog-json").textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        body.innerHTML = `<div class="json-block">Failed to load catalog details: ${err}</div>`;
+      }
+    }
+
+    function closeCatalogModal() {
+      document.getElementById("catalog-modal").style.display = "none";
+    }
+
+    function copyCatalogJson() {
+      const pre = document.getElementById("catalog-json");
+      if (!pre) return;
+      const text = pre.textContent || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      } else {
+        const range = document.createRange();
+        range.selectNode(pre);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try { document.execCommand("copy"); } catch (e) {}
+        sel.removeAllRanges();
+      }
+    }
+
+    let toastTimeoutId = null;
+    function showToast(message) {
+      const el = document.getElementById("toast");
+      if (!el) return;
+      el.textContent = message;
+      el.style.opacity = "1";
+      if (toastTimeoutId) clearTimeout(toastTimeoutId);
+      toastTimeoutId = setTimeout(() => {
+        el.style.opacity = "0";
+      }, 4000);
+    }
+
+    function toggleSelectPo(poNumber, checked) {
+      if (!poNumber) return;
+      if (checked) {
+        if (!selectedPoNumbers.includes(poNumber)) {
+          selectedPoNumbers.push(poNumber);
+        }
+      } else {
+        selectedPoNumbers = selectedPoNumbers.filter(p => p !== poNumber);
+      }
+      updateSelectAllCheckbox();
+      updatePicklistButtonState();
+    }
+
+    function toggleSelectAllPos(headerCheckbox) {
+      const checked = headerCheckbox?.checked;
+      const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
+      if (checked) {
+        selectedPoNumbers = Array.from(new Set([...selectedPoNumbers, ...list.map(p => p.purchaseOrderNumber).filter(Boolean)]));
+      } else {
+        const visibleSet = new Set(list.map(p => p.purchaseOrderNumber).filter(Boolean));
+        selectedPoNumbers = selectedPoNumbers.filter(p => !visibleSet.has(p));
+      }
+      renderTable();
+      updatePicklistButtonState();
+    }
+
+    function updateSelectAllCheckbox() {
+      const headerCheckbox = document.getElementById("po-select-all");
+      if (!headerCheckbox) return;
+      const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
+      const visiblePos = list.map(p => p.purchaseOrderNumber).filter(Boolean);
+      if (!visiblePos.length) {
+        headerCheckbox.checked = false;
+        headerCheckbox.indeterminate = false;
+        return;
+      }
+      const selectedVisible = visiblePos.filter(p => selectedPoNumbers.includes(p));
+      headerCheckbox.checked = selectedVisible.length === visiblePos.length;
+      headerCheckbox.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visiblePos.length;
+    }
+
+    function updatePicklistButtonState() {
+      const btn = document.getElementById("picklist-btn");
+      if (!btn) return;
+      btn.disabled = !selectedPoNumbers.length;
+    }
+
+    function aggregate(items) {
+      let totalCost = 0;
+      let currency = "";
+      items.forEach(it => {
+        const qty = toNum(it?.orderedQuantity?.amount);
+        const unitCost = toNum(it?.netCost?.amount);
+        totalCost += qty * unitCost;
+        if (it?.netCost?.currencyCode) currency = it.netCost.currencyCode;
+      });
+      return { totalCost, currency };
+    }
+
+    function toNum(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+    function formatNum(v, cur = "") {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "";
+      return (cur ? cur + " " : "") + n.toFixed(2);
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    }
+
+    function formatSyncTime(d) {
+      if (!d) return "—";
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      return `${dd}-${mm}-${yyyy} ${hh}:${mi}`;
+    }
+
+    function formatEta(msDiff) {
+      if (msDiff <= 0) return "soon";
+      const totalMinutes = Math.floor(msDiff / 60000);
+      const h = Math.floor(totalMinutes / 60);
+      const m = totalMinutes % 60;
+      if (h <= 0) return `in ${m}m`;
+      return `in ${h}h ${m}m`;
+    }
+
+    function updateSyncInfo() {
+      const lastEl = document.getElementById("sync-last");
+      const nextEl = document.getElementById("sync-next");
+      if (!lastEl || !nextEl) return;
+
+      if (!lastSyncTime) {
+        lastEl.textContent = "Last Sync: —";
+      } else {
+        const src = lastSyncFromSpapi ? "(from SP-API)" : "(from cache)";
+        lastEl.textContent = `Last Sync: ${formatSyncTime(lastSyncTime)} ${src}`;
+      }
+
+      if (!nextAutoSyncAt) {
+        nextEl.textContent = "Next Auto-Sync: —";
+      } else {
+        const diff = nextAutoSyncAt - Date.now();
+        nextEl.textContent = `Next Auto-Sync: ${formatEta(diff)}`;
+      }
+    }
+
+    function showTab(tab) {
+      activeTab = tab;
+      document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.tab === tab);
+      });
+      document.getElementById("pos-tab").style.display = tab === "pos" ? "block" : "none";
+      document.getElementById("catalog-tab").style.display = tab === "catalog" ? "block" : "none";
+      document.getElementById("oos-tab").style.display = tab === "oos" ? "block" : "none";
+      const forecastEl = document.getElementById("forecast-tab");
+      if (forecastEl) {
+        forecastEl.style.display = tab === "forecast" ? "block" : "none";
+      }
+      if (tab === "catalog" && !asinList.length) {
+        loadAsinList();
+      }
+      if (tab === "oos") {
+        loadOosItems();
+      }
+      if (tab === "forecast" && typeof loadForecastDashboard === "function") {
+        loadForecastDashboard();
+      }
+    }
+
+    async function loadAsinList(force = false) {
+      const tbody = document.getElementById("asin-rows");
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading...</td></tr>';
+      try {
+        const resp = await fetch("/api/catalog/asins");
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        asinList = data.items || [];
+        filteredAsins = asinList;
+        renderAsinList();
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load ASINs: ${err}</td></tr>`;
+      }
+    }
+
+    function filterAsins() {
+      const q = (document.getElementById("asin-search").value || "").toLowerCase();
+      if (!q) {
+        filteredAsins = asinList;
+      } else {
+        filteredAsins = asinList.filter(item => {
+          return (item.asin || "").toLowerCase().includes(q) ||
+                 (item.sku || "").toLowerCase().includes(q) ||
+                 (item.model || "").toLowerCase().includes(q) ||
+                 (item.title || "").toLowerCase().includes(q);
+        });
+      }
+      renderAsinList();
+    }
+
+    async function fetchAllMissing() {
+      const tbody = document.getElementById("asin-rows");
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">Fetching all missing... this may take time.</td></tr>';
+      try {
+        const resp = await fetch("/api/catalog/fetch-all", { method: "POST" });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        await loadAsinList(true);
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">Fetch-all failed: ${err}</td></tr>`;
+      }
+    }
+
+    async function loadOosItems() {
+      const tbody = document.getElementById("oos-rows");
+      const statusEl = document.getElementById("oos-status");
+      if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading...</td></tr>';
+      }
+      try {
+        const resp = await fetch("/api/oos-items");
+        const data = await resp.json();
+        oosItems = data.items || [];
+        renderOosTable();
+        if (statusEl) statusEl.textContent = `Loaded ${oosItems.length} OOS items`;
+      } catch (err) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${err}</td></tr>`;
+        if (statusEl) statusEl.textContent = "Error loading OOS items";
+      }
+    }
+
+    function renderOosTable() {
+      const tbody = document.getElementById("oos-rows");
+      if (!tbody) return;
+      if (!oosItems.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No OOS items</td></tr>';
+        return;
+      }
+      tbody.innerHTML = oosItems.map(it => {
+        const poNumber = it.poNumber || "";
+        const poDate = fmtDate(it.purchaseOrderDate || "");
+        const shipTo = it.shipToPartyId || "";
+        const asin = it.asin || "";
+        const sku = it.vendorSku || "";
+        const qty = it.qty ?? "";
+        const img = it.image
+          ? `<img src="${it.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />`
+          : "";
+        return `
+          <tr>
+            <td>${poNumber}</td>
+            <td>${poDate}</td>
+            <td>${shipTo}</td>
+            <td>${asin}</td>
+            <td>${img}</td>
+            <td>${sku}</td>
+            <td>${qty}</td>
+            <td>
+              <button class="btn" style="background:#16a34a"
+                      onclick="restockOosItem('${poNumber}','${asin}')">
+                Restocked
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function restockOosItem(poNumber, asin) {
+      if (!poNumber || !asin) return;
+      const statusEl = document.getElementById("oos-status");
+      if (statusEl) statusEl.textContent = "Updating...";
+      try {
+        await fetch("/api/oos-items/restock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ poNumber, asin }),
+        });
+        await loadOosItems();
+        if (statusEl) statusEl.textContent = `Restocked ${poNumber} / ${asin}`;
+      } catch (err) {
+        if (statusEl) statusEl.textContent = `Failed to restock: ${err}`;
+      }
+    }
+
+    function renderAsinList() {
+      const tbody = document.getElementById("asin-rows");
+      if (!filteredAsins.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No ASINs found in Vendor POs</td></tr>';
+        return;
+      }
+      tbody.innerHTML = filteredAsins.map(item => {
+        const disabled = item.fetched ? "disabled" : "";
+        const label = item.fetched ? "Fetched" : "Fetch";
+        const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />` : "";
+        return `<tr ondblclick="showCatalogDetails('${item.asin}')">
+          <td>${item.asin}</td>
+          <td>${item.sku || ""}</td>
+          <td>${item.title || ""}</td>
+          <td>${img}</td>
+          <td>${item.fetched ? "Saved" : "Not fetched"}</td>
+          <td><button class="btn ${item.fetched ? "" : "btn-fetch"}" data-asin="${item.asin}" ${disabled} onclick="fetchCatalog(this.dataset.asin, this)">${label}</button></td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function fetchCatalog(asin, btnEl) {
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = "Fetching...";
+      }
+      try {
+        const resp = await fetch(`/api/catalog/fetch/${asin}`, { method: "POST" });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        // Mark as fetched
+        asinList = asinList.map(item => item.asin === asin ? { ...item, fetched: true } : item);
+        filteredAsins = asinList;
+        renderAsinList();
+      } catch (err) {
+        if (btnEl) {
+          btnEl.disabled = false;
+          btnEl.textContent = "Fetch";
+        }
+        alert(`Failed to fetch catalog for ${asin}: ${err}`);
+      }
+    }
+
+    function scheduleInitialAutoSync() {
+      if (!nextAutoSyncAt) {
+        nextAutoSyncAt = Date.now() + autoSyncIntervalMs;
+      }
+      updateSyncInfo();
+    }
+
+    function addManualAsin() {
+      const input = document.getElementById("manual-asin-input");
+      const msg = document.getElementById("manual-asin-msg");
+      const asin = (input?.value || "").trim().toUpperCase();
+      if (!asin) {
+        if (msg) msg.textContent = "Please enter an ASIN.";
+        return;
+      }
+      if (asinList.find(a => a.asin === asin)) {
+        if (msg) msg.textContent = "ASIN already listed.";
+        return;
+      }
+      const newEntry = { asin, fetched: false };
+      asinList = [newEntry, ...asinList];
+      filteredAsins = asinList;
+      renderAsinList();
+      if (input) input.value = "";
+      if (msg) msg.textContent = "Added. Click Fetch to pull catalog data.";
+    }
+
+    async function autoSyncIfDue() {
+      if (!nextAutoSyncAt) return;
+      if (Date.now() < nextAutoSyncAt) return;
+      try {
+        const resp = await fetch("/api/vendor-pos/sync", { method: "POST" });
+        let fetched = 0;
+        if (resp.ok) {
+          const data = await resp.json();
+          fetched = data.fetched || 0;
+        }
+        await loadPOs(false);
+        lastSyncTime = new Date();
+        lastSyncFromSpapi = true;
+        nextAutoSyncAt = Date.now() + autoSyncIntervalMs;
+        updateSyncInfo();
+        const hh = String(lastSyncTime.getHours()).padStart(2, "0");
+        const mi = String(lastSyncTime.getMinutes()).padStart(2, "0");
+        showToast(`Sync completed at ${hh}:${mi}, ${fetched} POs updated.`);
+      } catch (err) {
+        console.error("Auto-sync failed", err);
+      }
+    }
+
+    async function openPicklistPreview() {
+      if (!selectedPoNumbers.length) return;
+      try {
+        const resp = await fetch("/api/picklist/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ purchaseOrderNumbers: selectedPoNumbers }),
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        const summary = data.summary || {};
+        const items = data.items || [];
+        items.sort((a, b) => (b.totalQty || 0) - (a.totalQty || 0));
+        const modal = document.getElementById("picklist-modal");
+        const body = document.getElementById("picklist-body");
+        const summaryHtml = `
+          <div style="margin-bottom:10px;">
+            <div><strong>POs:</strong> ${selectedPoNumbers.length}</div>
+            <div><strong>Lines:</strong> ${summary.totalLines || 0}</div>
+            <div><strong>Total Units:</strong> ${summary.totalUnits || 0}</div>
+            ${summary.warning ? `<div style="color:#b91c1c;">Warning: ${summary.warning}</div>` : ""}
+          </div>
+        `;
+        const rows = items.map(it => {
+          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;" />` : "";
+          const sku = it.sku || it.externalId || "";
+          return `<tr>
+            <td>${it.asin || ""}</td>
+            <td>${sku}</td>
+            <td>${img}</td>
+            <td style="width:240px;">${it.title || ""}</td>
+            <td style="font-weight:700; text-align:center;">${it.totalQty ?? ""}</td>
+          </tr>`;
+        }).join("");
+
+        body.innerHTML = `
+          ${summaryHtml}
+          <div style="overflow:auto; max-height:60vh;">
+            <table>
+              <thead>
+                <tr>
+                  <th>ASIN</th>
+                  <th>External ID</th>
+                  <th style="width:120px;">Image</th>
+                  <th style="width:240px;">Title</th>
+                  <th>Total Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows || '<tr><td colspan="5" class="empty">No items</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+          <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+            <button class="btn" style="background:#111827" onclick="downloadPicklistPdf()">Download PDF</button>
+            <button class="btn" onclick="closePicklistModal()">Close</button>
+          </div>
+        `;
+        modal.style.display = "flex";
+      } catch (err) {
+        console.error("Failed to load picklist preview", err);
+        alert(`Failed to load picklist preview: ${err}`);
+      }
+    }
+
+    function closePicklistModal() {
+      const modal = document.getElementById("picklist-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function downloadPicklistPdf() {
+      if (!selectedPoNumbers.length) {
+        alert("Please select at least one PO to generate a pick list.");
+        return;
+      }
+      const poParam = encodeURIComponent(selectedPoNumbers.join(","));
+      const url = `/api/picklist/pdf?poNumbers=${poParam}`;
+      window.open(url, "_blank");
+    }
+
+    async function markItemOos(event, poNumber, asin, vendorSku, poDate, shipTo, qty, encodedImage) {
+      event.preventDefault();
+      if (!poNumber || !asin) return;
+      const ok = confirm(`Mark this item as OUT OF STOCK?\nPO: ${poNumber}\nASIN: ${asin}`);
+      if (!ok) return;
+      const image = encodedImage ? decodeURIComponent(encodedImage) : null;
+      try {
+        await fetch("/api/oos-items/mark", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            poNumber,
+            asin,
+            vendorSku,
+            purchaseOrderDate: poDate,
+            shipToPartyId: shipTo,
+            qty,
+            image: image || null,
+          }),
+        });
+        if (activeTab === "oos") {
+          await loadOosItems();
+        }
+      } catch (err) {
+        console.error("Failed to mark OOS", err);
+        alert(`Failed to mark OOS: ${err}`);
+      }
+    }
+
+    document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
+    document.getElementById("po-search").addEventListener("input", filterPOs);
+    document.getElementById("po-filter-fc").addEventListener("change", filterPOs);
+    document.getElementById("po-filter-status").addEventListener("change", filterPOs);
+    loadPOs(false);
+    showTab("pos");
+    scheduleInitialAutoSync();
+    setInterval(updateSyncInfo, 60 * 1000);
+    setInterval(autoSyncIfDue, 5 * 60 * 1000);
+  </script>
+  <div class="backdrop" id="picklist-modal">
+    <div class="modal" style="max-width:1000px;">
+      <header>
+        <div id="picklist-title">Pick List Preview</div>
+        <button class="btn" style="background:#111827" onclick="closePicklistModal()">Close</button>
+      </header>
+      <div class="modal-body" id="picklist-body"></div>
+    </div>
+  </div>
+  <div id="toast" style="
+    position:fixed;
+    right:16px;
+    bottom:16px;
+    background:#111827;
+    color:#fff;
+    padding:10px 14px;
+    border-radius:8px;
+    font-size:13px;
+    box-shadow:0 10px 25px rgba(15,23,42,0.4);
+    opacity:0;
+    pointer-events:none;
+    transition:opacity 0.25s ease;
+    z-index:9999;
+  "></div>
+</body>
+</html>
