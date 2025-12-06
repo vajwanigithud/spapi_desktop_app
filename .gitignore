@@ -1,0 +1,40 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Log files
+logs/
+
+# Pytest cache
+.pytest_cache/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local databases (may contain user data)
+*.db
+
+# State files (may contain user-specific data)
+*_state.json
+
+# Cache files
+*_cache.json
+po_tracker.json
+
+# Environment variables
+.env
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
