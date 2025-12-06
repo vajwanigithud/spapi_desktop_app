@@ -610,6 +610,7 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     Stores title/image into local catalog DB.
     
     FIX #3A: Added 30s timeout to prevent infinite hangs on network failure.
+    FIX #3D: Optimized includedData parameter to request only necessary attributes.
     """
     if not asin:
         raise HTTPException(status_code=400, detail="Missing ASIN")
@@ -621,6 +622,11 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="No marketplace IDs configured")
     marketplace = MARKETPLACE_IDS[0].strip()
     api_host = resolve_catalog_host(marketplace)
+    
+    # FIX #3D: Use includedData to request only what we need:
+    # - summaries: Gets title, description, and basic product info
+    # - images: Gets product images (needed for UI display)
+    # This reduces response payload and improves performance.
     params = {
         "marketplaceIds": marketplace,
         "includedData": "summaries,images",
@@ -861,6 +867,48 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
     return all_pos
 
 
+def fetch_detailed_po_with_status(po_number: str):
+    """
+    FIX: Fetch detailed PO using GET /vendor/orders/v1/purchaseOrders/{po_number}
+    to get itemStatus with acknowledgedQuantity, receivedQuantity, cancelledQuantity, etc.
+    
+    This is necessary because the list endpoint only returns orderedQuantity.
+    """
+    if not MARKETPLACE_IDS:
+        return None
+    
+    marketplace = MARKETPLACE_IDS[0].strip()
+    host = resolve_vendor_host(marketplace)
+    url = f"{host}/vendor/orders/v1/purchaseOrders/{po_number}"
+    token = auth_client.get_lwa_access_token()
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-access-token": token,
+        "accept": "application/json",
+        "user-agent": "sp-api-desktop-app/1.0",
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Response is wrapped: {"payload": {...}}
+            return data.get("payload")
+        elif resp.status_code == 404:
+            logger.warning(f"[VendorPO] PO {po_number} not found (404)")
+            return None
+        else:
+            logger.warning(f"[VendorPO] Failed to fetch detailed PO {po_number}: {resp.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        logger.warning(f"[VendorPO] Timeout fetching detailed PO {po_number}")
+        return None
+    except Exception as e:
+        logger.warning(f"[VendorPO] Error fetching detailed PO {po_number}: {e}")
+        return None
+
+
 @app.post("/api/vendor-pos/sync")
 def sync_vendor_pos():
     """
@@ -909,6 +957,27 @@ def sync_vendor_pos():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
 
+    # FIX: Sync vendor_po_lines for all fetched POs with detailed status
+    po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
+    if po_numbers:
+        try:
+            sync_vendor_po_lines_batch(po_numbers)
+            logger.info(f"[VendorPO] Synced {len(po_numbers)} POs with detailed status")
+        except Exception as e:
+            logger.error(f"[VendorPO] Error syncing vendor_po_lines: {e}")
+            # Don't fail the main sync, just log the error
+    
+    # DEBUG: Log vendor_po_lines count after sync
+    try:
+        from services.db import get_db_connection
+        with get_db_connection() as conn:
+            cur = conn.execute("SELECT COUNT(*) as cnt FROM vendor_po_lines")
+            row = cur.fetchone()
+            line_count = row["cnt"] if row else 0
+            logger.info(f"[VendorPO] vendor_po_lines row count after sync: {line_count}")
+    except Exception as e:
+        logger.warning(f"[VendorPO] Could not log vendor_po_lines count: {e}")
+
     return {
         "status": "ok",
         "source": "spapi",
@@ -916,6 +985,83 @@ def sync_vendor_pos():
         "createdAfter": created_after,
         "createdBefore": created_before,
     }
+
+
+def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
+    """
+    Aggregate vendor_po_lines data for each PO and add computed totals to the PO dict.
+    
+    For each PO, this adds:
+    - total_ordered_qty: SUM(ordered_qty) from all lines
+    - total_received_qty: SUM(received_qty) from all lines
+    - total_pending_qty: SUM(pending_qty) from all lines
+    - total_shortage_qty: SUM(shortage_qty) from all lines
+    - last_line_change: MAX(last_changed_utc) from all lines
+    
+    Modifies pos_list in-place.
+    """
+    from services.db import get_db_connection
+    
+    if not pos_list:
+        return
+    
+    # Get all unique PO numbers
+    po_numbers = [po.get("purchaseOrderNumber") for po in pos_list if po.get("purchaseOrderNumber")]
+    if not po_numbers:
+        return
+    
+    try:
+        with get_db_connection() as conn:
+            # Query vendor_po_lines aggregated by po_number
+            placeholders = ",".join(["?" for _ in po_numbers])
+            sql = f"""
+            SELECT 
+                po_number,
+                COALESCE(SUM(ordered_qty), 0) AS total_ordered,
+                COALESCE(SUM(received_qty), 0) AS total_received,
+                COALESCE(SUM(pending_qty), 0) AS total_pending,
+                COALESCE(SUM(shortage_qty), 0) AS total_shortage,
+                MAX(last_changed_utc) AS last_change
+            FROM vendor_po_lines
+            WHERE po_number IN ({placeholders})
+            GROUP BY po_number
+            """
+            cur = conn.execute(sql, po_numbers)
+            rows = cur.fetchall()
+            
+            # Build a map of po_number -> aggregates
+            agg_map = {}
+            for row in rows:
+                agg_map[row["po_number"]] = {
+                    "total_ordered_qty": row["total_ordered"],
+                    "total_received_qty": row["total_received"],
+                    "total_pending_qty": row["total_pending"],
+                    "total_shortage_qty": row["total_shortage"],
+                    "last_line_change": row["last_change"],
+                }
+            
+            # Add aggregates to each PO
+            for po in pos_list:
+                po_num = po.get("purchaseOrderNumber")
+                if po_num in agg_map:
+                    po.update(agg_map[po_num])
+                else:
+                    # No lines found for this PO (shouldn't happen, but be safe)
+                    po["total_ordered_qty"] = 0
+                    po["total_received_qty"] = 0
+                    po["total_pending_qty"] = 0
+                    po["total_shortage_qty"] = 0
+                    po["last_line_change"] = None
+    
+    except Exception as e:
+        logger.error(f"[VendorPO] Error aggregating vendor_po_lines: {e}")
+        # On error, set all to 0 to avoid crashes
+        for po in pos_list:
+            po.setdefault("total_ordered_qty", 0)
+            po.setdefault("total_received_qty", 0)
+            po.setdefault("total_pending_qty", 0)
+            po.setdefault("total_shortage_qty", 0)
+            po.setdefault("last_line_change", None)
 
 
 @app.get("/api/vendor-pos")
@@ -940,6 +1086,16 @@ def get_vendor_pos(
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
+        
+        # FIX #1: Sync vendor_po_lines for all fetched POs (was missing!)
+        po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
+        if po_numbers:
+            try:
+                sync_vendor_po_lines_batch(po_numbers)
+                logger.info(f"[VendorPO] Synced {len(po_numbers)} POs with detailed status from GET refresh")
+            except Exception as e:
+                logger.error(f"[VendorPO] Error syncing vendor_po_lines from GET refresh: {e}")
+        
         source = "spapi"
 
     if not VENDOR_POS_CACHE.exists():
@@ -974,6 +1130,9 @@ def get_vendor_pos(
         if appointment_date:
             po["_appointmentDate"] = appointment_date
     print(f"[vendor-pos] filtered POs (>= 2025-10-01): {len(filtered)}")
+
+    # FIX #2: Aggregate vendor_po_lines data for each PO
+    _aggregate_vendor_po_lines(filtered)
 
     if enrich:
         enrich_items_with_catalog(filtered)
@@ -1580,6 +1739,162 @@ def debug_catalog_sample(asin: str):
     }
     print(f"[debug catalog-sample] asin={asin}, keys={result['rawKeys'][:8]}")
     return result
+
+
+def init_vendor_po_lines_table():
+    """Create vendor_po_lines table if it doesn't exist."""
+    from services.db import execute_write
+    sql = """
+    CREATE TABLE IF NOT EXISTS vendor_po_lines (
+        id INTEGER PRIMARY KEY,
+        po_number TEXT NOT NULL,
+        ship_to_location TEXT,
+        asin TEXT,
+        sku TEXT,
+        ordered_qty INTEGER DEFAULT 0,
+        acknowledged_qty INTEGER DEFAULT 0,
+        cancelled_qty INTEGER DEFAULT 0,
+        shipped_qty INTEGER DEFAULT 0,
+        received_qty INTEGER DEFAULT 0,
+        shortage_qty INTEGER DEFAULT 0,
+        pending_qty INTEGER DEFAULT 0,
+        last_changed_utc TEXT
+    )
+    """
+    try:
+        execute_write(sql)
+        logger.info("[VendorPO] vendor_po_lines table initialized")
+    except Exception as e:
+        logger.error(f"[VendorPO] Failed to initialize vendor_po_lines table: {e}")
+
+
+def _sync_vendor_po_lines_for_po(po_number: str):
+    """
+    FIX: Sync vendor_po_lines for a single PO.
+    
+    Steps:
+    1. Fetch detailed PO using getPurchaseOrder endpoint
+    2. Parse items and their status (ordered, acknowledged, received, cancelled)
+    3. Clear and re-populate vendor_po_lines for this PO
+    """
+    from services.db import execute_write
+    
+    # Fetch detailed PO with itemStatus
+    detailed_po = fetch_detailed_po_with_status(po_number)
+    if not detailed_po:
+        logger.warning(f"[VendorPO] Could not fetch detailed PO {po_number}")
+        return
+    
+    order_details = detailed_po.get("orderDetails", {})
+    items = order_details.get("items", [])
+    
+    if not items:
+        logger.warning(f"[VendorPO] PO {po_number} has no items")
+        return
+    
+    ship_to_party = order_details.get("shipToParty", {})
+    ship_to_location = ship_to_party.get("partyId", "")
+    
+    # Get itemStatus map if available
+    item_status_map = {}
+    item_status_list = detailed_po.get("itemStatus", [])
+    if item_status_list:
+        for status in item_status_list:
+            item_seq = status.get("itemSequenceNumber", "")
+            if item_seq:
+                item_status_map[item_seq] = status
+    
+    # FIX: Clear only this PO's lines (scoped delete)
+    try:
+        execute_write("DELETE FROM vendor_po_lines WHERE po_number = ?", (po_number,))
+    except Exception as e:
+        logger.error(f"[VendorPO] Failed to clear lines for PO {po_number}: {e}")
+        return
+    
+    # Process each item
+    now_utc = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    for item in items:
+        try:
+            item_seq = item.get("itemSequenceNumber", "")
+            asin = item.get("amazonProductIdentifier", "")
+            sku = item.get("vendorProductIdentifier", "")
+            
+            # Parse ordered quantity (is a dict with 'amount' key)
+            ordered_qty = 0
+            oq = item.get("orderedQuantity")
+            if isinstance(oq, dict):
+                ordered_qty = int(oq.get("amount", 0) or 0)
+            elif isinstance(oq, (int, float)):
+                ordered_qty = int(oq)
+            
+            # Get status quantities from itemStatus
+            status_info = item_status_map.get(item_seq, {})
+            acknowledged_qty = 0
+            cancelled_qty = 0
+            received_qty = 0
+            
+            # Parse acknowledgedQuantity
+            ack_qty = status_info.get("acknowledgedQuantity")
+            if isinstance(ack_qty, dict):
+                acknowledged_qty = int(ack_qty.get("amount", 0) or 0)
+            elif isinstance(ack_qty, (int, float)):
+                acknowledged_qty = int(ack_qty)
+            
+            # Parse cancelledQuantity
+            can_qty = status_info.get("cancelledQuantity")
+            if isinstance(can_qty, dict):
+                cancelled_qty = int(can_qty.get("amount", 0) or 0)
+            elif isinstance(can_qty, (int, float)):
+                cancelled_qty = int(can_qty)
+            
+            # Parse receivedQuantity
+            recv_qty = status_info.get("receivedQuantity")
+            if isinstance(recv_qty, dict):
+                received_qty = int(recv_qty.get("amount", 0) or 0)
+            elif isinstance(recv_qty, (int, float)):
+                received_qty = int(recv_qty)
+            
+            # Calculate derived quantities
+            shortage_qty = max(0, ordered_qty - (received_qty + cancelled_qty))
+            pending_qty = ordered_qty - received_qty
+            
+            # Insert into vendor_po_lines
+            sql = """
+            INSERT INTO vendor_po_lines 
+            (po_number, ship_to_location, asin, sku, ordered_qty, acknowledged_qty, 
+             cancelled_qty, shipped_qty, received_qty, shortage_qty, pending_qty, last_changed_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            params = (
+                po_number, ship_to_location, asin, sku,
+                ordered_qty, acknowledged_qty, cancelled_qty, 0,  # shipped_qty = 0 for now
+                received_qty, shortage_qty, pending_qty, now_utc
+            )
+            execute_write(sql, params)
+            
+        except Exception as e:
+            logger.error(f"[VendorPO] Error processing item {item_seq} in PO {po_number}: {e}")
+            continue
+    
+    logger.info(f"[VendorPO] Synced {len(items)} lines for PO {po_number}")
+
+
+def sync_vendor_po_lines_batch(po_numbers: List[str]):
+    """
+    Sync vendor_po_lines for multiple POs.
+    Called after fetching POs from SP-API.
+    """
+    if not po_numbers:
+        return
+    
+    init_vendor_po_lines_table()
+    
+    for po_num in po_numbers:
+        try:
+            _sync_vendor_po_lines_for_po(po_num)
+        except Exception as e:
+            logger.error(f"[VendorPO] Error syncing lines for PO {po_num}: {e}")
+            continue
 
 
 if __name__ == "__main__":

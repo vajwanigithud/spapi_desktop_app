@@ -291,7 +291,19 @@ def poll_vendor_report(
         time.sleep(poll_interval_seconds)
 
 
-def download_vendor_report_document(document_id: str) -> bytes:
+def download_vendor_report_document(document_id: str) -> tuple:
+    """
+    Download and decompress vendor report document.
+    
+    NOTE: Report document URLs have an expiration time. Do NOT cache the URL
+    beyond the expiresAt/expirationTime returned by getReportDocument. Re-call
+    this function if the URL expires.
+    
+    Returns:
+        tuple: (content, expiration_info) where:
+            - content is the decompressed document (dict, list, or bytes)
+            - expiration_info is dict with keys: "expiresAt", "url", or None if not provided
+    """
     logger.info(f"[spapi_reports] download_vendor_report_document document_id={document_id}")
     access_token = auth_client.get_lwa_access_token()
     meta_url = f"{REPORTS_API_HOST}/reports/2021-06-30/documents/{document_id}"
@@ -306,6 +318,16 @@ def download_vendor_report_document(document_id: str) -> bytes:
     meta = meta_resp.json()
     download_url = meta.get("url")
     compression = meta.get("compressionAlgorithm")
+    
+    # Extract expiration info if present (schema may include expiresAt or expirationTime)
+    expiration_info = None
+    if meta.get("expiresAt"):
+        expiration_info = {"expiresAt": meta.get("expiresAt"), "url": download_url}
+        logger.info(f"[spapi_reports] Document {document_id} expires at {meta.get('expiresAt')}")
+    elif meta.get("expirationTime"):
+        expiration_info = {"expirationTime": meta.get("expirationTime"), "url": download_url}
+        logger.info(f"[spapi_reports] Document {document_id} expires at {meta.get('expirationTime')}")
+    
     if not download_url:
         raise RuntimeError(f"Missing download URL for document {document_id}: {meta}")
 
@@ -366,7 +388,7 @@ def download_vendor_report_document(document_id: str) -> bytes:
                 document_id,
                 details_json,
             )
-            return decoded_obj
+            return decoded_obj, expiration_info
         if "reportRequestError" in decoded_obj:
             details = decoded_obj["reportRequestError"]
             try:
@@ -378,7 +400,7 @@ def download_vendor_report_document(document_id: str) -> bytes:
                 document_id,
                 details_json,
             )
-            return decoded_obj
+            return decoded_obj, expiration_info
     elif isinstance(decoded_obj, list):
         logger.info(
             "[spapi_reports] document %s JSON top-level list len=%s",
@@ -403,7 +425,6 @@ def download_vendor_report_document(document_id: str) -> bytes:
         )
 
     # Return dict/list for JSON, else raw bytes for TSV/CSV
-    if decoded_obj is not None:
-        return decoded_obj
-    return content
+    final_content = decoded_obj if decoded_obj is not None else content
+    return final_content, expiration_info
 

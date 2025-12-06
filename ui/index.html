@@ -36,7 +36,7 @@
     .modal-body { padding:12px 14px; overflow:auto; }
     .json-block { background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:10px; white-space:pre-wrap; word-break:break-word; font-family: monospace; font-size:12px; user-select:text; }
     </style>
-    <style>
+  <style>
       .btn-fetch {
         background: #dc2626;
         color: #fff;
@@ -46,7 +46,15 @@
         color: #fff;
         cursor: not-allowed;
       }
-    </style>
+      /* Conditional formatting for quantities */
+      .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
+      .qty-pending { background-color: #fef3c7; color: #92400e; font-weight: 600; }
+      .qty-good { background-color: #dcfce7; color: #166534; font-weight: 600; }
+      .qty-neutral { color: #374151; }
+      .shortage-icon::before { content: "⚠️ "; }
+      .qty-detail-btn { background: #3b82f6; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+      .qty-detail-btn:hover { background: #2563eb; }
+  </style>
 </head>
 <body>
   <header>
@@ -97,8 +105,11 @@
                 <th>Status</th>
                 <th>Order Date</th>
                 <th>Ship To</th>
-                <th>Items</th>
-              <th>Total Value</th>
+                <th style="text-align:center;">Ordered</th>
+                <th style="text-align:center;">Received</th>
+                <th style="text-align:center;">Pending</th>
+                <th style="text-align:center;">Shortage</th>
+                <th>Last Change</th>
               <th>Appointment Date</th>
               <th>In-House Status</th>
             </tr>
@@ -242,6 +253,17 @@
     </div>
   </div>
 
+  <!-- PO Line Details Modal (NEW) -->
+  <div class="backdrop" id="po-lines-modal">
+    <div class="modal" style="max-width:1200px;">
+      <header>
+        <div id="po-lines-modal-title">PO Line Items - Inventory Breakdown</div>
+        <button class="btn" style="background:#111827" onclick="closePoLinesModal()">Close</button>
+      </header>
+      <div class="modal-body" id="po-lines-modal-body" style="padding:0;"></div>
+    </div>
+  </div>
+
   <script src="/static/js/forecast.js"></script>
   <script>
     let vendorPOs = [];
@@ -295,7 +317,7 @@
           const mi = String(lastSyncTime.getMinutes()).padStart(2, "0");
           showToast(`Sync completed at ${hh}:${mi}, ${fetched} POs updated.`);
         }
-        const resp = await fetch("/api/vendor-pos?enrich=1");
+        const resp = await fetch("/api/vendor-pos?enrich=1&include_lines=true");
         const data = await resp.json();
         vendorPOs = (data.items || []).sort((a, b) => getPoDate(b).localeCompare(getPoDate(a)));
         filteredPOs = vendorPOs;
@@ -330,7 +352,7 @@
       tbody.innerHTML = "";
       const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty">No POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="empty">No POs</td></tr>';
         return;
       }
 
@@ -345,6 +367,21 @@
         const poNumber = po.purchaseOrderNumber || "";
         const shipTo = d.shipToParty?.partyId || "";
         const isChecked = selectedPoNumbers.includes(poNumber);
+
+        // NEW: Extract quantity fields from backend API
+        const totalOrdered = po.total_ordered_qty || 0;
+        const totalReceived = po.total_received_qty || 0;
+        const totalPending = po.total_pending_qty || 0;
+        const totalShortage = po.total_shortage_qty || 0;
+        const lastChanged = po.last_changed_utc || "";
+
+        // Determine cell styling based on quantities
+        const getQtyClass = (shortage, pending, ordered) => {
+          if (shortage > 0) return "qty-shortage";
+          if (pending > 0 && shortage === 0) return "qty-pending";
+          if (ordered > 0 && totalReceived === ordered) return "qty-good";
+          return "qty-neutral";
+        };
 
         const tr = document.createElement("tr");
         tr.ondblclick = () => openModal(po);
@@ -378,17 +415,36 @@
       />
     `;
 
+        // Quantity cell styling
+        const orderedClass = getQtyClass(totalShortage, totalPending, totalOrdered);
+        const shortageClass = totalShortage > 0 ? "qty-shortage" : (totalPending > 0 ? "qty-pending" : "qty-good");
+        const pendingClass = totalPending > 0 ? "qty-pending" : "qty-neutral";
+
         tr.innerHTML = `
       <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
       <td>${poNumber}</td>
       <td>${po.purchaseOrderState || ""}</td>
       <td>${fmtDate(getPoDate(po))}</td>
       <td><strong>${shipTo}</strong></td>
-      <td>${(d.items || []).length}</td>
-      <td>${formatNum(agg.totalCost, agg.currency)}</td>
+      <td class="${orderedClass}" style="text-align:center;">${totalOrdered}</td>
+      <td class="${orderedClass}" style="text-align:center;">${totalReceived}</td>
+      <td class="${pendingClass}" style="text-align:center;">${totalPending}</td>
+      <td class="${shortageClass}" style="text-align:center;">${totalShortage > 0 ? '⚠️ ' + totalShortage : totalShortage}</td>
+      <td style="font-size:12px; color:#6b7280;">${fmtDate(lastChanged)}</td>
       <td>${appointmentDateHtml}</td>
       <td>${statusSelectHtml}</td>
     `;
+
+        // Add click handler to show line details on ASIN cell click
+        const shortageCell = tr.cells[8]; // shortage cell
+        if (shortageCell) {
+          shortageCell.style.cursor = "pointer";
+          shortageCell.title = "Click to see line-level details";
+          shortageCell.onclick = (e) => {
+            e.stopPropagation();
+            openPoLinesModal(poNumber);
+          };
+        }
 
         tbody.appendChild(tr);
       });
@@ -700,6 +756,95 @@
 
     function closeCatalogModal() {
       document.getElementById("catalog-modal").style.display = "none";
+    }
+
+    async function openPoLinesModal(poNumber) {
+      const modal = document.getElementById("po-lines-modal");
+      const titleEl = document.getElementById("po-lines-modal-title");
+      const bodyEl = document.getElementById("po-lines-modal-body");
+
+      titleEl.textContent = `PO ${poNumber} - Line Items Inventory Breakdown`;
+      bodyEl.innerHTML = '<div style="padding:16px; text-align:center;">Loading line details...</div>';
+      modal.style.display = "flex";
+
+      try {
+        const resp = await fetch(`/api/vendor-po-lines?po_number=${encodeURIComponent(poNumber)}`);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        const lines = data.items || [];
+
+        if (!lines.length) {
+          bodyEl.innerHTML = '<div style="padding:16px; text-align:center; color:#6b7280;">No line details available</div>';
+          return;
+        }
+
+        // Build table
+        const rows = lines.map(line => {
+          const shortage = line.shortage_qty || 0;
+          const pending = line.pending_qty || 0;
+          const shortageClass = shortage > 0 ? "qty-shortage" : (pending > 0 ? "qty-pending" : "qty-good");
+          
+          return `<tr>
+            <td>${line.asin || ""}</td>
+            <td>${line.sku || ""}</td>
+            <td style="text-align:center;">${line.ordered_qty || 0}</td>
+            <td style="text-align:center;">${line.received_qty || 0}</td>
+            <td style="text-align:center; class="${shortageClass}">${line.pending_qty || 0}</td>
+            <td class="${shortageClass}" style="text-align:center; font-weight:600;">${shortage > 0 ? '⚠️ ' + shortage : shortage}</td>
+          </tr>`;
+        }).join("");
+
+        bodyEl.innerHTML = `
+          <div style="padding:16px;">
+            <div style="margin-bottom:16px; padding:12px; background:#f3f4f6; border-radius:8px;">
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+                <div>
+                  <div style="font-size:12px; color:#6b7280;">Total Ordered</div>
+                  <div style="font-size:18px; font-weight:700;">${lines.reduce((s, l) => s + (l.ordered_qty || 0), 0)}</div>
+                </div>
+                <div>
+                  <div style="font-size:12px; color:#6b7280;">Total Received</div>
+                  <div style="font-size:18px; font-weight:700;">${lines.reduce((s, l) => s + (l.received_qty || 0), 0)}</div>
+                </div>
+                <div>
+                  <div style="font-size:12px; color:#6b7280;">Total Pending</div>
+                  <div style="font-size:18px; font-weight:700; color:#b45309;">${lines.reduce((s, l) => s + (l.pending_qty || 0), 0)}</div>
+                </div>
+                <div>
+                  <div style="font-size:12px; color:#6b7280;">Total Shortage</div>
+                  <div style="font-size:18px; font-weight:700; color:#dc2626;">${lines.reduce((s, l) => s + (l.shortage_qty || 0), 0)}</div>
+                </div>
+              </div>
+            </div>
+            <div style="overflow:auto; max-height:60vh;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ASIN</th>
+                    <th>SKU</th>
+                    <th style="text-align:center;">Ordered</th>
+                    <th style="text-align:center;">Received</th>
+                    <th style="text-align:center;">Pending</th>
+                    <th style="text-align:center;">Shortage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        console.error("Failed to load PO lines", err);
+        bodyEl.innerHTML = `<div style="padding:16px; color:#dc2626;">Failed to load line details: ${err}</div>`;
+      }
+    }
+
+    function closePoLinesModal() {
+      document.getElementById("po-lines-modal").style.display = "none";
     }
 
     function copyCatalogJson() {
