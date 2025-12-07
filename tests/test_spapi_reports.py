@@ -14,16 +14,6 @@ class DummyClient:
         return {"reportId": "RID"}
 
 
-def test_forecast_defaults_retail(monkeypatch):
-    dummy = DummyClient()
-    monkeypatch.setattr(spr, "get_spapi_client", lambda: dummy)
-    rid = spr.request_vendor_report("GET_VENDOR_FORECASTING_REPORT")
-    assert rid == "RID"
-    opts = dummy.last_body.get("reportOptions", {})
-    assert opts.get("sellingProgram") == "RETAIL"
-    assert "dataStartTime" not in dummy.last_body and "dataEndTime" not in dummy.last_body
-
-
 def test_inventory_defaults_vendor_fulfilled_and_caps_end(monkeypatch):
     dummy = DummyClient()
     monkeypatch.setattr(spr, "get_spapi_client", lambda: dummy)
@@ -43,10 +33,7 @@ def test_inventory_defaults_vendor_fulfilled_and_caps_end(monkeypatch):
 def test_explicit_selling_program_respected(monkeypatch):
     dummy = DummyClient()
     monkeypatch.setattr(spr, "get_spapi_client", lambda: dummy)
-    spr.request_vendor_report(
-        "GET_VENDOR_FORECASTING_REPORT",
-        selling_program="RETAIL_OVERRIDE",
-    )
+    spr.request_vendor_report("GET_VENDOR_REAL_TIME_INVENTORY_REPORT", selling_program="RETAIL_OVERRIDE")
     opts = dummy.last_body.get("reportOptions", {})
     assert opts.get("sellingProgram") == "RETAIL_OVERRIDE"
 

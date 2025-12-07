@@ -414,16 +414,6 @@ ENDPOINT_PRESETS = [
         "notes": "",
     },
     {
-        "id": "reports_vendor_forecast",
-        "group": "Reports",
-        "label": "Create Vendor Forecast Report",
-        "method": "POST",
-        "path": "/reports/2021-06-30/reports",
-        "default_query": "",
-        "default_body": {"reportType": "GET_VENDOR_FORECAST_REPORT", "marketplaceIds": ["A2VIGQ35RCS4UG"]},
-        "notes": "",
-    },
-    {
         "id": "reports_vendor_df_shipments",
         "group": "Reports",
         "label": "Create DF Shipments Report",

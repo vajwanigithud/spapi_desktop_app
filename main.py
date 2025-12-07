@@ -76,7 +76,6 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from io import BytesIO
-import threading
 import time
 from urllib.parse import parse_qsl
 from endpoint_presets import ENDPOINT_PRESETS
@@ -102,8 +101,6 @@ from fastapi.templating import Jinja2Templates
 from auth.spapi_auth import SpApiAuth
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-
-from routes import forecast_blacklist, forecast_api
 
 # --- Logging configuration ---
 LOG_DIR = Path(__file__).parent / "logs"
@@ -182,11 +179,6 @@ templates = Jinja2Templates(directory=TEMPLATE_DIR)
 
 app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.include_router(forecast_blacklist.router)
-app.include_router(forecast_api.router)
-
-FORECAST_AUTO_SYNC_INTERVAL_MINUTES = 120  # user can change
-
 @app.get("/")
 def home():  # simple root
     return {"status": "running", "message": "Fresh start - add your endpoints here"}
@@ -198,21 +190,6 @@ def ui_index():
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="UI not found")
     return FileResponse(index_path)
-
-
-@app.get("/forecast", response_class=HTMLResponse)
-async def forecast_page(request: Request):
-    """
-    Render the Forecast dashboard tab.
-    """
-    return templates.TemplateResponse(
-        "forecast.html",
-        {
-            "request": request,
-            "active_tab": "forecast",
-        },
-    )
-
 
 # -------------------------------
 # ====================================================================
@@ -397,7 +374,8 @@ def init_catalog_db():
             """
         )
         conn.commit()
-    init_forecast_tables()
+    # Forecast feature disabled: skip creating forecast tables/indexes
+    schema_logger.info("Forecast feature disabled: init_forecast_tables() not called")
 
 
 def init_forecast_tables():
@@ -2440,69 +2418,6 @@ def get_catalog_payload(asin: str):
     except Exception:
         payload = {"raw": payload_raw}
     return {"asin": asin, "title": title, "image": image, "payload": payload}
-
-
-def forecast_auto_sync_loop():
-    """Background thread: periodically refreshes forecast data."""
-    logger.info("[ForecastAutoSync] Background auto-sync thread started")
-
-    interval_seconds = FORECAST_AUTO_SYNC_INTERVAL_MINUTES * 60
-
-    while True:
-        try:
-            # Skip if we already synced within the last 24h
-            try:
-                from services.forecast_sync import _load_last_full_sync
-
-                last_sync = _load_last_full_sync()
-                if last_sync:
-                    now = datetime.now(timezone.utc)
-                    if (now - last_sync) < timedelta(hours=24):
-                        next_allowed = last_sync + timedelta(hours=24)
-                        logger.info(
-                            "[ForecastAutoSync] Last sync at %s; skipping until %s",
-                            last_sync.isoformat(),
-                            next_allowed.isoformat(),
-                        )
-                        time.sleep(interval_seconds)
-                        continue
-            except Exception:
-                # If we cannot read the state, proceed and let sync guard handle it
-                pass
-
-            logger.info("[ForecastAutoSync] Starting scheduled forecast sync...")
-            from services.forecast_sync import sync_all_forecast_sources
-            try:
-                summary = sync_all_forecast_sources()
-                status = summary.get("status", "ok")
-                if status == "ok":
-                    logger.info("[ForecastAutoSync] Scheduled sync completed successfully: %s", summary)
-                elif status == "warning":
-                    logger.warning("[ForecastAutoSync] Scheduled sync completed with warnings: %s", summary)
-                else:
-                    logger.error("[ForecastAutoSync] Scheduled sync completed with errors: %s", summary)
-            except Exception as exc:
-                if "sync already running" in str(exc):
-                    logger.warning("[ForecastAutoSync] Sync already in progress, skipping this run")
-                elif "sync_recent" in str(exc):
-                    logger.info("[ForecastAutoSync] Last sync was recent; skipping this run")
-                else:
-                    raise
-        except Exception as exc:
-            logger.error(f"[ForecastAutoSync] Error during scheduled sync: {exc}")
-
-        # Sleep until next scheduled sync
-        time.sleep(interval_seconds)
-
-
-@app.on_event("startup")
-def start_forecast_scheduler():
-    """Start background thread for forecast auto-sync."""
-    t = threading.Thread(target=forecast_auto_sync_loop, daemon=True)
-    t.start()
-    logger.info("[ForecastAutoSync] Auto-sync scheduler initialized")
-
-
 @app.post("/api/picklist/preview")
 def picklist_preview(payload: Dict[str, Any]):
     """
