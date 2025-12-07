@@ -78,6 +78,8 @@ from typing import Dict, Any, List, Tuple, Optional
 from io import BytesIO
 import threading
 import time
+from urllib.parse import parse_qsl
+from endpoint_presets import ENDPOINT_PRESETS
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -108,6 +110,8 @@ LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 LOG_FILE_PATH = LOG_DIR / "spapi_backend.log"
+SPAPI_TESTER_LOG_PATH = LOG_DIR / "spapi_tester.log"
+ACK_LOG_PATH = LOG_DIR / "vendor_ack_log.jsonl"
 
 log_level = os.getenv("SPAPI_LOG_LEVEL", "INFO").upper()
 
@@ -141,6 +145,21 @@ logging.getLogger("uvicorn.access").propagate = True
 # --- End logging configuration ---
 
 schema_logger = logging.getLogger("forecast_schema")
+tester_logger = logging.getLogger("spapi_tester")
+if not tester_logger.handlers:
+    tester_handler = RotatingFileHandler(
+        SPAPI_TESTER_LOG_PATH,
+        maxBytes=2_000_000,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    tester_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    tester_handler.setFormatter(tester_formatter)
+    tester_logger.setLevel(log_level)
+    tester_logger.addHandler(tester_handler)
 
 app = FastAPI(title="SP-API Desktop App (Minimal)", version="1.0.0")
 
@@ -242,6 +261,7 @@ ASIN_CACHE_PATH = Path(__file__).parent / "asin_image_cache.json"
 MARKETPLACE_IDS: List[str] = [
     mp for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
+SHIP_FROM_PARTY_ID = os.getenv("SHIP_FROM_PARTY_ID", "")
 auth_client = SpApiAuth()
 
 # Catalog DB
@@ -824,14 +844,253 @@ class PoStatusUpdate(BaseModel):
     appointmentDate: str | None = None
 
 
+class AckLine(BaseModel):
+    itemSequenceNumber: str
+    buyerProductIdentifier: Optional[str] = None
+    vendorProductIdentifier: Optional[str] = None
+    confirmationStatus: str  # ACCEPTED or REJECTED
+    acceptedQuantity: int = 0
+    rejectedQuantity: int = 0
+    rejectionReason: Optional[str] = None
+
+
+class AckRequest(BaseModel):
+    purchaseOrderNumber: str
+    shipFromPartyId: Optional[str] = None
+    items: List[AckLine]
+
+
+def _quant(amount: int) -> Dict[str, Any]:
+    return {"amount": int(amount), "unitOfMeasure": "Eaches", "unitSize": 1}
+
+
+def build_ack_payload(req: AckRequest) -> Dict[str, Any]:
+    if not MARKETPLACE_IDS:
+        raise HTTPException(status_code=400, detail="MARKETPLACE_IDS not configured")
+
+    po = fetch_detailed_po_with_status(req.purchaseOrderNumber)
+    if not po:
+        raise HTTPException(status_code=404, detail=f"PO {req.purchaseOrderNumber} not found")
+
+    selling_party = po.get("sellingParty") or {}
+    if not selling_party.get("partyId"):
+        raise HTTPException(status_code=400, detail="Missing sellingParty.partyId for acknowledgement payload")
+
+    # Build lookup for identifiers by itemSequenceNumber
+    seq_lookup: Dict[str, Dict[str, Any]] = {}
+    for it in po.get("itemStatus") or po.get("items") or []:
+        seq = it.get("itemSequenceNumber")
+        if not seq:
+            continue
+        seq_lookup[seq] = {
+            "asin": it.get("amazonProductIdentifier") or it.get("buyerProductIdentifier"),
+            "sku": it.get("vendorProductIdentifier"),
+            "ordered": it.get("orderedQuantity") or {},
+            "netCost": it.get("netCost"),
+            "listPrice": it.get("listPrice"),
+        }
+
+    def _parse_item_qty(q: Any) -> int:
+        """
+        Safely parse ItemQuantity objects from the PO/status.
+        Expected shapes:
+          { "amount": 10, "unitOfMeasure": "...", ... }
+        or nested like { "orderedQuantity": { ... } }
+        """
+        if not isinstance(q, dict):
+            return 0
+        if "amount" in q:
+            try:
+                return int(q.get("amount") or 0)
+            except Exception:
+                return 0
+        inner = q.get("orderedQuantity")
+        if isinstance(inner, dict) and "amount" in inner:
+            try:
+                return int(inner.get("amount") or 0)
+            except Exception:
+                return 0
+        return 0
+
+    ack_date = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    items_payload: List[Dict[str, Any]] = []
+
+    for line in req.items:
+        conf = (line.confirmationStatus or "").upper()
+        if conf not in {"ACCEPTED", "REJECTED"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid confirmationStatus for item {line.itemSequenceNumber}",
+            )
+
+        acc_qty = max(0, int(line.acceptedQuantity or 0))
+        rej_qty = max(0, int(line.rejectedQuantity or 0))
+
+        lookup = seq_lookup.get(line.itemSequenceNumber or "") or {}
+        ordered_raw = lookup.get("ordered") or {}
+        ordered_amt = _parse_item_qty(ordered_raw)
+
+        if conf == "ACCEPTED" and acc_qty == 0 and rej_qty == 0:
+            acc_qty = max(1, ordered_amt or 1)
+        if conf == "REJECTED" and acc_qty == 0 and rej_qty == 0:
+            rej_qty = max(1, ordered_amt or 1)
+
+        if ordered_amt and (acc_qty + rej_qty) != ordered_amt:
+            acc_qty = max(0, ordered_amt - rej_qty)
+
+        item_ack_list: List[Dict[str, Any]] = []
+
+        if acc_qty > 0:
+            item_ack_list.append(
+                {
+                    "acknowledgementCode": "Accepted",
+                    "acknowledgedQuantity": _quant(acc_qty),
+                }
+            )
+
+        if rej_qty > 0:
+            rej_obj: Dict[str, Any] = {
+                "acknowledgementCode": "Rejected",
+                "acknowledgedQuantity": _quant(rej_qty),
+            }
+            if line.rejectionReason:
+                rej_obj["rejectionReason"] = line.rejectionReason
+            item_ack_list.append(rej_obj)
+
+        if not item_ack_list:
+            qty = ordered_amt or 1
+            item_ack_list.append(
+                {
+                    "acknowledgementCode": "Accepted",
+                    "acknowledgedQuantity": _quant(qty),
+                }
+            )
+            ordered_amt = qty
+
+        asin = line.buyerProductIdentifier or lookup.get("asin") or ""
+        sku = line.vendorProductIdentifier or lookup.get("sku") or ""
+
+        ordered_qty_obj = _quant(ordered_amt or (acc_qty + rej_qty) or 1)
+
+        item_obj: Dict[str, Any] = {
+            "itemSequenceNumber": line.itemSequenceNumber,
+            "orderedQuantity": ordered_qty_obj,
+            "itemAcknowledgements": item_ack_list,
+        }
+
+        if asin:
+            item_obj["amazonProductIdentifier"] = asin
+        if sku:
+            item_obj["vendorProductIdentifier"] = sku
+
+        if lookup.get("netCost"):
+            item_obj["netCost"] = lookup["netCost"]
+        if lookup.get("listPrice"):
+            item_obj["listPrice"] = lookup["listPrice"]
+
+        items_payload.append(item_obj)
+
+    ack_obj: Dict[str, Any] = {
+        "purchaseOrderNumber": req.purchaseOrderNumber,
+        "acknowledgementDate": ack_date,
+        "sellingParty": selling_party,
+        "items": items_payload,
+    }
+
+    # ship_from_id = (
+    #     req.shipFromPartyId
+    #     or SHIP_FROM_PARTY_ID
+    #     or po.get("shipFromParty", {}).get("partyId")
+    #     or po.get("shipToParty", {}).get("partyId")
+    # )
+    # if ship_from_id:
+    #     ack_obj["shipFromParty"] = {"partyId": ship_from_id}
+
+    return {"acknowledgements": [ack_obj]}
+
+
+def submit_po_acknowledgement(req: AckRequest) -> Dict[str, Any]:
+    marketplace = MARKETPLACE_IDS[0].strip()
+    host = resolve_vendor_host(marketplace)
+    url = f"{host}/vendor/orders/v1/acknowledgements"
+    token = auth_client.get_lwa_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-access-token": token,
+        "accept": "application/json",
+        "content-type": "application/json",
+        "user-agent": "sp-api-desktop-app/1.0",
+    }
+
+    payload = build_ack_payload(req)
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Failed to send acknowledgement: {e}")
+
+    status_code = resp.status_code
+    try:
+        resp_data = resp.json()
+    except Exception:
+        resp_data = {"raw": resp.text}
+    if status_code >= 400:
+        # Log the failed attempt
+        log_entry = {
+            "ts": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "po": req.purchaseOrderNumber,
+            "transactionId": None,
+            "status": status_code,
+            "payload": payload,
+            "response": resp_data,
+        }
+        try:
+            ACK_LOG_PATH.parent.mkdir(exist_ok=True)
+            with ACK_LOG_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"[Ack] Failed to write ack log: {e}")
+        raise HTTPException(status_code=status_code, detail={"transactionId": None, "response": resp_data})
+
+    transaction_id = None
+    if isinstance(resp_data, dict):
+        transaction_id = (
+            resp_data.get("transactionId")
+            or resp_data.get("payload", {}).get("transactionId")
+            or resp_data.get("payload", {}).get("transactionID")
+        )
+
+    # Persist log entry
+    log_entry = {
+        "ts": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "po": req.purchaseOrderNumber,
+        "transactionId": transaction_id,
+        "status": status_code,
+        "payload": payload,
+        "response": resp_data,
+    }
+    try:
+        ACK_LOG_PATH.parent.mkdir(exist_ok=True)
+        with ACK_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"[Ack] Failed to write ack log: {e}")
+
+    if status_code >= 400:
+        raise HTTPException(status_code=status_code, detail={"transactionId": transaction_id, "response": resp_data})
+
+    return {"transactionId": transaction_id, "response": resp_data}
+
+
 def extract_purchase_orders(obj: Any) -> List[Dict[str, Any]] | None:
     """
     Recursively search the JSON response for a key 'purchaseOrders' whose value is a list,
-    and return that list. If not found, also look for 'orders'. If still not found, return None.
+    and return that list. If not found, also look for 'orders' or 'ordersStatus'. If still not found, return None.
     """
     if isinstance(obj, dict):
         if "purchaseOrders" in obj and isinstance(obj["purchaseOrders"], list):
             return obj["purchaseOrders"]
+        if "ordersStatus" in obj and isinstance(obj["ordersStatus"], list):
+            return obj["ordersStatus"]
         if "orders" in obj and isinstance(obj["orders"], list):
             return obj["orders"]
         for v in obj.values():
@@ -913,6 +1172,87 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
     return all_pos
 
 
+def _parse_qty(val: Any) -> int:
+    try:
+        if isinstance(val, dict):
+            return int(val.get("amount") or 0)
+        return int(val or 0)
+    except Exception:
+        return 0
+
+
+def fetch_po_status_totals(po_number: str) -> Dict[str, int]:
+    """
+    Call /vendor/orders/v1/purchaseOrdersStatus for a single PO and derive total_received_qty and total_pending_qty.
+    """
+    if not po_number:
+        return {"total_received_qty": 0, "total_pending_qty": 0}
+    if not MARKETPLACE_IDS:
+        logger.warning("[VendorPO] MARKETPLACE_IDS not configured, skipping status fetch")
+        return {"total_received_qty": 0, "total_pending_qty": 0}
+
+    marketplace = MARKETPLACE_IDS[0].strip()
+    host = resolve_vendor_host(marketplace)
+    url = f"{host}/vendor/orders/v1/purchaseOrdersStatus"
+    token = auth_client.get_lwa_access_token()
+
+    params = {
+        "marketplaceIds": marketplace,
+        "purchaseOrderNumber": po_number,
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-access-token": token,
+        "accept": "application/json",
+        "user-agent": "sp-api-desktop-app/1.0",
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"[VendorPO] Status fetch failed for PO {po_number}: {e}")
+        return {"total_received_qty": 0, "total_pending_qty": 0}
+
+    try:
+        data = resp.json()
+    except Exception:
+        logger.warning(f"[VendorPO] Non-JSON status response for PO {po_number}")
+        return {"total_received_qty": 0, "total_pending_qty": 0}
+
+    purchase_orders = extract_purchase_orders(data) or []
+    total_received = 0
+    total_pending = 0
+
+    for po in purchase_orders:
+        items = po.get("itemStatus") or po.get("items") or []
+        for item in items:
+            # Normalize quantities
+            ordered_amt = 0
+            oq_wrapper = item.get("orderedQuantity", {})
+            if isinstance(oq_wrapper, dict):
+                if "amount" in oq_wrapper:
+                    ordered_amt = _parse_qty(oq_wrapper)
+                elif isinstance(oq_wrapper.get("orderedQuantity"), dict):
+                    ordered_amt = _parse_qty(oq_wrapper.get("orderedQuantity"))
+
+            ack_obj = item.get("acknowledgementStatus") or {}
+            accepted_amt = _parse_qty(ack_obj.get("acceptedQuantity"))
+
+            recv_info = item.get("receivingStatus") or {}
+            received_qty = _parse_qty(recv_info.get("receivedQuantity"))
+            pending_qty = _parse_qty(recv_info.get("pendingQuantity"))
+
+            if pending_qty == 0:
+                # Default to accepted - received (business definition)
+                pending_qty = max(0, accepted_amt - received_qty)
+
+            total_received += received_qty
+            total_pending += pending_qty
+
+    return {"total_received_qty": total_received, "total_pending_qty": total_pending}
+
+
 def fetch_detailed_po_with_status(po_number: str):
     """
     FIX: Fetch detailed PO using GET /vendor/orders/v1/purchaseOrders/{po_number}
@@ -934,13 +1274,45 @@ def fetch_detailed_po_with_status(po_number: str):
         "accept": "application/json",
         "user-agent": "sp-api-desktop-app/1.0",
     }
+
+    # Prefer purchaseOrdersStatus because it carries itemStatus/receivingStatus
+    status_url = f"{host}/vendor/orders/v1/purchaseOrdersStatus"
+    status_params = {
+        "marketplaceIds": marketplace,
+        "purchaseOrderNumber": po_number,
+    }
+    try:
+        status_resp = requests.get(status_url, headers=headers, params=status_params, timeout=20)
+        if status_resp.status_code == 200:
+            status_data = status_resp.json()
+            status_pos = extract_purchase_orders(status_data) or []
+            if status_pos:
+                po_match = next((po for po in status_pos if po.get("purchaseOrderNumber") == po_number), status_pos[0])
+                # Ensure ship_to is available in legacy location
+                if "orderDetails" not in po_match:
+                    od: Dict[str, Any] = {}
+                    if po_match.get("shipToParty"):
+                        od["shipToParty"] = po_match.get("shipToParty")
+                    if po_match.get("purchaseOrderDate"):
+                        od["purchaseOrderDate"] = po_match.get("purchaseOrderDate")
+                    if od:
+                        po_match["orderDetails"] = od
+                logger.info(f"[VendorPO] Using purchaseOrdersStatus payload for PO {po_number}")
+                return po_match
+    except Exception as e:
+        logger.warning(f"[VendorPO] Failed purchaseOrdersStatus lookup for PO {po_number}: {e}")
     
     try:
         resp = requests.get(url, headers=headers, timeout=20)
         if resp.status_code == 200:
             data = resp.json()
-            # Response is wrapped: {"payload": {...}}
-            return data.get("payload")
+            payload = data.get("payload") if isinstance(data, dict) else None
+            if isinstance(payload, dict):
+                # Unwrap purchaseOrders array if present
+                if isinstance(payload.get("purchaseOrders"), list) and payload["purchaseOrders"]:
+                    return payload["purchaseOrders"][0]
+                return payload
+            return None
         elif resp.status_code == 404:
             logger.warning(f"[VendorPO] PO {po_number} not found (404)")
             return None
@@ -978,6 +1350,12 @@ def sync_vendor_pos():
             "createdAfter": created_after,
             "createdBefore": created_before,
         }
+
+    # Attach status totals (received/pending) from purchaseOrdersStatus
+    try:
+        _attach_po_status_totals(pos)
+    except Exception as e:
+        logger.warning(f"[VendorPO] Failed to attach status totals during sync: {e}")
 
     merged_items = []
     try:
@@ -1033,81 +1411,169 @@ def sync_vendor_pos():
     }
 
 
+@app.post("/api/vendor-pos/rebuild")
+def rebuild_vendor_pos_full():
+    """
+    Full rebuild: fetch all POs since 2025-10-01, attach status totals, overwrite cache, and sync vendor_po_lines.
+    """
+    created_after = "2025-10-01T00:00:00Z"
+    created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    try:
+        pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=10)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+
+    if not pos:
+        print(f"[vendor-pos-rebuild] fetched 0 POs from {created_after} to {created_before} - leaving vendor_pos_cache.json unchanged")
+        return {
+            "status": "no_update",
+            "source": "spapi",
+            "fetched": 0,
+            "createdAfter": created_after,
+            "createdBefore": created_before,
+        }
+
+    # Attach status totals (received/pending) from purchaseOrdersStatus
+    try:
+        _attach_po_status_totals(pos)
+    except Exception as e:
+        logger.warning(f"[VendorPO] Failed to attach status totals during full rebuild: {e}")
+
+    payload = {"items": pos}
+    try:
+        VENDOR_POS_CACHE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
+
+    # Sync vendor_po_lines for all fetched POs
+    po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
+    if po_numbers:
+        try:
+            sync_vendor_po_lines_batch(po_numbers)
+            logger.info(f"[VendorPO] Rebuild synced {len(po_numbers)} POs with detailed status")
+        except Exception as e:
+            logger.error(f"[VendorPO] Error syncing vendor_po_lines during rebuild: {e}")
+
+    return {
+        "status": "ok",
+        "source": "spapi",
+        "fetched": len(pos),
+        "createdAfter": created_after,
+        "createdBefore": created_before,
+    }
+
+
+@app.post("/api/vendor-pos/acknowledge")
+def acknowledge_vendor_po(req: AckRequest):
+    """
+    Submit acknowledgement for a PO to SP-API. Returns transactionId on success.
+    Body example:
+    {
+      "purchaseOrderNumber": "ABC123",
+      "shipFromPartyId": "DXB5",
+      "items": [
+        {
+          "itemSequenceNumber": "1",
+          "buyerProductIdentifier": "ASIN",
+          "vendorProductIdentifier": "SKU",
+          "confirmationStatus": "ACCEPTED",
+          "acceptedQuantity": 10,
+          "rejectedQuantity": 0,
+          "rejectionReason": "OUT_OF_STOCK"  // optional
+        }
+      ]
+    }
+    """
+    result = submit_po_acknowledgement(req)
+    return {"status": "ok", **result}
+
+
 def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
     """
-    Aggregate vendor_po_lines data for each PO and add computed totals to the PO dict.
-    
-    For each PO, this adds:
-    - total_ordered_qty: SUM(ordered_qty) from all lines
-    - total_received_qty: SUM(received_qty) from all lines
-    - total_pending_qty: SUM(pending_qty) from all lines
-    - total_shortage_qty: SUM(shortage_qty) from all lines
-    - last_line_change: MAX(last_changed_utc) from all lines
-    
-    Modifies pos_list in-place.
+    Attach aggregated quantities from vendor_po_lines to each PO in pos_list.
+    Exposes total_ordered_qty, total_accepted_qty, total_received_qty, total_pending_qty,
+    total_cancelled_qty, and total_shortage_qty for display.
     """
     from services.db import get_db_connection
-    
+
     if not pos_list:
         return
-    
-    # Get all unique PO numbers
+
     po_numbers = [po.get("purchaseOrderNumber") for po in pos_list if po.get("purchaseOrderNumber")]
     if not po_numbers:
         return
-    
+
     try:
         with get_db_connection() as conn:
-            # Query vendor_po_lines aggregated by po_number
             placeholders = ",".join(["?" for _ in po_numbers])
             sql = f"""
             SELECT 
                 po_number,
                 COALESCE(SUM(ordered_qty), 0) AS total_ordered,
+                COALESCE(SUM(accepted_qty), 0) AS total_accepted,
                 COALESCE(SUM(received_qty), 0) AS total_received,
                 COALESCE(SUM(pending_qty), 0) AS total_pending,
-                COALESCE(SUM(shortage_qty), 0) AS total_shortage,
-                MAX(last_changed_utc) AS last_change
+                COALESCE(SUM(cancelled_qty), 0) AS total_cancelled,
+                COALESCE(SUM(shortage_qty), 0) AS total_shortage
             FROM vendor_po_lines
             WHERE po_number IN ({placeholders})
             GROUP BY po_number
             """
             cur = conn.execute(sql, po_numbers)
             rows = cur.fetchall()
-            
-            # Build a map of po_number -> aggregates
-            agg_map = {}
+
+            agg_map: dict[str, dict] = {}
             for row in rows:
                 agg_map[row["po_number"]] = {
                     "total_ordered_qty": row["total_ordered"],
+                    "total_accepted_qty": row["total_accepted"],
                     "total_received_qty": row["total_received"],
                     "total_pending_qty": row["total_pending"],
+                    "total_cancelled_qty": row["total_cancelled"],
                     "total_shortage_qty": row["total_shortage"],
-                    "last_line_change": row["last_change"],
                 }
-            
-            # Add aggregates to each PO
+
+            # Attach totals to each PO; default to 0 if no lines found
             for po in pos_list:
                 po_num = po.get("purchaseOrderNumber")
                 if po_num in agg_map:
                     po.update(agg_map[po_num])
                 else:
-                    # No lines found for this PO (shouldn't happen, but be safe)
-                    po["total_ordered_qty"] = 0
-                    po["total_received_qty"] = 0
-                    po["total_pending_qty"] = 0
-                    po["total_shortage_qty"] = 0
-                    po["last_line_change"] = None
-    
+                    po.setdefault("total_ordered_qty", 0)
+                    po.setdefault("total_accepted_qty", 0)
+                    po.setdefault("total_received_qty", 0)
+                    po.setdefault("total_pending_qty", 0)
+                    po.setdefault("total_cancelled_qty", 0)
+                    po.setdefault("total_shortage_qty", 0)
+                po.setdefault("total_received_qty", 0)
+                po.setdefault("total_pending_qty", 0)
+
     except Exception as e:
         logger.error(f"[VendorPO] Error aggregating vendor_po_lines: {e}")
-        # On error, set all to 0 to avoid crashes
+        # On error, make sure we at least have total_ordered_qty
         for po in pos_list:
             po.setdefault("total_ordered_qty", 0)
             po.setdefault("total_received_qty", 0)
             po.setdefault("total_pending_qty", 0)
-            po.setdefault("total_shortage_qty", 0)
-            po.setdefault("last_line_change", None)
+
+
+def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
+    """
+    Enrich each PO with total_received_qty and total_pending_qty from purchaseOrdersStatus endpoint.
+    """
+    if not pos_list:
+        return
+    for po in pos_list:
+        po_num = po.get("purchaseOrderNumber") or ""
+        try:
+            totals = fetch_po_status_totals(po_num)
+            po.update(totals)
+        except Exception as e:
+            logger.warning(f"[VendorPO] Failed to attach status totals for PO {po_num}: {e}")
+            po.setdefault("total_received_qty", 0)
+            po.setdefault("total_pending_qty", 0)
 
 
 @app.get("/api/vendor-pos")
@@ -1135,6 +1601,11 @@ def get_vendor_pos(
         
         # FIX #1: Sync vendor_po_lines for all fetched POs (was missing!)
         po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
+        # Attach status totals (received/pending) from purchaseOrdersStatus for freshly fetched POs
+        try:
+            _attach_po_status_totals(pos)
+        except Exception as e:
+            logger.warning(f"[VendorPO] Failed to attach status totals during GET refresh: {e}")
         if po_numbers:
             try:
                 sync_vendor_po_lines_batch(po_numbers)
@@ -1205,6 +1676,17 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     po = next((p for p in normalized if p.get("purchaseOrderNumber") == po_number), None)
     if not po:
         return JSONResponse({"error": "PO not found"}, status_code=404)
+
+    # Attach live itemStatus/items from status endpoint so modal reflects latest accept/reject
+    try:
+        detailed = fetch_detailed_po_with_status(po_number)
+        if isinstance(detailed, dict):
+            status_items = detailed.get("itemStatus") or detailed.get("items") or []
+            if status_items:
+                po.setdefault("orderDetails", {})
+                po["orderDetails"]["items"] = status_items
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Could not attach status items for PO {po_number}: {exc}")
 
     if enrich:
         try:
@@ -1287,6 +1769,100 @@ def get_vendor_po_lines(po_number: str):
             "items": [],
             "message": "Failed to fetch line details. Please try again."
         }
+
+
+@app.get("/api/spapi-tester/meta")
+def spapi_tester_meta():
+    """
+    Return preset endpoints for the tester tab.
+    """
+    host = ""
+    if MARKETPLACE_IDS:
+        marketplace = MARKETPLACE_IDS[0].strip()
+        host = resolve_vendor_host(marketplace)
+    else:
+        host = "https://sellingpartnerapi-eu.amazon.com"
+    return {
+        "host": host,
+        "presets": ENDPOINT_PRESETS,
+    }
+
+
+class TesterRequest(BaseModel):
+    method: str
+    path: str
+    query_string: Optional[str] = None
+    body_json: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/spapi-tester/run")
+def spapi_tester_run(req: TesterRequest):
+    """
+    Proxy a SP-API call (GET/POST) using existing auth. Logs only Amazon's response.
+    """
+    if not req.path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    method = (req.method or "GET").upper()
+    path = req.path if req.path.startswith("/") else f"/{req.path}"
+    params = dict(parse_qsl(req.query_string or "", keep_blank_values=True)) if req.query_string else {}
+
+    if not MARKETPLACE_IDS:
+        raise HTTPException(status_code=400, detail="MARKETPLACE_IDS not configured")
+
+    marketplace = MARKETPLACE_IDS[0].strip()
+    host = resolve_vendor_host(marketplace)
+    url = host.rstrip("/") + path
+
+    token = auth_client.get_lwa_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-access-token": token,
+        "accept": "application/json",
+        "user-agent": "spapi-desktop-app/endpoint-tester",
+    }
+
+    try:
+        resp = requests.request(method, url, headers=headers, params=params, json=req.body_json, timeout=30)
+    except Exception as e:
+        tester_logger.error(f"[Tester] Error calling {url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Request failed: {e}")
+
+    try:
+        body = resp.json()
+    except ValueError:
+        body = resp.text
+
+    try:
+        tester_logger.info(
+            json.dumps(
+                {
+                    "method": method,
+                    "path": path,
+                    "params": params,
+                    "status": resp.status_code,
+                    "body": body,
+                },
+                ensure_ascii=False,
+            )
+        )
+    except Exception:
+        pass
+
+    return {
+        "request": {
+            "method": method,
+            "path": path,
+            "params": params,
+            "url": resp.url,
+            "body": req.body_json,
+        },
+        "response": {
+            "status_code": resp.status_code,
+            "headers": dict(resp.headers),
+            "body": body,
+        },
+    }
 
 
 @app.post("/api/po-status/{po_number}")
@@ -2142,7 +2718,11 @@ def _sync_vendor_po_lines_for_po(po_number: str):
         logger.warning(f"[VendorPO] Could not fetch detailed PO {po_number}")
         return
     
-    ship_to_party = detailed_po.get("orderDetails", {}).get("shipToParty", {})
+    ship_to_party = (
+        detailed_po.get("orderDetails", {}).get("shipToParty")
+        or detailed_po.get("shipToParty", {})
+        or {}
+    )
     ship_to_location = ship_to_party.get("partyId", "")
     
     # FIX: Clear only this PO's lines (scoped delete)
@@ -2152,11 +2732,11 @@ def _sync_vendor_po_lines_for_po(po_number: str):
         logger.error(f"[VendorPO] Failed to clear lines for PO {po_number}: {e}")
         return
     
-    # Try itemStatus first (full acknowledgement/receiving data)
-    item_status_list = detailed_po.get("itemStatus", [])
+    # Try itemStatus first, then items (full status often lives under items in purchaseOrders payload)
+    item_status_list = detailed_po.get("itemStatus") or detailed_po.get("items") or []
     use_item_status = bool(item_status_list)
-    
-    # Fallback to orderDetails.items if itemStatus is not available
+
+    # Fallback to orderDetails.items if neither present
     if not use_item_status:
         item_status_list = detailed_po.get("orderDetails", {}).get("items", [])
         if not item_status_list:
@@ -2164,19 +2744,19 @@ def _sync_vendor_po_lines_for_po(po_number: str):
             return
         logger.info(f"[VendorPO] PO {po_number} using fallback orderDetails.items (no itemStatus available)")
     else:
-        logger.info(f"[VendorPO] PO {po_number} has itemStatus ({len(item_status_list)} items)")
+        logger.info(f"[VendorPO] PO {po_number} has detailed items ({len(item_status_list)} items)")
     
     # Process each item
     now_utc = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     for item in item_status_list:
         try:
             item_seq = item.get("itemSequenceNumber", "")
-            asin = item.get("amazonProductIdentifier", "")
+            asin = item.get("amazonProductIdentifier") or item.get("buyerProductIdentifier") or ""
             sku = item.get("vendorProductIdentifier", "")
             
             if use_item_status:
                 # ============================================================
-                # CASE 1: Using itemStatus with full acknowledgement/receiving data
+                # CASE 1: Using itemStatus/items with full acknowledgement/receiving data
                 # ============================================================
                 # Extract ORDERED quantity (from orderedQuantity.orderedQuantity)
                 ordered_qty = 0
@@ -2188,50 +2768,57 @@ def _sync_vendor_po_lines_for_po(po_number: str):
 
                 # Extract CANCELLED quantity (from orderedQuantity.cancelledQuantity)
                 cancelled_qty = 0
-                oq_wrapper = item.get("orderedQuantity", {})
                 if isinstance(oq_wrapper, dict):
                     can_inner = oq_wrapper.get("cancelledQuantity", {})
                     if isinstance(can_inner, dict):
                         cancelled_qty = int(can_inner.get("amount", 0) or 0)
 
-                # Extract ACCEPTED quantity (from acknowledgementStatus.acceptedQuantity)
+                # Extract ACCEPTED quantity (from acknowledgementStatus.acceptedQuantity or rejectedQuantity)
                 accepted_qty = 0
                 ack_obj = item.get("acknowledgementStatus", {})
                 if isinstance(ack_obj, dict):
                     acc_qty = ack_obj.get("acceptedQuantity", {})
+                    rej_qty = ack_obj.get("rejectedQuantity", {})
                     if isinstance(acc_qty, dict):
                         accepted_qty = int(acc_qty.get("amount", 0) or 0)
+                    if isinstance(rej_qty, dict):
+                        cancelled_qty += int(rej_qty.get("amount", 0) or 0)
 
                 # Extract RECEIVED quantity (from receivingStatus.receivedQuantity)
                 received_qty = 0
-                recv_obj = item.get("receivingStatus", {})
+                pending_qty = 0
+                recv_obj = item.get("receivingStatus", {}) or {}
                 if isinstance(recv_obj, dict):
                     recv_qty = recv_obj.get("receivedQuantity", {})
                     if isinstance(recv_qty, dict):
                         received_qty = int(recv_qty.get("amount", 0) or 0)
+                    pending_obj = recv_obj.get("pendingQuantity", {})
+                    if isinstance(pending_obj, dict):
+                        pending_qty = int(pending_obj.get("amount", 0) or 0)
+
+                    # If API pending not provided, derive from accepted - received
+                    if pending_qty == 0:
+                        pending_qty = max(0, accepted_qty - received_qty)
 
             else:
                 # ============================================================
                 # CASE 2: Fallback using orderDetails.items (minimal data)
                 # ============================================================
-                # Extract ORDERED quantity directly from orderedQuantity
                 ordered_qty = 0
                 oq = item.get("orderedQuantity", {})
                 if isinstance(oq, dict):
                     ordered_qty = int(oq.get("amount", 0) or 0)
-                
-                # No acknowledgement/receiving data available
                 cancelled_qty = 0
-                accepted_qty = ordered_qty  # Assume all ordered is accepted if no status
+                accepted_qty = ordered_qty
                 received_qty = 0
+                pending_qty = max(0, accepted_qty - received_qty)
 
             # ============================================================
             # Calculate DERIVED quantities
             # ============================================================
-            # pending_qty = what's been accepted but not yet received
-            pending_qty = max(0, accepted_qty - received_qty)
+            # pending_qty already derived above; ensure non-negative
+            pending_qty = max(0, pending_qty)
 
-            # shortage_qty = what was ordered but not accepted/cancelled
             shortage_qty = max(0, ordered_qty - accepted_qty - cancelled_qty)
 
             # Insert into vendor_po_lines

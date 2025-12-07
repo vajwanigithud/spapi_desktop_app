@@ -98,5 +98,25 @@
     "qty": "1",
     "image": "https://m.media-amazon.com/images/I/817M+53Y5NL.jpg",
     "isOutOfStock": true
+  },
+  "7TI5STLN::B0DDXSKLBM": {
+    "poNumber": "7TI5STLN",
+    "asin": "B0DDXSKLBM",
+    "vendorSku": "B0DDXSKLBM",
+    "purchaseOrderDate": "2025-11-26T00:23:57Z",
+    "shipToPartyId": "AUH1",
+    "qty": "5",
+    "image": "https://m.media-amazon.com/images/I/81p8x6GePWL.jpg",
+    "isOutOfStock": true
+  },
+  "7TI5STLN::B092D7RH8P": {
+    "poNumber": "7TI5STLN",
+    "asin": "B092D7RH8P",
+    "vendorSku": "0726667955810",
+    "purchaseOrderDate": "2025-11-26T00:23:57Z",
+    "shipToPartyId": "AUH1",
+    "qty": "1",
+    "image": "https://m.media-amazon.com/images/I/71kW8HqgY8L.jpg",
+    "isOutOfStock": true
   }
 }

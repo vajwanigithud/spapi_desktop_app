@@ -20,8 +20,19 @@
     th, td { user-select: text; }
     tbody tr:hover { background:#f1f5f9; cursor:pointer; }
     .empty { padding:14px; color:var(--muted); text-align:center; }
-    select.po-status-select { padding:6px 10px; border-radius:8px; font-size:13px; min-width:160px; }
-    input.po-date-input { padding:4px 8px; border-radius:8px; font-size:13px; border:1px solid var(--border); }
+    select.po-status-select { padding:8px 12px; border-radius:8px; font-size:15px; font-weight:700; min-width:170px; }
+    input.po-date-input { padding:6px 10px; border-radius:8px; font-size:15px; font-weight:700; border:1px solid var(--border); }
+    /* Vendor PO tab: larger, clearer text without changing layout spacing */
+    #pos-tab { font-size:14px; }
+    #pos-tab table { font-size:14px; }
+    #pos-tab th, #pos-tab td { font-size:14px; }
+    #pos-tab input, #pos-tab select, #pos-tab button { font-size:14px; }
+    /* Endpoint tester */
+    #tester-tab { font-size:14px; }
+    .tester-controls { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-bottom:10px; }
+    .tester-log { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; max-height:320px; overflow:auto; font-family: "SFMono-Regular", Consolas, monospace; font-size:13px; white-space:pre-wrap; }
+    .tester-run-btn { background:#111827; color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:700; }
+    .tester-run-btn:disabled { background:#4b5563; cursor:not-allowed; }
     .tabs { display:flex; gap:8px; margin:6px 0 0; }
     .tab-btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:600; }
     .tab-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
@@ -61,10 +72,13 @@
     <h1>Amazon SP-API Desktop</h1>
     <div style="display:flex; align-items:center; gap:10px;">
       <div id="sync-info" style="font-size:12px; color:#6b7280; display:flex; flex-direction:column; margin-right:12px;">
-        <span id="sync-last">Last Sync: —</span>
-        <span id="sync-next">Next Auto-Sync: —</span>
+        <span id="sync-last">Last Sync: -</span>
+        <span id="sync-next">Next Auto-Sync: -</span>
       </div>
-      <button class="btn" id="sync-btn">Sync Vendor POs</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn" id="sync-btn">Sync Vendor POs</button>
+        <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
+      </div>
     </div>
   </header>
 
@@ -74,6 +88,7 @@
       <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
       <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
       <button class="tab-btn" data-tab="forecast" onclick="showTab('forecast')">Forecast</button>
+      <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button>
     </div>
   </div>
 
@@ -106,6 +121,10 @@
                 <th>Order Date</th>
                 <th>Ship To</th>
                 <th style="text-align:center;">Ordered</th>
+                <th style="text-align:center;">Accepted</th>
+                <th style="text-align:center;">Received</th>
+                <th style="text-align:center;">Pending</th>
+                <th style="text-align:center;">PO Value</th>
               <th>Appointment Date</th>
               <th>In-House Status</th>
             </tr>
@@ -174,6 +193,55 @@
       </div>
     </div>
   </div>
+    <div class="panel" id="tester-tab" style="display:none; margin-top:14px;">
+      <h2>SP-API Endpoint Tester</h2>
+      <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+        <div class="tester-controls">
+          <div>
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Preset Endpoint</label>
+            <select id="tester-preset" style="width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);" onchange="applyTesterPreset()">
+              <option value="">-- Select preset --</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Method</label>
+            <select id="tester-method" style="width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Full GET Path (optional)</label>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <input id="tester-fullpath" type="text" placeholder="/catalog/2022-04-01/items/{asin}?marketplaceIds=A2VIGQ35RCS4UG" style="width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);" />
+              <button class="tester-run-btn" style="padding:10px 10px;" onclick="applyTesterFullPath()">Use</button>
+            </div>
+          </div>
+          <div>
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Endpoint Path (GET)</label>
+            <input id="tester-endpoint" type="text" placeholder="/vendor/orders/v1/purchaseOrders" style="width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);" />
+          </div>
+          <div>
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Query string (key=value&key2=val)</label>
+            <input id="tester-query" type="text" placeholder="marketplaceIds=A1F83G8C2ARO7P&limit=10" style="width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);" />
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label style="font-weight:700; display:block; margin-bottom:4px;">Request Body (JSON for POST)</label>
+            <textarea id="tester-body" placeholder='{"example":"value"}' style="width:100%; min-height:140px; padding:10px; border-radius:8px; border:1px solid var(--border); font-family: monospace; font-size:13px;"></textarea>
+          </div>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button class="tester-run-btn" onclick="runTesterCall()">Run</button>
+          <span id="tester-host" style="font-size:13px; color:#475569;"></span>
+          <span id="tester-status" style="font-size:13px; color:#475569;"></span>
+        </div>
+        <div>
+          <div style="font-weight:700; margin-bottom:6px;">Amazon Response Log</div>
+          <button class="tester-run-btn" style="margin-bottom:6px; padding:8px 12px;" onclick="copyTesterLog()">Copy Log</button>
+          <pre id="tester-log" class="tester-log">No calls yet.</pre>
+        </div>
+      </div>
+    </div>
     <div class="panel" id="forecast-tab" style="display:none; margin-top:14px;">
       <h2>Forecast Dashboard</h2>
       <div class="forecast-toolbar" style="display:flex; justify-content: space-between; align-items:center; margin-bottom: 8px;">
@@ -273,6 +341,9 @@
     let lastSyncFromSpapi = false;
     let nextAutoSyncAt = null;
     let autoSyncIntervalMs = 2 * 60 * 60 * 1000; // 2 hours
+    let testerMetaLoaded = false;
+    let testerPresets = [];
+    let testerHost = "";
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -339,6 +410,38 @@
       }
     }
 
+    async function rebuildPOs() {
+      const btn = document.getElementById("rebuild-btn");
+      const syncBtn = document.getElementById("sync-btn");
+      if (btn) { btn.disabled = true; btn.textContent = "Rebuilding..."; }
+      if (syncBtn) syncBtn.disabled = true;
+      try {
+        const resp = await fetch("/api/vendor-pos/rebuild", { method: "POST" });
+        let fetched = 0;
+        if (resp.ok) {
+          const data = await resp.json();
+          fetched = data.fetched || 0;
+        } else {
+          const txt = await resp.text();
+          throw new Error(txt || `HTTP ${resp.status}`);
+        }
+        lastSyncTime = new Date();
+        lastSyncFromSpapi = true;
+        nextAutoSyncAt = Date.now() + autoSyncIntervalMs;
+        updateSyncInfo();
+        const hh = String(lastSyncTime.getHours()).padStart(2, "0");
+        const mi = String(lastSyncTime.getMinutes()).padStart(2, "0");
+        showToast(`Full rebuild completed at ${hh}:${mi}, ${fetched} POs fetched.`);
+        await loadPOs(false);
+      } catch (err) {
+        console.error(err);
+        alert("Full rebuild failed");
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Full Rebuild POs"; }
+        if (syncBtn) syncBtn.disabled = false;
+      }
+    }
+
     function getPoDate(po) {
       return po.purchaseOrderDate || po.orderDetails?.purchaseOrderDate || "";
     }
@@ -348,7 +451,7 @@
       tbody.innerHTML = "";
       const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty">No POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="empty">No POs</td></tr>';
         return;
       }
 
@@ -364,6 +467,10 @@
         const shipTo = d.shipToParty?.partyId || "";
         const isChecked = selectedPoNumbers.includes(poNumber);
         const totalOrdered = Number(po.total_ordered_qty) || 0;
+        const totalAccepted = Number(po.total_accepted_qty) || 0;
+        const totalReceived = Number(po.total_received_qty) || 0;
+        const totalPending = Number(po.total_pending_qty) || 0;
+        const poValue = formatNum(agg.totalCost, agg.currency);
 
         const tr = document.createElement("tr");
         tr.ondblclick = () => openModal(po);
@@ -404,6 +511,10 @@
       <td>${fmtDate(getPoDate(po))}</td>
       <td><strong>${shipTo}</strong></td>
       <td style="text-align:center;">${totalOrdered}</td>
+      <td style="text-align:center;">${totalAccepted}</td>
+      <td style="text-align:center;">${totalReceived}</td>
+      <td style="text-align:center;">${totalPending}</td>
+      <td style="text-align:center;">${poValue}</td>
       <td>${appointmentDateHtml}</td>
       <td>${statusSelectHtml}</td>
     `;
@@ -457,13 +568,29 @@
         const total  = qtyNum * netNum;
         const asin = it.amazonProductIdentifier || "";
         const vendorSku = it.vendorProductIdentifier || "";
+        const seq = it.itemSequenceNumber || "";
         const qtyAmount = qty.amount ?? "";
         const encodedImage = encodeURIComponent(rawImageUrl);
+        const ack = it.acknowledgementStatus || {};
+        const currStatus = (ack.confirmationStatus || "ACCEPTED").toUpperCase();
+        const accAmt = (ack.acceptedQuantity && ack.acceptedQuantity.amount) || (currStatus === "ACCEPTED" ? qtyAmount : 0) || 0;
+        const rejAmt = (ack.rejectedQuantity && ack.rejectedQuantity.amount) || (currStatus === "REJECTED" ? qtyAmount : 0) || 0;
 
         return `<tr oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
+          <td><input type="checkbox" class="ack-select" data-seq="${seq}" data-asin="${asin}" data-sku="${vendorSku}" /></td>
+          <td>${seq}</td>
           <td>${asin}</td>
           <td>${vendorSku}</td>
           <td>${qtyAmount}</td>
+          <td>${currStatus}</td>
+          <td><input type="number" class="ack-accepted" data-seq="${seq}" min="0" value="${accAmt}" style="width:70px;" /></td>
+          <td><input type="number" class="ack-rejected" data-seq="${seq}" min="0" value="${rejAmt}" style="width:70px;" /></td>
+          <td>
+            <select class="ack-status" data-seq="${seq}" style="width:110px;">
+              <option value="ACCEPTED" ${currStatus === "ACCEPTED" ? "selected" : ""}>ACCEPTED</option>
+              <option value="REJECTED" ${currStatus === "REJECTED" ? "selected" : ""}>REJECTED</option>
+            </select>
+          </td>
           <td>${img}</td>
           <td>${net.currencyCode || ""}</td>
           <td>${net.amount ?? ""}</td>
@@ -478,9 +605,15 @@
           <table class="table">
             <thead>
               <tr>
+                <th>Select</th>
+                <th>Seq</th>
                 <th>ASIN</th>
                 <th>Vendor Product ID</th>
-                <th>Qty</th>
+                <th>Ordered</th>
+                <th>Current Status</th>
+                <th>Accepted</th>
+                <th>Rejected</th>
+                <th>Status</th>
                 <th>Image</th>
                 <th>Net Currency</th>
                 <th>Net Amount</th>
@@ -490,6 +623,10 @@
             </thead>
             <tbody>${rows || '<tr><td colspan="8" class="empty">No items</td></tr>'}</tbody>
           </table>
+          <div style="margin-top:12px; display:flex; gap:10px; align-items:center; justify-content:flex-end;">
+            <button class="btn" style="background:#0d9488" onclick="submitAcknowledgement('${poNumber}')">Submit Acknowledgement</button>
+          </div>
+          <pre id="ack-log" style="margin-top:10px; padding:8px; background:#0b1221; color:#cbd5e1; border-radius:6px; max-height:180px; overflow:auto; font-size:12px;"></pre>
         </div>
       `;
       modal.style.display = "flex";
@@ -497,6 +634,92 @@
 
     function closeModal() {
       document.getElementById("modal").style.display = "none";
+    }
+
+    async function submitAcknowledgement(poNumber) {
+      const modal = document.getElementById("modal");
+      const ackLog = document.getElementById("ack-log");
+      const appendLog = (msg) => {
+        if (ackLog) {
+          const ts = new Date().toISOString();
+          ackLog.textContent += `\\n[${ts}] ${msg}`;
+          ackLog.scrollTop = ackLog.scrollHeight;
+        } else {
+          console.log("[Ack]", msg);
+        }
+      };
+
+      const seqInputs = modal.querySelectorAll(".ack-status");
+      const items = [];
+      seqInputs.forEach(sel => {
+        const seq = sel.dataset.seq;
+        const status = sel.value;
+        const accInput = modal.querySelector(`.ack-accepted[data-seq="${seq}"]`);
+        const rejInput = modal.querySelector(`.ack-rejected[data-seq="${seq}"]`);
+        const accepted = Number(accInput?.value || 0);
+        const rejected = Number(rejInput?.value || 0);
+        const rowSelected = modal.querySelector(`.ack-select[data-seq="${seq}"]`);
+        if (rowSelected && !rowSelected.checked) {
+          return;
+        }
+        items.push({
+          itemSequenceNumber: seq,
+          confirmationStatus: status,
+          acceptedQuantity: accepted,
+          rejectedQuantity: rejected,
+          buyerProductIdentifier: rowSelected?.dataset.asin || "",
+          vendorProductIdentifier: rowSelected?.dataset.sku || "",
+        });
+      });
+
+      if (!items.length) {
+        alert("Select at least one line to acknowledge.");
+        return;
+      }
+
+      // Basic validation: for each line, accepted+rejected should match ordered if we know it
+      const rows = modal.querySelectorAll("tbody tr");
+      for (const row of rows) {
+        const ordered = Number(row.children[4]?.innerText || 0);
+        const seq = row.children[1]?.innerText || "";
+        const item = items.find(i => i.itemSequenceNumber === seq);
+        if (item && ordered && (item.acceptedQuantity + item.rejectedQuantity) !== ordered) {
+          alert(`Line ${seq}: accepted + rejected must equal ordered (${ordered})`);
+          return;
+        }
+      }
+
+      try {
+        const requestPayload = {
+          purchaseOrderNumber: poNumber,
+          items: items,
+        };
+        appendLog(`Sending: ${JSON.stringify(requestPayload)}`);
+        const resp = await fetch("/api/vendor-pos/acknowledge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload),
+        });
+        if (!resp.ok) {
+          const txt = await resp.text();
+          appendLog(`Ack failed (${resp.status}): ${txt}`);
+          alert(`Ack failed (${resp.status}) - see log box.`);
+          return;
+        }
+        const data = await resp.json();
+        appendLog(`Ack success: transactionId=${data.transactionId || "n/a"}`);
+        showToast(`Acknowledgement sent. Transaction ID: ${data.transactionId || "n/a"}`);
+      } catch (e) {
+        console.error("Ack error", e);
+        appendLog(`Ack exception: ${e}`);
+        alert("Failed to send acknowledgement; see log/console.");
+      }
+      // On any response, if we got headers/body, append raw response text for debugging
+      try {
+        const raw = await fetch(`/api/vendor-pos/${encodeURIComponent(poNumber)}`);
+      } catch (e) {
+        /* ignore */
+      }
     }
 
     async function updatePoStatus(poNumber, selectEl) {
@@ -961,6 +1184,10 @@
       document.getElementById("pos-tab").style.display = tab === "pos" ? "block" : "none";
       document.getElementById("catalog-tab").style.display = tab === "catalog" ? "block" : "none";
       document.getElementById("oos-tab").style.display = tab === "oos" ? "block" : "none";
+      const testerEl = document.getElementById("tester-tab");
+      if (testerEl) {
+        testerEl.style.display = tab === "tester" ? "block" : "none";
+      }
       const forecastEl = document.getElementById("forecast-tab");
       if (forecastEl) {
         forecastEl.style.display = tab === "forecast" ? "block" : "none";
@@ -971,8 +1198,203 @@
       if (tab === "oos") {
         loadOosItems();
       }
+      if (tab === "tester") {
+        loadTesterMeta();
+      }
       if (tab === "forecast" && typeof loadForecastDashboard === "function") {
         loadForecastDashboard();
+      }
+    }
+
+    async function loadTesterMeta() {
+      if (testerMetaLoaded) return;
+      try {
+        const resp = await fetch("/api/spapi-tester/meta");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        testerPresets = data.presets || [];
+        testerHost = data.host || "";
+        const presetSelect = document.getElementById("tester-preset");
+        if (presetSelect) {
+          testerPresets.forEach(p => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = `${p.group} — ${p.label}`;
+            opt.dataset.path = p.path || "";
+            opt.dataset.method = p.method || "GET";
+            opt.dataset.defaultQuery = p.default_query || "";
+            opt.dataset.defaultBody = p.default_body ? JSON.stringify(p.default_body, null, 2) : "";
+            opt.dataset.notes = p.notes || "";
+            presetSelect.appendChild(opt);
+          });
+        }
+        const hostLabel = document.getElementById("tester-host");
+        if (hostLabel) {
+          hostLabel.textContent = testerHost ? `Host: ${testerHost}` : "";
+        }
+        testerMetaLoaded = true;
+      } catch (err) {
+        const statusEl = document.getElementById("tester-status");
+        if (statusEl) {
+          statusEl.textContent = `Failed to load presets: ${err}`;
+          statusEl.style.color = "#dc2626";
+        }
+      }
+    }
+
+    function applyTesterPreset() {
+      const presetSelect = document.getElementById("tester-preset");
+      const endpointInput = document.getElementById("tester-endpoint");
+      const methodSelect = document.getElementById("tester-method");
+      const statusEl = document.getElementById("tester-status");
+      const queryInput = document.getElementById("tester-query");
+      const bodyInput = document.getElementById("tester-body");
+      if (!presetSelect || !endpointInput) return;
+      const selectedOpt = presetSelect.options[presetSelect.selectedIndex];
+      const path = selectedOpt?.dataset?.path || "";
+      const method = selectedOpt?.dataset?.method || "GET";
+      const defaultQuery = selectedOpt?.dataset?.defaultQuery || "";
+      const defaultBody = selectedOpt?.dataset?.defaultBody || "";
+      const notes = selectedOpt?.dataset?.notes || "";
+      endpointInput.value = path;
+      if (methodSelect) methodSelect.value = method;
+      if (queryInput) queryInput.value = defaultQuery;
+      if (bodyInput) bodyInput.value = defaultBody;
+      if (statusEl) {
+        statusEl.textContent = notes || "Preset applied";
+        statusEl.style.color = "#475569";
+      }
+    }
+
+    function parseFullPath(full) {
+      if (!full) return { endpoint: "", query: "" };
+      full = full.trim();
+      try {
+        if (full.startsWith("http")) {
+          const u = new URL(full);
+          return { endpoint: u.pathname, query: u.search ? u.search.substring(1) : "" };
+        }
+      } catch (e) {
+        // fall through to manual split
+      }
+      const parts = full.split("?");
+      const endpoint = parts[0] || "";
+      const query = parts.slice(1).join("?") || "";
+      return { endpoint, query };
+    }
+
+    function applyTesterFullPath() {
+      const fullInput = document.getElementById("tester-fullpath");
+      const endpointInput = document.getElementById("tester-endpoint");
+      const queryInput = document.getElementById("tester-query");
+      const statusEl = document.getElementById("tester-status");
+      if (!fullInput || !endpointInput || !queryInput) return;
+      const parsed = parseFullPath(fullInput.value || "");
+      endpointInput.value = parsed.endpoint;
+      queryInput.value = parsed.query;
+      if (statusEl) {
+        statusEl.textContent = parsed.endpoint ? "Applied full path" : "";
+        statusEl.style.color = "#475569";
+      }
+    }
+
+    async function runTesterCall() {
+      const endpointInput = document.getElementById("tester-endpoint");
+      const queryInput = document.getElementById("tester-query");
+      const methodSelect = document.getElementById("tester-method");
+      const bodyInput = document.getElementById("tester-body");
+      const logEl = document.getElementById("tester-log");
+      const statusEl = document.getElementById("tester-status");
+      const btns = document.getElementsByClassName("tester-run-btn");
+      if (!endpointInput || !logEl) return;
+      const fullInput = document.getElementById("tester-fullpath");
+      const fullVal = (fullInput?.value || "").trim();
+      const method = (methodSelect?.value || "GET").toUpperCase();
+      let endpoint = (endpointInput.value || "").trim();
+      let query = (queryInput?.value || "").trim();
+      if (fullVal) {
+        const parsed = parseFullPath(fullVal);
+        endpoint = parsed.endpoint || endpoint;
+        query = parsed.query || query;
+      }
+      if (!endpoint) {
+        alert("Please enter an endpoint path starting with /");
+        return;
+      }
+      let bodyPayload = null;
+      const bodyText = bodyInput?.value?.trim();
+      if (method !== "GET" && bodyText) {
+        try {
+          bodyPayload = JSON.parse(bodyText);
+        } catch (e) {
+          if (statusEl) {
+            statusEl.textContent = `Invalid JSON body: ${e}`;
+            statusEl.style.color = "#dc2626";
+          }
+          return;
+        }
+      }
+      if (statusEl) {
+        statusEl.textContent = "Running...";
+        statusEl.style.color = "#475569";
+      }
+      logEl.textContent = "Loading...";
+      Array.from(btns).forEach(b => (b.disabled = true));
+      try {
+        const resp = await fetch("/api/spapi-tester/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            method,
+            path: endpoint,
+            query_string: query,
+            body_json: bodyPayload,
+          }),
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        const body = data?.response?.body;
+        const statusCode = data?.response?.status_code;
+        const display = typeof body === "string" ? body : JSON.stringify(body, null, 2);
+        logEl.textContent = display || "(empty body)";
+        if (statusEl) {
+          statusEl.textContent = `Status: ${statusCode ?? "?"} | ${method} ${endpoint}`;
+          statusEl.style.color = "#166534";
+        }
+      } catch (err) {
+        logEl.textContent = `Error: ${err}`;
+        if (statusEl) {
+          statusEl.textContent = `Error: ${err}`;
+          statusEl.style.color = "#dc2626";
+        }
+      } finally {
+        Array.from(btns).forEach(b => (b.disabled = false));
+      }
+    }
+
+    function copyTesterLog() {
+      const logEl = document.getElementById("tester-log");
+      if (!logEl) return;
+      const text = logEl.textContent || "";
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      } else {
+        const range = document.createRange();
+        range.selectNode(logEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try { document.execCommand("copy"); } catch (e) {}
+        sel.removeAllRanges();
+      }
+      const statusEl = document.getElementById("tester-status");
+      if (statusEl) {
+        statusEl.textContent = "Log copied";
+        statusEl.style.color = "#166534";
       }
     }
 
@@ -1304,6 +1726,8 @@
     }
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
+    const rebuildBtn = document.getElementById("rebuild-btn");
+    if (rebuildBtn) rebuildBtn.addEventListener("click", rebuildPOs);
     document.getElementById("po-search").addEventListener("input", filterPOs);
     document.getElementById("po-filter-fc").addEventListener("change", filterPOs);
     document.getElementById("po-filter-status").addEventListener("change", filterPOs);
