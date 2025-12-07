@@ -1081,6 +1081,87 @@ def submit_po_acknowledgement(req: AckRequest) -> Dict[str, Any]:
     return {"transactionId": transaction_id, "response": resp_data}
 
 
+def get_vendor_transaction_status(transaction_id: str) -> dict | None:
+    """
+    Best-effort lookup of a vendor transaction's status using Vendor Transactions API.
+    Returns a normalized dict with status/errors/raw or None on failure.
+    """
+    if not transaction_id:
+        return None
+    if not MARKETPLACE_IDS:
+        return None
+
+    marketplace = MARKETPLACE_IDS[0].strip()
+    host = resolve_vendor_host(marketplace)
+    url = f"{host}/vendor/transactions/v1/transactions/{transaction_id}"
+    token = auth_client.get_lwa_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-amz-access-token": token,
+        "accept": "application/json",
+        "user-agent": "sp-api-desktop-app/1.0",
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+    except requests.exceptions.Timeout:
+        logger.warning(f"[VendorTx] Timeout fetching transaction {transaction_id}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"[VendorTx] Error fetching transaction {transaction_id}: {e}")
+        return None
+
+    if resp.status_code == 404:
+        logger.warning(f"[VendorTx] Transaction {transaction_id} not found (404)")
+        return None
+    if resp.status_code == 429:
+        try:
+            raw_data = resp.json()
+        except Exception:
+            raw_data = {"raw": resp.text}
+        logger.warning(f"[VendorTx] Rate limited fetching transaction {transaction_id}")
+        return {
+            "transactionId": transaction_id,
+            "status": None,
+            "errors": [],
+            "raw": raw_data,
+            "rateLimited": True,
+        }
+    if resp.status_code >= 400:
+        logger.warning(f"[VendorTx] Failed transaction lookup {transaction_id}: HTTP {resp.status_code}")
+        return None
+
+    try:
+        raw_data = resp.json()
+    except Exception:
+        raw_data = {"raw": resp.text}
+
+    payload = raw_data.get("payload") if isinstance(raw_data, dict) else None
+    if not isinstance(payload, dict):
+        payload = raw_data if isinstance(raw_data, dict) else {}
+
+    tx_status_obj = payload.get("transactionStatus") if isinstance(payload, dict) else {}
+    status = None
+    errors: List[Any] = []
+    if isinstance(tx_status_obj, dict):
+        status = tx_status_obj.get("status")
+        errors = tx_status_obj.get("errors") or []
+    elif isinstance(payload, dict):
+        status = payload.get("status")
+        errors = payload.get("errors") or []
+
+    tx_id = payload.get("transactionId") if isinstance(payload, dict) else None
+    if not tx_id and isinstance(raw_data, dict):
+        tx_id = raw_data.get("transactionId")
+
+    return {
+        "transactionId": tx_id or transaction_id,
+        "status": status,
+        "errors": errors if isinstance(errors, list) else [],
+        "raw": raw_data,
+    }
+
+
 def extract_purchase_orders(obj: Any) -> List[Dict[str, Any]] | None:
     """
     Recursively search the JSON response for a key 'purchaseOrders' whose value is a list,
@@ -1488,6 +1569,99 @@ def acknowledge_vendor_po(req: AckRequest):
     """
     result = submit_po_acknowledgement(req)
     return {"status": "ok", **result}
+
+
+@app.get("/api/vendor-pos/ack-log/{po_number}")
+def get_vendor_po_ack_log(po_number: str):
+    if not po_number:
+        raise HTTPException(status_code=400, detail="po_number required")
+
+    if not ACK_LOG_PATH.exists():
+        return {"po_number": po_number, "entries": []}
+
+    entries: List[Dict[str, Any]] = []
+
+    def _derive_totals_from_ack(payload: Dict[str, Any]) -> Tuple[int, int, int]:
+        ack_list = payload.get("acknowledgements") or []
+        ack_obj = ack_list[0] if ack_list else {}
+        items = ack_obj.get("items") or []
+        line_count = len(items)
+        accepted_total = 0
+        rejected_total = 0
+
+        for it in items:
+            # Legacy payload shape support
+            ack_status = it.get("acknowledgementStatus") or {}
+            accepted_total += _parse_qty(ack_status.get("acceptedQuantity"))
+            rejected_total += _parse_qty(ack_status.get("rejectedQuantity"))
+
+            for ack_item in it.get("itemAcknowledgements") or []:
+                amt = _parse_qty(ack_item.get("acknowledgedQuantity"))
+                code = (ack_item.get("acknowledgementCode") or "").lower()
+                if code == "accepted":
+                    accepted_total += amt
+                elif code == "rejected":
+                    rejected_total += amt
+
+        return line_count, accepted_total, rejected_total
+
+    try:
+        with ACK_LOG_PATH.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                except Exception:
+                    continue
+                if entry.get("po") != po_number:
+                    continue
+
+                ts = entry.get("ts") or ""
+                transaction_id = entry.get("transactionId") or ""
+                http_status = entry.get("status")
+                payload = entry.get("payload") or {}
+
+                line_count, accepted_total, rejected_total = _derive_totals_from_ack(payload if isinstance(payload, dict) else {})
+
+                tx_status = None
+                error_summary = None
+
+                if (
+                    transaction_id
+                    and isinstance(http_status, int)
+                    and 200 <= http_status < 300
+                ):
+                    tx_info = get_vendor_transaction_status(transaction_id)
+                    if tx_info:
+                        if tx_info.get("rateLimited"):
+                            tx_status = "RateLimited"
+                            error_summary = "Vendor transaction status rate-limited"
+                        else:
+                            tx_status = tx_info.get("status")
+                            errors = tx_info.get("errors") or []
+                            if errors and isinstance(errors, list):
+                                first = errors[0] or {}
+                                code = first.get("code") or first.get("errorCode")
+                                msg = first.get("message") or first.get("errorMessage")
+                                if code or msg:
+                                    error_summary = f"{code}: {msg}" if code and msg else (code or msg)
+
+                entries.append(
+                    {
+                        "ts": ts,
+                        "transactionId": transaction_id,
+                        "httpStatus": http_status,
+                        "transactionStatus": tx_status or None,
+                        "errorSummary": error_summary,
+                        "lineCount": line_count,
+                        "acceptedTotal": accepted_total,
+                        "rejectedTotal": rejected_total,
+                    }
+                )
+    except Exception as e:
+        logger.warning(f"[AckLog] Failed to read ack log: {e}")
+
+    entries.sort(key=lambda e: e.get("ts") or "", reverse=True)
+    return {"po_number": po_number, "entries": entries}
 
 
 def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
@@ -2017,6 +2191,11 @@ def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
         d = po.get("orderDetails") or {}
         items = d.get("items") or []
         for it in items:
+            ack_status = it.get("acknowledgementStatus") or {}
+            if isinstance(ack_status, dict):
+                conf = (ack_status.get("confirmationStatus") or "").upper()
+                if conf == "REJECTED":
+                    continue
             asin = it.get("amazonProductIdentifier") or ""
             sku = it.get("vendorProductIdentifier") or ""
             qty = it.get("orderedQuantity") or {}

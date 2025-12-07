@@ -65,6 +65,11 @@
       .shortage-icon::before { content: "⚠️ "; }
       .qty-detail-btn { background: #3b82f6; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
       .qty-detail-btn:hover { background: #2563eb; }
+      .ack-history-card { margin-top: 16px; padding: 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; }
+      .ack-history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .ack-history-table th, .ack-history-table td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+      .ack-history-table th { background: #e2e8f0; }
+      .tx-id { font-family: monospace; }
   </style>
 </head>
 <body>
@@ -344,6 +349,7 @@
     let testerMetaLoaded = false;
     let testerPresets = [];
     let testerHost = "";
+    let catalogImageCache = {};
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -552,50 +558,49 @@
       }
 
       const d = enrichedPo.orderDetails || {};
-      const items = d.items || [];
+      const items = (d.items || []).filter(it => {
+        const ack = it.acknowledgementStatus || {};
+        const conf = (ack.confirmationStatus || "").toUpperCase();
+        return conf !== "REJECTED";
+      });
       const poDate = getPoDate(enrichedPo);
       const shipTo = d.shipToParty?.partyId || "";
       const rows = items.map(it => {
-        const qty  = it.orderedQuantity || {};
-        const net  = it.netCost || {};
-        const rawImageUrl = it.image || "";
-        const img = rawImageUrl
-          ? `<img src="${rawImageUrl}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`
-          : "";
-
-        const qtyNum = Number(qty.amount) || 0;
-        const netNum = Number(net.amount) || 0;
-        const total  = qtyNum * netNum;
-        const asin = it.amazonProductIdentifier || "";
+        const qtyRaw = it.orderedQuantity || {};
+        const qtyNum = toNum(qtyRaw.amount) || toNum(qtyRaw.value) || toNum(qtyRaw?.orderedQuantity?.amount);
+        const qtyAmount = qtyNum || 0;
+        const { netAmount, netCurrency } = resolveNet(it);
+        const netNum = netAmount;
+        const total  = qtyAmount * netNum;
+        const rawAsin = it.amazonProductIdentifier || it.buyerProductIdentifier || it.vendorProductIdentifier || "";
+        const asin = qualifyAsin(rawAsin);
         const vendorSku = it.vendorProductIdentifier || "";
         const seq = it.itemSequenceNumber || "";
-        const qtyAmount = qty.amount ?? "";
-        const encodedImage = encodeURIComponent(rawImageUrl);
         const ack = it.acknowledgementStatus || {};
         const currStatus = (ack.confirmationStatus || "ACCEPTED").toUpperCase();
-        const accAmt = (ack.acceptedQuantity && ack.acceptedQuantity.amount) || (currStatus === "ACCEPTED" ? qtyAmount : 0) || 0;
-        const rejAmt = (ack.rejectedQuantity && ack.rejectedQuantity.amount) || (currStatus === "REJECTED" ? qtyAmount : 0) || 0;
+        const accAmt = toNum((ack.acceptedQuantity || {}).amount) || (currStatus === "ACCEPTED" ? qtyAmount : 0);
+        const rejAmt = toNum((ack.rejectedQuantity || {}).amount) || (currStatus === "REJECTED" ? qtyAmount : 0);
+
+        const rawImageUrl = resolveImage(it);
+        const img = rawImageUrl
+          ? `<img src="${rawImageUrl}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`
+          : `<div class="img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}" style="width:60px; height:60px; background:#e5e7eb; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:11px;">No image</div>`;
+        const encodedImage = encodeURIComponent(rawImageUrl || "");
 
         return `<tr oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
           <td><input type="checkbox" class="ack-select" data-seq="${seq}" data-asin="${asin}" data-sku="${vendorSku}" /></td>
           <td>${seq}</td>
-          <td>${asin}</td>
-          <td>${vendorSku}</td>
-          <td>${qtyAmount}</td>
-          <td>${currStatus}</td>
-          <td><input type="number" class="ack-accepted" data-seq="${seq}" min="0" value="${accAmt}" style="width:70px;" /></td>
-          <td><input type="number" class="ack-rejected" data-seq="${seq}" min="0" value="${rejAmt}" style="width:70px;" /></td>
+          <td>${img}</td>
+          <td data-col="ordered">${qtyAmount}</td>
           <td>
             <select class="ack-status" data-seq="${seq}" style="width:110px;">
               <option value="ACCEPTED" ${currStatus === "ACCEPTED" ? "selected" : ""}>ACCEPTED</option>
               <option value="REJECTED" ${currStatus === "REJECTED" ? "selected" : ""}>REJECTED</option>
             </select>
           </td>
-          <td>${img}</td>
-          <td>${net.currencyCode || ""}</td>
-          <td>${net.amount ?? ""}</td>
-          <td>${net.currencyCode || ""}</td>
-          <td>${Number.isFinite(total) ? total.toFixed(2) : ""}</td>
+          <td>${Number.isFinite(netNum) && netNum ? netNum.toFixed(2) : ""}</td>
+          <td>${netCurrency || ""}</td>
+          <td>${Number.isFinite(total) && total ? total.toFixed(2) : ""}</td>
         </tr>`;
       }).join("");
 
@@ -607,17 +612,11 @@
               <tr>
                 <th>Select</th>
                 <th>Seq</th>
-                <th>ASIN</th>
-                <th>Vendor Product ID</th>
-                <th>Ordered</th>
-                <th>Current Status</th>
-                <th>Accepted</th>
-                <th>Rejected</th>
-                <th>Status</th>
                 <th>Image</th>
-                <th>Net Currency</th>
+                <th>Ordered</th>
+                <th>Status</th>
                 <th>Net Amount</th>
-                <th>Total Currency</th>
+                <th>Currency</th>
                 <th>Total Amount</th>
               </tr>
             </thead>
@@ -626,14 +625,60 @@
           <div style="margin-top:12px; display:flex; gap:10px; align-items:center; justify-content:flex-end;">
             <button class="btn" style="background:#0d9488" onclick="submitAcknowledgement('${poNumber}')">Submit Acknowledgement</button>
           </div>
+          <div class="ack-history-card">
+            <div style="font-weight:700; margin-bottom:8px;">Acknowledgement History</div>
+            <div id="ack-history-content-modal" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
+          </div>
           <pre id="ack-log" style="margin-top:10px; padding:8px; background:#0b1221; color:#cbd5e1; border-radius:6px; max-height:180px; overflow:auto; font-size:12px;"></pre>
         </div>
       `;
       modal.style.display = "flex";
+      loadAckHistory(poNumber, "ack-history-content-modal");
+      populateMissingImages(items);
     }
 
     function closeModal() {
       document.getElementById("modal").style.display = "none";
+    }
+
+    async function populateMissingImages(items) {
+      const placeholders = Array.from(document.querySelectorAll(".img-placeholder[data-asin]"));
+      const uniqueAsins = Array.from(new Set(placeholders.map(p => p.dataset.asin).filter(Boolean)));
+      if (!uniqueAsins.length) return;
+
+      for (const asin of uniqueAsins) {
+        if (catalogImageCache.hasOwnProperty(asin)) continue;
+        try {
+          const resp = await fetch(`/api/catalog/item/${asin}`);
+          if (!resp.ok) {
+            catalogImageCache[asin] = null;
+            continue;
+          }
+          const data = await resp.json();
+          const payload = data.item || data.payload || data || {};
+          const direct = data.image || payload.image;
+          const candidate = direct || resolveImage(payload);
+          catalogImageCache[asin] = candidate || null;
+        } catch {
+          catalogImageCache[asin] = null;
+        }
+      }
+
+      placeholders.forEach(ph => {
+        const asin = ph.dataset.asin;
+        const cached = catalogImageCache[asin];
+        if (cached) {
+          ph.outerHTML = `<img src="${cached}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`;
+        }
+      });
+    }
+
+    function qualifyAsin(val) {
+      if (!val) return "";
+      const v = String(val).trim();
+      const re = /^[A-Z0-9]{8,15}$/i;
+      if (re.test(v)) return v.toUpperCase();
+      return "";
     }
 
     async function submitAcknowledgement(poNumber) {
@@ -678,15 +723,15 @@
       }
 
       // Basic validation: for each line, accepted+rejected should match ordered if we know it
-      const rows = modal.querySelectorAll("tbody tr");
-      for (const row of rows) {
-        const ordered = Number(row.children[4]?.innerText || 0);
-        const seq = row.children[1]?.innerText || "";
-        const item = items.find(i => i.itemSequenceNumber === seq);
-        if (item && ordered && (item.acceptedQuantity + item.rejectedQuantity) !== ordered) {
-          alert(`Line ${seq}: accepted + rejected must equal ordered (${ordered})`);
-          return;
-        }
+        const rows = modal.querySelectorAll("tbody tr");
+        for (const row of rows) {
+          const ordered = Number(row.querySelector('[data-col="ordered"]')?.innerText || 0);
+          const seq = row.children[1]?.innerText || "";
+          const item = items.find(i => i.itemSequenceNumber === seq);
+          if (item && ordered && (item.acceptedQuantity + item.rejectedQuantity) !== ordered) {
+            alert(`Line ${seq}: accepted + rejected must equal ordered (${ordered})`);
+            return;
+          }
       }
 
       try {
@@ -709,6 +754,8 @@
         const data = await resp.json();
         appendLog(`Ack success: transactionId=${data.transactionId || "n/a"}`);
         showToast(`Acknowledgement sent. Transaction ID: ${data.transactionId || "n/a"}`);
+        // Refresh acknowledgement history if the panel is visible
+        loadAckHistory(poNumber, "ack-history-content-modal");
       } catch (e) {
         console.error("Ack error", e);
         appendLog(`Ack exception: ${e}`);
@@ -976,7 +1023,7 @@
             <td>${line.sku || ""}</td>
             <td style="text-align:center;">${line.ordered_qty || 0}</td>
             <td style="text-align:center;">${line.received_qty || 0}</td>
-            <td style="text-align:center; class="${shortageClass}">${line.pending_qty || 0}</td>
+            <td class="${shortageClass}" style="text-align:center;">${line.pending_qty || 0}</td>
             <td class="${shortageClass}" style="text-align:center; font-weight:600;">${shortage > 0 ? '⚠️ ' + shortage : shortage}</td>
           </tr>`;
         }).join("");
@@ -1020,8 +1067,13 @@
                 </tbody>
               </table>
             </div>
+            <div class="ack-history-card">
+              <div style="font-weight:700; margin-bottom:8px;">Acknowledgement History</div>
+              <div id="ack-history-content" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
+            </div>
           </div>
         `;
+        loadAckHistory(poNumber, "ack-history-content");
       } catch (err) {
         console.error("Failed to load PO lines", err);
         bodyEl.innerHTML = `<div style="padding:16px; color:#dc2626;">⚠️ Failed to load line details: ${err.message || err}</div>`;
@@ -1030,6 +1082,135 @@
 
     function closePoLinesModal() {
       document.getElementById("po-lines-modal").style.display = "none";
+    }
+
+    function resolveImage(it) {
+      const candidates = [];
+      const pushCandidate = (obj) => {
+        if (!obj || typeof obj !== "object") return;
+        candidates.push(obj.image, obj.imageUrl, obj.detailPageImage, obj.thumbnail, obj.mainImage?.link, obj.mainImage?.url);
+        if (Array.isArray(obj.summaries)) {
+          obj.summaries.forEach(s => {
+            if (!s || typeof s !== "object") return;
+            candidates.push(s.mainImage?.link, s.mainImage?.url, s.image, s.imageUrl);
+            if (Array.isArray(s.images)) {
+              s.images.forEach(im => candidates.push(im && (im.link || im.url)));
+            }
+          });
+        }
+        if (Array.isArray(obj.images)) {
+          obj.images.forEach(img => {
+            if (!img) return;
+            candidates.push(img.link, img.url);
+            if (Array.isArray(img.variants)) {
+              img.variants.forEach(v => candidates.push(v && (v.link || v.url)));
+            }
+            if (Array.isArray(img.images)) {
+              img.images.forEach(v => candidates.push(v && (v.link || v.url)));
+            }
+          });
+        }
+      };
+
+      pushCandidate(it);
+      if (it && typeof it === "object") {
+        pushCandidate(it.payload);
+      }
+
+      return candidates.find(Boolean) || "";
+    }
+
+    function resolveNet(it) {
+      const nets = [it.netCost, it.listPrice, it.price, it.unitPrice];
+      let amount = 0;
+      let currency = "";
+      for (const n of nets) {
+        if (n && typeof n === "object") {
+          amount = toNum(n.amount) || toNum(n.value) || toNum(n.price);
+          currency = n.currencyCode || n.currency || n.code || currency;
+          if (amount) break;
+        }
+      }
+      if (!currency) {
+        currency = it.currencyCode || it.currency || it.orderedQuantity?.currencyCode || "";
+      }
+      if (!currency && amount) {
+        currency = "AED";
+      }
+      return { netAmount: amount, netCurrency: currency };
+    }
+
+    async function loadAckHistory(poNumber, targetId = "ack-history-content") {
+      const container = document.getElementById(targetId);
+      if (!container) return;
+      container.innerHTML = '<div style="padding:8px; color:#6b7280;">Loading acknowledgement history...</div>';
+      try {
+        const resp = await fetch(`/api/vendor-pos/ack-log/${encodeURIComponent(poNumber)}`);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        const entries = (data && data.entries) || [];
+        if (!entries.length) {
+          container.innerHTML = '<div style="padding:8px; color:#6b7280;">No acknowledgements logged for this PO.</div>';
+          return;
+        }
+
+        const rows = entries.map(entry => {
+          const txShort = entry.transactionId ? `${entry.transactionId.slice(0, 10)}…` : "";
+          const summary = entry.errorSummary
+            ? entry.errorSummary
+            : `${entry.lineCount || 0} lines, ${entry.acceptedTotal || 0} accepted, ${entry.rejectedTotal || 0} rejected`;
+          const txCell = entry.transactionId
+            ? `${txShort} <button class="btn" style="padding:2px 6px; font-size:11px; margin-left:4px; background:#0f172a;" onclick="copyTxId('${entry.transactionId}')">Copy</button>`
+            : "";
+
+          return `<tr>
+            <td>${formatTs(entry.ts)}</td>
+            <td>${entry.httpStatus ?? ""}</td>
+            <td class="tx-id">${txCell}</td>
+            <td>${entry.transactionStatus || ""}</td>
+            <td>${summary}</td>
+          </tr>`;
+        }).join("");
+
+        container.innerHTML = `
+          <div style="overflow:auto; max-height:200px;">
+            <table class="ack-history-table">
+              <thead>
+                <tr>
+                  <th style="width:120px;">TS</th>
+                  <th style="width:70px;">HTTP</th>
+                  <th style="width:200px;">Transaction ID</th>
+                  <th style="width:120px;">Status</th>
+                  <th>Summary</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        `;
+      } catch (err) {
+        console.error("Failed to load ack log", err);
+        container.innerHTML = '<div style="padding:8px; color:#dc2626;">Failed to load acknowledgement history.</div>';
+      }
+    }
+
+    function copyTxId(txId) {
+      if (!txId) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txId).then(() => {
+          showToast("Transaction ID copied");
+        }).catch(() => {});
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = txId;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(textarea);
+        showToast("Transaction ID copied");
+      }
     }
 
     function copyCatalogJson() {
@@ -1135,6 +1316,18 @@
       const mm = String(d.getMonth() + 1).padStart(2, "0");
       const yyyy = d.getFullYear();
       return `${dd}/${mm}/${yyyy}`;
+    }
+
+    function formatTs(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return ts;
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
     }
 
     function formatSyncTime(d) {
@@ -1627,7 +1820,11 @@
         }
         const data = await resp.json();
         const summary = data.summary || {};
-        const items = data.items || [];
+        const items = (data.items || []).filter(it => {
+          const ack = it.acknowledgementStatus || {};
+          const conf = (ack.confirmationStatus || "").toUpperCase();
+          return conf !== "REJECTED";
+        });
         items.sort((a, b) => (b.totalQty || 0) - (a.totalQty || 0));
         const modal = document.getElementById("picklist-modal");
         const body = document.getElementById("picklist-body");
