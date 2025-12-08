@@ -22,6 +22,10 @@
     .empty { padding:14px; color:var(--muted); text-align:center; }
     select.po-status-select { padding:8px 12px; border-radius:8px; font-size:15px; font-weight:700; min-width:170px; }
     input.po-date-input { padding:6px 10px; border-radius:8px; font-size:15px; font-weight:700; border:1px solid var(--border); }
+    /* Row status colors */
+    tr.po-status-preparing { background-color: #fef9c3; }
+    tr.po-status-appointment { background-color: #e0f2fe; }
+    tr.po-status-delivered { background-color: #dcfce7; }
     /* Vendor PO tab: larger, clearer text without changing layout spacing */
     #pos-tab { font-size:14px; }
     #pos-tab table { font-size:14px; }
@@ -117,18 +121,20 @@
             <thead>
               <tr>
                 <th style="width:32px;"><input type="checkbox" id="po-select-all" onchange="toggleSelectAllPos(this)" /></th>
-                <th>PO Number</th>
-                <th>Status</th>
+                <th>PO</th>
+                <th style="text-align:center;">PO Items</th>
                 <th>Order Date</th>
-                <th>Ship To</th>
-                <th style="text-align:center;">Ordered</th>
-                <th style="text-align:center;">Accepted</th>
-                <th style="text-align:center;">Received</th>
-                <th style="text-align:center;">Pending</th>
-                <th style="text-align:center;">PO Value</th>
-              <th>Appointment Date</th>
-              <th>In-House Status</th>
-            </tr>
+                <th style="text-align:center;">Requested Qty</th>
+                <th style="text-align:center;">Accepted Qty</th>
+                <th style="text-align:center;">Received Qty</th>
+                <th style="text-align:center;">Remaining Qty</th>
+                <th style="text-align:center;">Cancelled Qty</th>
+                <th style="text-align:right;">Total Accepted Cost</th>
+                <th>Status</th>
+                <th>Status Date</th>
+                <th>Amazon Status</th>
+                <th>Ship To Location</th>
+              </tr>
             </thead>
             <tbody id="po-rows"></tbody>
           </table>
@@ -482,81 +488,180 @@
       return po.purchaseOrderDate || po.orderDetails?.purchaseOrderDate || "";
     }
 
+    function formatQtyWithUnits(qty) {
+      qty = Number(qty) || 0;
+      return qty === 0 ? "0 units" : `${qty} units`;
+    }
+
+    function formatCost(costObj) {
+      if (!costObj) return "";
+      if (typeof costObj === "string") return costObj;
+      if (typeof costObj === "number") return costObj;
+      if (costObj.amount !== undefined) {
+        return `${costObj.currencyCode || "AED"} ${costObj.amount}`;
+      }
+      return "";
+    }
+
+    function applyStatusRowClass(row, status) {
+      row.classList.remove("po-status-preparing", "po-status-appointment", "po-status-delivered");
+      const s = (status || "").toLowerCase();
+      if (s === "preparing") {
+        row.classList.add("po-status-preparing");
+      } else if (s === "appointment scheduled") {
+        row.classList.add("po-status-appointment");
+      } else if (s === "delivered") {
+        row.classList.add("po-status-delivered");
+      }
+    }
+
+    function toDateInputValue(isoDateStr) {
+      if (!isoDateStr) return "";
+      return isoDateStr.substring(0, 10);
+    }
+
+    function todayAsYyyyMmDd() {
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function isAppointmentStatus(status) {
+      const s = (status || "").toLowerCase();
+      return s === "appointment scheduled" || s === "appointment taken";
+    }
+
+    function updateLocalPoStatusData(poNumber, status, statusDate) {
+      const item = vendorPOs.find(p => p.purchaseOrderNumber === poNumber);
+      if (!item) return;
+      
+      if (status !== undefined && status !== null) {
+        item._internalStatus = status;
+      }
+      item._appointmentDate = statusDate || null;
+    }
+
+    // Listen for date input changes in Status Date column
+    document.addEventListener("change", async (e) => {
+      const inp = e.target;
+      if (!inp.classList.contains("po-status-date-input")) return;
+
+      const row = inp.closest("tr");
+      if (!row) return;
+
+      const po = inp.getAttribute("data-po");
+      const newDate = inp.value;
+      const statusSelect = row.querySelector(".po-status-select");
+      const currentStatus = statusSelect ? statusSelect.value : null;
+
+      if (!po || !currentStatus || !newDate) return;
+
+      // Only valid if status is Appointment Scheduled / Taken
+      const sLower = currentStatus.toLowerCase();
+      if (sLower !== "appointment scheduled" && sLower !== "appointment taken") return;
+
+      try {
+        const res = await fetch(`/api/po-status/${encodeURIComponent(po)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: currentStatus,
+            appointmentDate: newDate
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Keep input synced with backend value
+        if (data.appointmentDate) {
+          inp.value = toDateInputValue(data.appointmentDate);
+        }
+
+        // Update local PO data
+        updateLocalPoStatusData(po, data.status || currentStatus, data.appointmentDate);
+
+        updateInhouseSummary();
+      } catch (err) {
+        console.error("Failed to update appointment date", err);
+        alert("Failed to save appointment date. Please try again.");
+      }
+    }, true);
+
     function renderTable() {
       const tbody = document.getElementById("po-rows");
       tbody.innerHTML = "";
       const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="11" class="empty">No POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="14" class="empty">No POs</td></tr>';
         return;
       }
 
       list.forEach(po => {
-        const d = po.orderDetails || {};
-        const agg = aggregate(d.items || []);
-
-        const internalStatus = po._internalStatus || "Pending";
-        const appointmentDate = po._appointmentDate || "";
-        const rowColor = getRowColorForStatus(internalStatus);
-
         const poNumber = po.purchaseOrderNumber || "";
         const flags = po.notificationFlags || {};
         const notifBadge = flags.has_recent_notifications
           ? `<span style="margin-left:6px; padding:2px 6px; border-radius:6px; background:#fef3c7; color:#92400e; font-size:11px;" title="Last notification: ${escapeHtml(flags.last_notification_summary || "")} at ${formatTs(flags.last_notification_ts || "")}${flags.needs_refresh ? ' • Needs refresh' : ''}">${flags.needs_refresh ? "Update Ready" : "Updated"}</span>`
           : "";
-        const shipTo = d.shipToParty?.partyId || "";
         const isChecked = selectedPoNumbers.includes(poNumber);
-        const totalOrdered = Number(po.total_ordered_qty) || 0;
-        const totalAccepted = Number(po.total_accepted_qty) || 0;
-        const totalReceived = Number(po.total_received_qty) || 0;
-        const totalPending = Number(po.total_pending_qty) || 0;
-        const poValue = formatNum(agg.totalCost, agg.currency);
+
+        const poItemsCount = Number(po.poItemsCount) || 0;
+        const requestedQty = formatQtyWithUnits(po.requestedQty);
+        const acceptedQty = formatQtyWithUnits(po.acceptedQty);
+        const receivedQty = formatQtyWithUnits(po.receivedQty);
+        const remainingQty = formatQtyWithUnits(po.remainingQty);
+        const cancelledQty = formatQtyWithUnits(po.cancelledQty);
+        
+        const costAmount = po.totalAcceptedCostAmount || "0.00";
+        const costCurrency = po.totalAcceptedCostCurrency || "AED";
+        const totalAcceptedCost = `${costCurrency} ${costAmount}`;
+        
+        const internalStatus = po._internalStatus || "Pending";
+        const amazonStatus = po.amazonStatus || "—";
+        const shipToLocation = po.shipToText || (po.orderDetails?.shipToParty?.partyId ? `${po.orderDetails.shipToParty.partyId}` : "");
 
         const tr = document.createElement("tr");
         tr.ondblclick = () => openModal(po);
-        if (rowColor) {
-          tr.style.backgroundColor = rowColor;
+        applyStatusRowClass(tr, internalStatus);
+
+        // Status column: dropdown only
+        const statusDropdown = `<select class="po-status-select" data-po="${escapeAttr(poNumber)}" onchange="handleStatusChange('${escapeAttr(poNumber)}', this)">
+          ${INTERNAL_STATUS_OPTIONS.map(opt => `<option value="${escapeAttr(opt)}" ${opt === internalStatus ? "selected" : ""}>${escapeHtml(opt)}</option>`).join("")}
+        </select>`;
+
+        // Status Date column: depends on status
+        const statusLower = internalStatus.toLowerCase();
+        const hasDate = !!po._appointmentDate;
+        let statusDateCellHtml = "";
+
+        if (statusLower === "appointment scheduled" || statusLower === "appointment taken") {
+          // Editable date input
+          const dateValue = hasDate ? toDateInputValue(po._appointmentDate) : todayAsYyyyMmDd();
+          statusDateCellHtml = `<input type="date" class="po-status-date-input" data-po="${escapeAttr(poNumber)}" value="${dateValue}" />`;
+        } else if (statusLower === "delivered" && hasDate) {
+          // Read-only text for Delivered
+          statusDateCellHtml = `<span data-col="status-date">${escapeHtml(fmtDate(po._appointmentDate))}</span>`;
+        } else {
+          // Pending/Preparing or no date
+          statusDateCellHtml = `<span data-col="status-date">—</span>`;
         }
-
-        const statusSelectHtml = `
-      <select class="po-status-select" onchange="updatePoStatus('${poNumber}', this)">
-        ${INTERNAL_STATUS_OPTIONS
-          .map(
-            s =>
-              `<option value="${s}" ${
-                s === internalStatus ? "selected" : ""
-              }>${s}</option>`
-          )
-          .join("")}
-      </select>
-    `;
-
-        const dateDisabledAttr =
-      internalStatus === "Appointment Scheduled" ? "" : "disabled";
-
-        const appointmentDateHtml = `
-      <input
-        type="date"
-        class="po-date-input"
-        value="${appointmentDate || ""}"
-        onchange="updateAppointmentDate('${poNumber}', this)"
-        ${dateDisabledAttr}
-      />
-    `;
 
         tr.innerHTML = `
       <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
       <td><div style="display:flex; align-items:center; gap:6px;">${poNumber}${notifBadge}</div></td>
-      <td>${po.purchaseOrderState || ""}</td>
+      <td style="text-align:center;">${poItemsCount}</td>
       <td>${fmtDate(getPoDate(po))}</td>
-      <td><strong>${shipTo}</strong></td>
-      <td style="text-align:center;">${totalOrdered}</td>
-      <td style="text-align:center;">${totalAccepted}</td>
-      <td style="text-align:center;">${totalReceived}</td>
-      <td style="text-align:center;">${totalPending}</td>
-      <td style="text-align:center;">${poValue}</td>
-      <td>${appointmentDateHtml}</td>
-      <td>${statusSelectHtml}</td>
+      <td style="text-align:center;">${requestedQty}</td>
+      <td style="text-align:center;">${acceptedQty}</td>
+      <td style="text-align:center;">${receivedQty}</td>
+      <td style="text-align:center;">${remainingQty}</td>
+      <td style="text-align:center;">${cancelledQty}</td>
+      <td style="text-align:right; padding-right:16px;">${totalAcceptedCost}</td>
+      <td>${statusDropdown}</td>
+      <td>${statusDateCellHtml}</td>
+      <td>${amazonStatus}</td>
+      <td>${shipToLocation}</td>
     `;
 
         tbody.appendChild(tr);
@@ -739,43 +844,90 @@
     }
 
 
-    async function updatePoStatus(poNumber, selectEl) {
+    async function handleStatusChange(poNumber, selectEl) {
       const newStatus = selectEl.value;
-      const tr = selectEl.closest("tr");
-      let appointmentDate = null;
+      const row = selectEl.closest("tr");
+      let statusDateToSend = null;
 
-      if (tr) {
-        tr.style.backgroundColor = getRowColorForStatus(newStatus);
+      const statusLower = newStatus.toLowerCase();
 
-        const dateInput = tr.querySelector("input.po-date-input");
-        if (dateInput) {
-          if (newStatus === "Appointment Scheduled") {
-            dateInput.disabled = false;
-            appointmentDate = dateInput.value || null;
-          } else {
-            dateInput.disabled = true;
-            dateInput.value = "";
-            appointmentDate = null;
-          }
+      if (statusLower === "appointment scheduled" || statusLower === "appointment taken") {
+        // Appointment: use existing date or default to today
+        const existingInput = row ? row.querySelector(".po-status-date-input") : null;
+        if (existingInput && existingInput.value) {
+          statusDateToSend = existingInput.value;
+        } else {
+          statusDateToSend = todayAsYyyyMmDd();
         }
+      } else if (statusLower === "delivered") {
+        // Delivered: keep existing date if present
+        const existingInput = row ? row.querySelector(".po-status-date-input") : null;
+        const existingSpan = row ? row.querySelector("[data-col='status-date']") : null;
+        if (existingInput && existingInput.value) {
+          statusDateToSend = existingInput.value;
+        } else if (existingSpan && existingSpan.textContent && existingSpan.textContent !== "—") {
+          statusDateToSend = toDateInputValue(existingSpan.textContent);
+        } else {
+          statusDateToSend = todayAsYyyyMmDd();
+        }
+      } else {
+        // Pending / Preparing: no date
+        statusDateToSend = null;
       }
 
       try {
-        await fetch(`/api/po-status/${encodeURIComponent(poNumber)}`, {
+        const res = await fetch(`/api/po-status/${encodeURIComponent(poNumber)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             status: newStatus,
-            appointmentDate: appointmentDate,
+            appointmentDate: statusDateToSend || null,
           }),
         });
-        // update local cache so UI doesn't revert
-        updateLocalPoStatus(poNumber, newStatus, appointmentDate);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Update Status Date cell based on returned status and date
+        const statusDateCell = row ? row.querySelector("[data-col='status-date']") : null;
+        if (statusDateCell || row) {
+          const statusLower2 = (data.status || newStatus).toLowerCase();
+          const hasDate = !!data.appointmentDate;
+          let newCellHtml = "";
+
+          if (statusLower2 === "appointment scheduled" || statusLower2 === "appointment taken") {
+            // Render editable date input
+            const dateValue = hasDate ? toDateInputValue(data.appointmentDate) : todayAsYyyyMmDd();
+            newCellHtml = `<input type="date" class="po-status-date-input" data-po="${escapeAttr(poNumber)}" value="${dateValue}" />`;
+          } else if (statusLower2 === "delivered" && hasDate) {
+            // Render read-only text
+            newCellHtml = `<span data-col="status-date">${escapeHtml(fmtDate(data.appointmentDate))}</span>`;
+          } else {
+            // Pending/Preparing or no date
+            newCellHtml = `<span data-col="status-date">—</span>`;
+          }
+
+          // Find the Status Date cell and replace its content
+          const cellIndex = 11; // Status Date is 12th column (0-indexed)
+          const cells = row.querySelectorAll("td");
+          if (cells[cellIndex]) {
+            cells[cellIndex].innerHTML = newCellHtml;
+          }
+        }
+
+        // Update local PO data
+        updateLocalPoStatusData(poNumber, data.status || newStatus, data.appointmentDate);
+
+        // Apply row highlight
+        if (row) {
+          applyStatusRowClass(row, data.status || newStatus);
+        }
+
+        // Update summary
         updateInhouseSummary();
         filterPOs();
       } catch (err) {
         console.error("Failed to save PO status", err);
-        alert("Failed to save internal PO status. Check console for details.");
+        alert("Failed to update status. Please try again.");
       }
     }
 
@@ -1231,6 +1383,11 @@
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+    }
+
+    function escapeAttr(str) {
+      if (str === undefined || str === null) return "";
+      return String(str).replace(/"/g, "&quot;");
     }
 
     function formatSyncTime(d) {
@@ -1771,7 +1928,12 @@
           const conf = (ack.confirmationStatus || "").toUpperCase();
           return conf !== "REJECTED";
         });
-        items.sort((a, b) => (b.totalQty || 0) - (a.totalQty || 0));
+        items.sort((a, b) => {
+          const aOos = a.isOutOfStock ? 1 : 0;
+          const bOos = b.isOutOfStock ? 1 : 0;
+          if (aOos !== bOos) return aOos - bOos;
+          return (b.totalQty || 0) - (a.totalQty || 0);
+        });
         const modal = document.getElementById("picklist-modal");
         const body = document.getElementById("picklist-body");
         const summaryHtml = `
@@ -1783,14 +1945,19 @@
           </div>
         `;
         const rows = items.map(it => {
-          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;" />` : "";
+          const isOos = it.isOutOfStock;
+          const rowStyle = isOos ? 'style="opacity:0.6; background:#fff5f5;"' : '';
+          const qtyStyle = isOos ? 'style="font-weight:700; text-align:center; color:#b91c1c; text-decoration:line-through;"' : 'style="font-weight:700; text-align:center;"';
+          const asinStyle = isOos ? 'style="text-decoration:line-through; color:#666;"' : '';
+          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;${isOos ? 'opacity:0.5;' : ''}" />` : "";
           const sku = it.sku || it.externalId || "";
-          return `<tr>
-            <td>${it.asin || ""}</td>
+          const oosLabel = isOos ? ' <span style="color:#b91c1c; font-size:11px; font-weight:700;">[OOS]</span>' : '';
+          return `<tr ${rowStyle}>
+            <td ${asinStyle}>${it.asin || ""}${oosLabel}</td>
             <td>${sku}</td>
             <td>${img}</td>
             <td style="width:240px;">${it.title || ""}</td>
-            <td style="font-weight:700; text-align:center;">${it.totalQty ?? ""}</td>
+            <td ${qtyStyle}>${it.totalQty ?? ""}</td>
           </tr>`;
         }).join("");
 

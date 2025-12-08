@@ -770,11 +770,90 @@ def fetch_detailed_po_with_status(po_number: str):
         return None
 
 
+def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, int]) -> None:
+    """
+    Compute Vendor Central-style display columns from line totals and PO data.
+    Adds the following derived fields to the PO dict:
+    - poItemsCount: number of distinct items in the PO
+    - requestedQty: total ordered quantity (units)
+    - acceptedQty: total accepted quantity (units)
+    - asnQty: ASN (shipment announced) quantity (units) [set to 0 for now; future: integrate Vendor Shipments API]
+    - receivedQty: total received quantity (units)
+    - remainingQty: accepted - received - cancelled (units)
+    - cancelledQty: total cancelled quantity (units)
+    - totalAcceptedCostAmount: computed from line-level netCost and accepted quantities
+    - totalAcceptedCostCurrency: currency code for the cost
+    - amazonStatus: raw purchaseOrderState from SP-API
+    """
+    from decimal import Decimal
+    
+    po_num = po.get("purchaseOrderNumber") or ""
+    
+    requested = line_totals.get("total_ordered", 0)
+    accepted = line_totals.get("total_accepted", 0)
+    received = line_totals.get("total_received", 0)
+    cancelled = line_totals.get("total_cancelled", 0)
+    
+    remaining = max(0, accepted - received - cancelled)
+    
+    po["poItemsCount"] = po.get("orderDetails", {}).get("items", []) if isinstance(po.get("orderDetails", {}), dict) else 0
+    if isinstance(po["poItemsCount"], list):
+        po["poItemsCount"] = len(po["poItemsCount"])
+    
+    po["requestedQty"] = requested
+    po["acceptedQty"] = accepted
+    po["asnQty"] = 0
+    po["receivedQty"] = received
+    po["remainingQty"] = remaining
+    po["cancelledQty"] = cancelled
+    
+    # Compute total accepted cost from order items
+    total_cost = Decimal("0")
+    currency_code = "AED"
+    order_details = po.get("orderDetails", {}) or {}
+    items = order_details.get("items", []) or []
+    
+    for item in items:
+        try:
+            # Get accepted quantity for this line (from line_totals we don't have per-line, so use ordered as proxy)
+            # In a real scenario, we'd join with vendor_po_lines, but for now use netCost from item
+            net_cost_obj = item.get("netCost", {})
+            if isinstance(net_cost_obj, dict):
+                cost_amount = net_cost_obj.get("amount", "0")
+                if net_cost_obj.get("currencyCode"):
+                    currency_code = net_cost_obj.get("currencyCode")
+                # Try to parse the amount
+                try:
+                    line_cost = Decimal(str(cost_amount or 0))
+                except Exception:
+                    line_cost = Decimal("0")
+                total_cost += line_cost
+        except Exception as e:
+            logger.debug(f"[VendorPO] Error computing cost for line in {po_num}: {e}")
+    
+    po["totalAcceptedCostAmount"] = str(total_cost)
+    po["totalAcceptedCostCurrency"] = currency_code
+    
+    # Add Amazon status (raw purchaseOrderState)
+    po["amazonStatus"] = po.get("purchaseOrderState", "")
+    
+    ship_to_party = po.get("orderDetails", {}).get("shipToParty", {}) if isinstance(po.get("orderDetails"), dict) else {}
+    if isinstance(ship_to_party, dict):
+        po["shipToCode"] = ship_to_party.get("partyId", "")
+        address = ship_to_party.get("address", {}) if isinstance(ship_to_party.get("address"), dict) else {}
+        city = address.get("city", "")
+        country = address.get("country", "")
+        po["shipToText"] = f"{po['shipToCode']} – {city}, {country}".replace(" – , ", "") if city or country else po["shipToCode"]
+    else:
+        po["shipToCode"] = ""
+        po["shipToText"] = ""
+
+
 def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
     """
     Attach aggregated quantities from vendor_po_lines to each PO in pos_list.
     Exposes total_ordered_qty, total_accepted_qty, total_received_qty, total_pending_qty,
-    total_cancelled_qty, and total_shortage_qty for display.
+    total_cancelled_qty, total_shortage_qty, and Vendor Central-style columns for display.
     """
     if not pos_list:
         return
@@ -795,9 +874,9 @@ def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
             po.setdefault("total_accepted_qty", 0)
             po.setdefault("total_cancelled_qty", 0)
             po.setdefault("total_shortage_qty", 0)
+            _compute_vendor_central_columns(po, {})
         return
 
-    # Attach totals to each PO; default to 0 if no lines found
     for po in pos_list:
         po_num = po.get("purchaseOrderNumber")
         totals = agg_map.get(po_num, {})
@@ -819,6 +898,8 @@ def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
             po.setdefault("total_pending_qty", 0)
             po.setdefault("total_cancelled_qty", 0)
             po.setdefault("total_shortage_qty", 0)
+        
+        _compute_vendor_central_columns(po, totals if totals else {})
         po.setdefault("total_received_qty", 0)
         po.setdefault("total_pending_qty", 0)
 
@@ -1388,6 +1469,11 @@ def update_po_status(po_number: str, payload: PoStatusUpdate):
       - Preparing
       - Appointment Scheduled
       - Delivered
+    
+    Logic:
+    - For Appointment Scheduled: always set statusDate (provided value or today)
+    - For Delivered: keep existing appointment date if present, else set to provided or today
+    - For Pending/Preparing: CLEAR statusDate (set to None)
     """
     allowed = {
         "Pending",
@@ -1409,11 +1495,29 @@ def update_po_status(po_number: str, payload: PoStatusUpdate):
     if not isinstance(existing, dict):
         existing = {}
 
+    prev_date = existing.get("appointmentDate")
+
     existing["status"] = status
 
-    if appointment_date:
-        existing["appointmentDate"] = appointment_date
-    elif status != "Appointment Scheduled":
+    # Handle statusDate logic
+    if status == "Appointment Scheduled":
+        # For appointment: use provided date or default to today
+        if appointment_date:
+            existing["appointmentDate"] = appointment_date
+        else:
+            today = datetime.utcnow().date().isoformat()
+            existing["appointmentDate"] = today
+    elif status == "Delivered":
+        # For delivered: keep existing appointment date if present, else use provided or today
+        if prev_date:
+            existing["appointmentDate"] = prev_date
+        elif appointment_date:
+            existing["appointmentDate"] = appointment_date
+        else:
+            today = datetime.utcnow().date().isoformat()
+            existing["appointmentDate"] = today
+    else:
+        # For Pending/Preparing: clear the statusDate
         existing.pop("appointmentDate", None)
 
     existing["updatedAt"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -1730,7 +1834,8 @@ def picklist_pdf(payload: Dict[str, Any]):
     summary = result.get("summary") or {}
 
     pdf_bytes = generate_picklist_pdf(po_numbers, items, summary)
-    return Response(content=pdf_bytes, media_type="application/pdf")
+    headers = {"Content-Disposition": 'attachment; filename="picklist.pdf"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/picklist/pdf")
@@ -1750,7 +1855,7 @@ def picklist_pdf_get(poNumbers: str = Query("", description="Comma-separated PO 
     summary = result.get("summary") or {}
 
     pdf_bytes = generate_picklist_pdf(po_numbers, items, summary)
-    headers = {"Content-Disposition": 'inline; filename="picklist.pdf"'}
+    headers = {"Content-Disposition": 'attachment; filename="picklist.pdf"'}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 

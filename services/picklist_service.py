@@ -57,22 +57,27 @@ def consolidate_picklist(
                 if key in oos_keys:
                     continue
                 try:
-                    qty_num = float(row.get("ordered_qty") or 0)
+                    accepted_qty = float(row.get("accepted_qty") or 0)
                 except Exception:
-                    qty_num = 0
-                added = upsert_oos_entry_fn(
-                    oos_state,
-                    po_number=po_num,
-                    asin=asin,
-                    vendor_sku=sku or None,
-                    po_date=None,
-                    ship_to_party=None,
-                    qty=qty_num,
-                    image=(catalog.get(asin) or {}).get("image"),
-                )
-                if added:
-                    new_oos_added = True
-                    oos_keys.add(key)
+                    accepted_qty = 0
+                if accepted_qty <= 0:
+                    try:
+                        qty_num = float(row.get("ordered_qty") or 0)
+                    except Exception:
+                        qty_num = 0
+                    added = upsert_oos_entry_fn(
+                        oos_state,
+                        po_number=po_num,
+                        asin=asin,
+                        vendor_sku=sku or None,
+                        po_date=None,
+                        ship_to_party=None,
+                        qty=qty_num,
+                        image=(catalog.get(asin) or {}).get("image"),
+                    )
+                    if added:
+                        new_oos_added = True
+                        oos_keys.add(key)
     except Exception as exc:
         logger.warning(f"[Picklist] Failed to load vendor_po_lines for rejection filter: {exc}")
 
@@ -125,39 +130,51 @@ def consolidate_picklist(
                 sku = it.get("vendorProductIdentifier") or ""
                 key_po_asin = f"{po_num}::{asin}" if asin else ""
 
-                if asin and (is_rejected_line(it) or key_po_asin in rejected_line_keys):
-                    try:
-                        if qty_num <= 0:
+                if asin and key_po_asin in rejected_line_keys:
+                    accepted_qty = 0
+                    ack = it.get("acknowledgementStatus") or {}
+                    if isinstance(ack, dict):
+                        try:
+                            accepted_qty = float(ack.get("acceptedQuantity") or 0)
+                        except Exception:
+                            accepted_qty = 0
+                    if accepted_qty > 0:
+                        pass
+                    else:
+                        try:
+                            if qty_num <= 0:
+                                qty_num = None
+                        except Exception:
                             qty_num = None
-                    except Exception:
-                        qty_num = None
-                    added = upsert_oos_entry_fn(
-                        oos_state,
-                        po_number=po_num,
-                        asin=asin,
-                        vendor_sku=sku or None,
-                        po_date=po_date,
-                        ship_to_party=ship_to,
-                        qty=qty_num,
-                        image=(catalog.get(asin) or {}).get("image"),
-                    )
-                    if added:
-                        new_oos_added = True
-                        oos_keys.add(key_po_asin)
-                    continue
+                        added = upsert_oos_entry_fn(
+                            oos_state,
+                            po_number=po_num,
+                            asin=asin,
+                            vendor_sku=sku or None,
+                            po_date=po_date,
+                            ship_to_party=ship_to,
+                            qty=qty_num,
+                            image=(catalog.get(asin) or {}).get("image"),
+                        )
+                        if added:
+                            new_oos_added = True
+                            oos_keys.add(key_po_asin)
+                        continue
 
                 if not asin:
                     continue
 
+                ckey = (asin, sku)
+                is_oos = False
+                
                 if key_po_asin in oos_keys:
-                    continue
-                if any(
+                    is_oos = True
+                elif any(
                     (entry.get("asin") == asin and entry.get("vendorSku") == sku)
                     for entry in (oos_state.values() if isinstance(oos_state, dict) else [])
                 ):
-                    continue
+                    is_oos = True
 
-                ckey = (asin, sku)
                 if ckey not in consolidated:
                     info = catalog.get(asin) or {}
                     master_sku = info.get("sku")
@@ -169,9 +186,11 @@ def consolidate_picklist(
                         "title": info.get("title"),
                         "image": info.get("image"),
                         "totalQty": 0,
+                        "isOutOfStock": is_oos,
                     }
                 consolidated[ckey]["totalQty"] += qty_num
-                total_units += qty_num
+                if not is_oos:
+                    total_units += qty_num
 
     if new_oos_added:
         save_oos_state_fn(oos_state)
