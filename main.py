@@ -770,7 +770,75 @@ def fetch_detailed_po_with_status(po_number: str):
         return None
 
 
-def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, int]) -> None:
+def _compute_total_accepted_cost(po: Dict[str, Any], accepted_line_map: Dict[str, int]) -> tuple:
+    """
+    Compute total accepted cost = sum(accepted_qty * netCost.amount) for all items in the PO.
+    
+    BUGFIX: Previous implementation only summed unit costs without multiplying by accepted quantities.
+    This function correctly computes: for each item, accepted_qty (from vendor_po_lines) * unit_price (from netCost).
+    
+    Args:
+        po: PO dict with orderDetails.items[]
+        accepted_line_map: dict mapping ASIN (amazonProductIdentifier) -> accepted_qty from vendor_po_lines
+    
+    Returns:
+        (total_cost: Decimal, currency_code: str)
+    """
+    from decimal import Decimal, InvalidOperation
+    
+    total_cost = Decimal("0")
+    currency_code = "AED"
+    po_num = po.get("purchaseOrderNumber", "?")
+    
+    order_details = po.get("orderDetails", {}) or {}
+    items = order_details.get("items", []) or []
+    
+    for item in items:
+        try:
+            asin = item.get("amazonProductIdentifier", "")
+            if not asin:
+                continue
+            
+            # Get accepted quantity for this ASIN from vendor_po_lines map
+            accepted_qty = accepted_line_map.get(asin, 0)
+            if accepted_qty <= 0:
+                # Skip items with no accepted quantity
+                continue
+            
+            # Get netCost
+            net_cost_obj = item.get("netCost", {})
+            if not isinstance(net_cost_obj, dict):
+                continue
+            
+            cost_amount_str = net_cost_obj.get("amount", "")
+            if not cost_amount_str:
+                continue
+            
+            # Update currency from this item if present
+            if net_cost_obj.get("currencyCode"):
+                currency_code = net_cost_obj.get("currencyCode")
+            
+            # Parse unit price as Decimal (safe handling)
+            try:
+                unit_price = Decimal(str(cost_amount_str))
+            except (InvalidOperation, ValueError, TypeError):
+                logger.warning(f"[VendorPO] Could not parse netCost.amount '{cost_amount_str}' for ASIN {asin} in PO {po_num}")
+                continue
+            
+            # Compute line cost = accepted_qty * unit_price
+            line_cost = Decimal(accepted_qty) * unit_price
+            total_cost += line_cost
+            logger.debug(f"[VendorPO] PO {po_num} ASIN {asin}: accepted_qty={accepted_qty} * unit_price={unit_price} = line_cost={line_cost}")
+            
+        except Exception as e:
+            logger.error(f"[VendorPO] Error processing item in PO {po_num}: {e}", exc_info=True)
+            continue
+    
+    logger.info(f"[VendorPO] PO {po_num}: total_accepted_cost = {total_cost} {currency_code}")
+    return total_cost, currency_code
+
+
+def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, int], accepted_line_map: Dict[str, int] = None) -> None:
     """
     Compute Vendor Central-style display columns from line totals and PO data.
     Adds the following derived fields to the PO dict:
@@ -781,8 +849,8 @@ def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, i
     - receivedQty: total received quantity (units)
     - remainingQty: accepted - received - cancelled (units)
     - cancelledQty: total cancelled quantity (units)
-    - totalAcceptedCostAmount: computed from line-level netCost and accepted quantities
-    - totalAcceptedCostCurrency: currency code for the cost
+    - total_accepted_cost: sum(accepted_qty * netCost.amount) for all items (FIXED: was just summing unit prices)
+    - total_accepted_cost_currency: currency code for the cost
     - amazonStatus: raw purchaseOrderState from SP-API
     """
     from decimal import Decimal
@@ -807,30 +875,17 @@ def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, i
     po["remainingQty"] = remaining
     po["cancelledQty"] = cancelled
     
-    # Compute total accepted cost from order items
-    total_cost = Decimal("0")
-    currency_code = "AED"
-    order_details = po.get("orderDetails", {}) or {}
-    items = order_details.get("items", []) or []
+    # Compute total accepted cost from order items and accepted quantities
+    # FIXED: Now correctly multiplies accepted_qty * unit_price instead of just summing unit prices
+    if accepted_line_map is None:
+        accepted_line_map = {}
     
-    for item in items:
-        try:
-            # Get accepted quantity for this line (from line_totals we don't have per-line, so use ordered as proxy)
-            # In a real scenario, we'd join with vendor_po_lines, but for now use netCost from item
-            net_cost_obj = item.get("netCost", {})
-            if isinstance(net_cost_obj, dict):
-                cost_amount = net_cost_obj.get("amount", "0")
-                if net_cost_obj.get("currencyCode"):
-                    currency_code = net_cost_obj.get("currencyCode")
-                # Try to parse the amount
-                try:
-                    line_cost = Decimal(str(cost_amount or 0))
-                except Exception:
-                    line_cost = Decimal("0")
-                total_cost += line_cost
-        except Exception as e:
-            logger.debug(f"[VendorPO] Error computing cost for line in {po_num}: {e}")
+    total_cost, currency_code = _compute_total_accepted_cost(po, accepted_line_map)
     
+    po["total_accepted_cost"] = float(total_cost)
+    po["total_accepted_cost_currency"] = currency_code
+    
+    # Also set legacy field names for backward compatibility
     po["totalAcceptedCostAmount"] = str(total_cost)
     po["totalAcceptedCostCurrency"] = currency_code
     
@@ -854,6 +909,8 @@ def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
     Attach aggregated quantities from vendor_po_lines to each PO in pos_list.
     Exposes total_ordered_qty, total_accepted_qty, total_received_qty, total_pending_qty,
     total_cancelled_qty, total_shortage_qty, and Vendor Central-style columns for display.
+    
+    Also builds per-line accepted_qty map (keyed by ASIN) for cost calculation.
     """
     if not pos_list:
         return
@@ -865,6 +922,8 @@ def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
     try:
         with time_block(f"vendor_po_lines.aggregate:{len(po_numbers)}"):
             agg_map = db_repos.get_vendor_po_line_totals(po_numbers)
+            # Also fetch per-line accepted quantities for cost calculation
+            line_details_map = db_repos.get_vendor_po_line_details(po_numbers)
     except Exception as e:
         logger.error(f"[VendorPO] Error aggregating vendor_po_lines: {e}", exc_info=True)
         for po in pos_list:
@@ -899,7 +958,16 @@ def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
             po.setdefault("total_cancelled_qty", 0)
             po.setdefault("total_shortage_qty", 0)
         
-        _compute_vendor_central_columns(po, totals if totals else {})
+        # Build ASIN-keyed accepted_qty map for this PO
+        accepted_line_map = {}
+        po_lines = line_details_map.get(po_num, [])
+        for line in po_lines:
+            asin = line.get("asin", "")
+            accepted_qty = line.get("accepted_qty", 0)
+            if asin:
+                accepted_line_map[asin] = accepted_qty
+        
+        _compute_vendor_central_columns(po, totals if totals else {}, accepted_line_map)
         po.setdefault("total_received_qty", 0)
         po.setdefault("total_pending_qty", 0)
 

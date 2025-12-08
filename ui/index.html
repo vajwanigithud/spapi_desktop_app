@@ -613,8 +613,9 @@
         const remainingQty = formatQtyWithUnits(po.remainingQty);
         const cancelledQty = formatQtyWithUnits(po.cancelledQty);
         
-        const costAmount = po.totalAcceptedCostAmount || "0.00";
-        const costCurrency = po.totalAcceptedCostCurrency || "AED";
+        // FIXED: Use corrected total_accepted_cost (accepted_qty * unit_price)
+        const costAmount = po.total_accepted_cost ? po.total_accepted_cost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00";
+        const costCurrency = po.total_accepted_cost_currency || po.totalAcceptedCostCurrency || "AED";
         const totalAcceptedCost = `${costCurrency} ${costAmount}`;
         
         const internalStatus = po._internalStatus || "Pending";

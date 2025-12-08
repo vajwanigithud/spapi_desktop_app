@@ -195,6 +195,45 @@ def get_vendor_po_line_totals_for_po(po_number: str) -> Dict[str, int]:
         raise
 
 
+def get_vendor_po_line_details(po_numbers: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Fetch per-line ASIN and accepted_qty for cost calculation.
+    Returns a dict mapping po_number -> list of {asin, sku, accepted_qty, ...}.
+    """
+    if not po_numbers:
+        return {}
+    qmarks = ",".join(["?"] * len(po_numbers))
+    try:
+        with time_block(f"vendor_po_lines_details:{len(po_numbers)}"):
+            with get_db_connection() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        po_number,
+                        asin,
+                        sku,
+                        accepted_qty,
+                        ordered_qty,
+                        received_qty
+                    FROM vendor_po_lines
+                    WHERE po_number IN ({qmarks})
+                    """,
+                    po_numbers,
+                ).fetchall()
+                
+                # Group by po_number
+                result = {}
+                for row in rows:
+                    po_num = row["po_number"]
+                    if po_num not in result:
+                        result[po_num] = []
+                    result[po_num].append(dict(row))
+                return result
+    except Exception as exc:
+        logger.error(f"[DBRepo] Failed to fetch vendor_po_line_details for {len(po_numbers)} POs: {exc}", exc_info=True)
+        raise
+
+
 def count_vendor_po_lines() -> int:
     try:
         with time_block("vendor_po_lines_count"):
