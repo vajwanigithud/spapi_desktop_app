@@ -1831,10 +1831,10 @@
     },
     {
       "purchaseOrderNumber": "38G9G38J",
-      "purchaseOrderState": "Acknowledged",
+      "purchaseOrderState": "Closed",
       "orderDetails": {
         "purchaseOrderDate": "2025-11-26T00:30:06Z",
-        "purchaseOrderStateChangedDate": "2025-11-26T09:18:07Z",
+        "purchaseOrderStateChangedDate": "2025-12-08T17:26:16Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {

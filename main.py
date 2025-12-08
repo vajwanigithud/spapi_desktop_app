@@ -770,6 +770,71 @@ def fetch_detailed_po_with_status(po_number: str):
         return None
 
 
+def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
+    """
+    For each item in items (from itemStatus), compute accepted_line_amount = accepted_qty * netCost.amount.
+    Also accumulates PO-level accepted total.
+    
+    Returns:
+        (items_with_amounts, po_total_amount, currency_code)
+        where items_with_amounts is the list with accepted_line_amount added to each item
+    """
+    from decimal import Decimal, InvalidOperation
+    
+    po_total = Decimal("0")
+    currency_code = "AED"
+    
+    for item in items:
+        try:
+            # Get accepted quantity from acknowledgementStatus
+            ack_status = item.get("acknowledgementStatus", {}) or {}
+            accepted_qty_obj = ack_status.get("acceptedQuantity", {}) or {}
+            accepted_qty = 0
+            if isinstance(accepted_qty_obj, dict):
+                accepted_qty = _parse_qty(accepted_qty_obj)
+            
+            # If no acknowledgement yet, use 0 for accepted
+            if accepted_qty <= 0:
+                item["accepted_line_amount"] = 0.0
+                continue
+            
+            # Get netCost
+            net_cost_obj = item.get("netCost", {}) or {}
+            if not isinstance(net_cost_obj, dict):
+                item["accepted_line_amount"] = 0.0
+                continue
+            
+            cost_amount_str = net_cost_obj.get("amount", "")
+            if not cost_amount_str:
+                item["accepted_line_amount"] = 0.0
+                continue
+            
+            # Update currency from this item if present
+            if net_cost_obj.get("currencyCode"):
+                currency_code = net_cost_obj.get("currencyCode")
+            
+            # Parse unit price as Decimal
+            try:
+                unit_price = Decimal(str(cost_amount_str))
+            except (InvalidOperation, ValueError, TypeError):
+                asin = item.get("amazonProductIdentifier", "?")
+                logger.warning(f"[VendorPO] Could not parse netCost.amount '{cost_amount_str}' for ASIN {asin}")
+                item["accepted_line_amount"] = 0.0
+                continue
+            
+            # Compute line cost = accepted_qty * unit_price
+            line_cost = Decimal(accepted_qty) * unit_price
+            item["accepted_line_amount"] = float(line_cost)
+            po_total += line_cost
+            
+        except Exception as e:
+            logger.error(f"[VendorPO] Error processing item for accepted amount: {e}", exc_info=True)
+            item["accepted_line_amount"] = 0.0
+            continue
+    
+    return items, po_total, currency_code
+
+
 def _compute_total_accepted_cost(po: Dict[str, Any], accepted_line_map: Dict[str, int]) -> tuple:
     """
     Compute total accepted cost = sum(accepted_qty * netCost.amount) for all items in the PO.
@@ -1364,6 +1429,23 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
                 po["orderDetails"]["items"] = status_items
     except Exception as exc:
         logger.warning(f"[VendorPO] Could not attach status items for PO {po_number}: {exc}")
+
+    # Compute accepted line amounts for modal display
+    try:
+        items = po.get("orderDetails", {}).get("items", []) or []
+        if items:
+            items_with_amounts, po_total, currency = _compute_accepted_line_amounts(items)
+            po["orderDetails"]["items"] = items_with_amounts
+            po["accepted_total_amount"] = float(po_total)
+            po["accepted_total_currency"] = currency
+            logger.info(f"[VendorPO] PO {po_number} modal: accepted_total = {po_total} {currency}")
+        else:
+            po["accepted_total_amount"] = 0.0
+            po["accepted_total_currency"] = "AED"
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to compute accepted amounts for PO {po_number}: {exc}")
+        po["accepted_total_amount"] = 0.0
+        po["accepted_total_currency"] = "AED"
 
     if enrich:
         try:
