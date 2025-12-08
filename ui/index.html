@@ -61,11 +61,6 @@
       .shortage-icon::before { content: "⚠️ "; }
       .qty-detail-btn { background: #3b82f6; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
       .qty-detail-btn:hover { background: #2563eb; }
-      .ack-history-card { margin-top: 16px; padding: 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; }
-      .ack-history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      .ack-history-table th, .ack-history-table td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
-      .ack-history-table th { background: #e2e8f0; }
-      .tx-id { font-family: monospace; }
   </style>
 </head>
 <body>
@@ -89,6 +84,7 @@
         <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
         <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
         <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button>
+        <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button>
       </div>
   </div>
 
@@ -249,6 +245,30 @@
         </div>
       </div>
     </div>
+  <div class="panel" id="notifications-tab" style="display:none; margin-top:14px;">
+    <h2>Notifications</h2>
+    <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn" onclick="loadNotifications()">Reload Notifications</button>
+        <span id="notifications-status" style="font-size:12px; color:#6b7280;"></span>
+      </div>
+      <div style="overflow:auto; max-height:60vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>TS</th>
+              <th>Type</th>
+              <th>PO</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody id="notifications-rows">
+            <tr><td colspan="4" class="empty">No notifications</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   </div>
   </div>
 
@@ -300,6 +320,7 @@
     let testerPresets = [];
     let testerHost = "";
     let catalogImageCache = {};
+    let recentNotifications = [];
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -383,6 +404,48 @@
       }
     }
 
+    async function loadNotifications() {
+      const statusEl = document.getElementById("notifications-status");
+      const tbody = document.getElementById("notifications-rows");
+      if (statusEl) statusEl.textContent = "Loading...";
+      if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty">Loading...</td></tr>';
+      try {
+        const resp = await fetch("/api/vendor-notifications/recent");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        recentNotifications = data.items || [];
+        if (!recentNotifications.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="empty">No notifications</td></tr>';
+        } else {
+          tbody.innerHTML = recentNotifications.map(n => {
+            const poLink = n.po
+              ? `<a href="#" onclick="openNotificationPo('${n.po}'); return false;">${escapeHtml(n.po)}</a>`
+              : "";
+            return `<tr>
+              <td>${formatTs(n.ts)}</td>
+              <td>${escapeHtml(n.notificationType || "")}</td>
+              <td>${poLink}</td>
+              <td>${escapeHtml(n.summary || "")}</td>
+            </tr>`;
+          }).join("");
+        }
+        if (statusEl) statusEl.textContent = `Loaded ${recentNotifications.length} notifications`;
+      } catch (err) {
+        console.error("Failed to load notifications", err);
+        if (statusEl) statusEl.textContent = "Failed to load notifications";
+        if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty">Failed to load notifications</td></tr>';
+      }
+    }
+
+    function openNotificationPo(poNumber) {
+      const po = vendorPOs.find(p => p.purchaseOrderNumber === poNumber);
+      if (po) {
+        openModal(po);
+      } else {
+        alert(`PO ${poNumber} not found in current list. Please sync or search.`);
+      }
+    }
+
     async function rebuildPOs() {
       const btn = document.getElementById("rebuild-btn");
       const syncBtn = document.getElementById("sync-btn");
@@ -437,6 +500,10 @@
         const rowColor = getRowColorForStatus(internalStatus);
 
         const poNumber = po.purchaseOrderNumber || "";
+        const flags = po.notificationFlags || {};
+        const notifBadge = flags.has_recent_notifications
+          ? `<span style="margin-left:6px; padding:2px 6px; border-radius:6px; background:#fef3c7; color:#92400e; font-size:11px;" title="Last notification: ${escapeHtml(flags.last_notification_summary || "")} at ${formatTs(flags.last_notification_ts || "")}${flags.needs_refresh ? ' • Needs refresh' : ''}">${flags.needs_refresh ? "Update Ready" : "Updated"}</span>`
+          : "";
         const shipTo = d.shipToParty?.partyId || "";
         const isChecked = selectedPoNumbers.includes(poNumber);
         const totalOrdered = Number(po.total_ordered_qty) || 0;
@@ -479,7 +546,7 @@
 
         tr.innerHTML = `
       <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
-      <td>${poNumber}</td>
+      <td><div style="display:flex; align-items:center; gap:6px;">${poNumber}${notifBadge}</div></td>
       <td>${po.purchaseOrderState || ""}</td>
       <td>${fmtDate(getPoDate(po))}</td>
       <td><strong>${shipTo}</strong></td>
@@ -559,6 +626,10 @@
 
       const d = enrichedPo.orderDetails || {};
       const items = d.items || [];
+      const notifFlags = enrichedPo.notificationFlags || {};
+      const notifLine = notifFlags.has_recent_notifications
+        ? `<div style="font-size:12px; color:#0ea5e9; margin-bottom:8px;">Last Amazon notification: ${escapeHtml(notifFlags.last_notification_summary || "")} at ${formatTs(notifFlags.last_notification_ts || "")}${notifFlags.needs_refresh ? " • refresh applied" : ""}</div>`
+        : `<div style="font-size:12px; color:#6b7280; margin-bottom:8px;">No recent notifications</div>`;
       await syncRejectedLinesToOos(poNumber, items, getPoDate(enrichedPo), d.shipToParty?.partyId || "");
       const poDate = getPoDate(enrichedPo);
       const shipTo = d.shipToParty?.partyId || "";
@@ -585,18 +656,12 @@
         const encodedImage = encodeURIComponent(rawImageUrl || "");
 
         return `<tr oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
-          <td><input type="checkbox" class="ack-select" data-seq="${seq}" data-asin="${asin}" data-sku="${vendorSku}" /></td>
           <td>${seq}</td>
           <td>${img}</td>
           <td data-col="ordered">${qtyAmount}</td>
-          <td><input class="ack-accepted" data-seq="${seq}" type="number" min="0" step="1" value="${accAmt}" style="width:80px;" /></td>
-          <td><input class="ack-rejected" data-seq="${seq}" type="number" min="0" step="1" value="${rejAmt}" style="width:80px;" /></td>
-          <td>
-            <select class="ack-status" data-seq="${seq}" style="width:110px;">
-              <option value="ACCEPTED" ${currStatus === "ACCEPTED" ? "selected" : ""}>ACCEPTED</option>
-              <option value="REJECTED" ${currStatus === "REJECTED" ? "selected" : ""}>REJECTED</option>
-            </select>
-          </td>
+          <td>${accAmt}</td>
+          <td>${rejAmt}</td>
+          <td>${currStatus}</td>
           <td>${Number.isFinite(netNum) && netNum ? netNum.toFixed(2) : ""}</td>
           <td>${netCurrency || ""}</td>
           <td>${Number.isFinite(total) && total ? total.toFixed(2) : ""}</td>
@@ -606,10 +671,10 @@
       titleEl.textContent = `PO ${poNumber} Items`;
       body.innerHTML = `
         <div style="overflow:auto; max-height:70vh;">
+          ${notifLine}
           <table class="table">
             <thead>
               <tr>
-                <th>Select</th>
                 <th>Seq</th>
                 <th>Image</th>
                 <th>Ordered</th>
@@ -621,23 +686,11 @@
                 <th>Total Amount</th>
               </tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="8" class="empty">No items</td></tr>'}</tbody>
+            <tbody>${rows || '<tr><td colspan="9" class="empty">No items</td></tr>'}</tbody>
           </table>
-          <div style="margin-top:12px; display:flex; gap:10px; align-items:center; justify-content:flex-end;">
-            <button class="btn" style="background:#0d9488" onclick="submitAcknowledgement('${poNumber}')">Submit Acknowledgement</button>
-          </div>
-          <div class="ack-history-card">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-              <div style="font-weight:700;">Acknowledgement History</div>
-              <button class="btn" style="padding:4px 8px; font-size:12px; background:#0ea5e9;" onclick="refreshAckStatus('${poNumber}', 'ack-history-content-modal')">Refresh Status</button>
-            </div>
-            <div id="ack-history-content-modal" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
-          </div>
-          <pre id="ack-log" style="margin-top:10px; padding:8px; background:#0b1221; color:#cbd5e1; border-radius:6px; max-height:180px; overflow:auto; font-size:12px;"></pre>
         </div>
       `;
       modal.style.display = "flex";
-      loadAckHistory(poNumber, "ack-history-content-modal");
       populateMissingImages(items);
     }
 
@@ -685,93 +738,6 @@
       return "";
     }
 
-    async function submitAcknowledgement(poNumber) {
-      const modal = document.getElementById("modal");
-      const ackLog = document.getElementById("ack-log");
-      const appendLog = (msg) => {
-        if (ackLog) {
-          const ts = new Date().toISOString();
-          ackLog.textContent += `\\n[${ts}] ${msg}`;
-          ackLog.scrollTop = ackLog.scrollHeight;
-        } else {
-          console.log("[Ack]", msg);
-        }
-      };
-
-      const seqInputs = modal.querySelectorAll(".ack-status");
-      const items = [];
-      seqInputs.forEach(sel => {
-        const seq = sel.dataset.seq;
-        const status = sel.value;
-        const accInput = modal.querySelector(`.ack-accepted[data-seq="${seq}"]`);
-        const rejInput = modal.querySelector(`.ack-rejected[data-seq="${seq}"]`);
-        const accepted = Number(accInput?.value || 0);
-        const rejected = Number(rejInput?.value || 0);
-        const rowSelected = modal.querySelector(`.ack-select[data-seq="${seq}"]`);
-        if (rowSelected && !rowSelected.checked) {
-          return;
-        }
-        items.push({
-          itemSequenceNumber: seq,
-          confirmationStatus: status,
-          acceptedQuantity: accepted,
-          rejectedQuantity: rejected,
-          buyerProductIdentifier: rowSelected?.dataset.asin || "",
-          vendorProductIdentifier: rowSelected?.dataset.sku || "",
-        });
-      });
-
-      if (!items.length) {
-        alert("Select at least one line to acknowledge.");
-        return;
-      }
-
-      // Basic validation: for each line, accepted+rejected should match ordered if we know it
-        const rows = modal.querySelectorAll("tbody tr");
-        for (const row of rows) {
-          const ordered = Number(row.querySelector('[data-col="ordered"]')?.innerText || 0);
-          const seq = row.children[1]?.innerText || "";
-          const item = items.find(i => i.itemSequenceNumber === seq);
-          if (item && ordered && (item.acceptedQuantity + item.rejectedQuantity) !== ordered) {
-            alert(`Line ${seq}: accepted + rejected must equal ordered (${ordered})`);
-            return;
-          }
-      }
-
-      try {
-        const requestPayload = {
-          purchaseOrderNumber: poNumber,
-          items: items,
-        };
-        appendLog(`Sending: ${JSON.stringify(requestPayload)}`);
-        const resp = await fetch("/api/vendor-pos/acknowledge", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestPayload),
-        });
-        if (!resp.ok) {
-          const txt = await resp.text();
-          appendLog(`Ack failed (${resp.status}): ${txt}`);
-          alert(`Ack failed (${resp.status}) - see log box.`);
-          return;
-        }
-        const data = await resp.json();
-        appendLog(`Ack success: transactionId=${data.transactionId || "n/a"}`);
-        showToast(`Acknowledgement sent. Transaction ID: ${data.transactionId || "n/a"}`);
-        // Refresh acknowledgement history if the panel is visible
-        loadAckHistory(poNumber, "ack-history-content-modal");
-      } catch (e) {
-        console.error("Ack error", e);
-        appendLog(`Ack exception: ${e}`);
-        alert("Failed to send acknowledgement; see log/console.");
-      }
-      // On any response, if we got headers/body, append raw response text for debugging
-      try {
-        const raw = await fetch(`/api/vendor-pos/${encodeURIComponent(poNumber)}`);
-      } catch (e) {
-        /* ignore */
-      }
-    }
 
     async function updatePoStatus(poNumber, selectEl) {
       const newStatus = selectEl.value;
@@ -1071,16 +1037,8 @@
                 </tbody>
               </table>
             </div>
-            <div class="ack-history-card">
-              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-                <div style="font-weight:700;">Acknowledgement History</div>
-                <button class="btn" style="padding:4px 8px; font-size:12px; background:#0ea5e9;" onclick="refreshAckStatus('${poNumber}', 'ack-history-content')">Refresh Status</button>
-              </div>
-              <div id="ack-history-content" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
-            </div>
           </div>
         `;
-        loadAckHistory(poNumber, "ack-history-content");
       } catch (err) {
         console.error("Failed to load PO lines", err);
         bodyEl.innerHTML = `<div style="padding:16px; color:#dc2626;">⚠️ Failed to load line details: ${err.message || err}</div>`;
@@ -1147,125 +1105,6 @@
       return { netAmount: amount, netCurrency: currency };
     }
 
-    async function loadAckHistory(poNumber, targetId = "ack-history-content") {
-      const container = document.getElementById(targetId);
-      if (!container) return;
-      container.innerHTML = '<div style="padding:8px; color:#6b7280;">Loading acknowledgement history...</div>';
-
-      const escapeAttr = (val) => {
-        if (!val) return "";
-        return String(val).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-      };
-
-      try {
-        const resp = await fetch(`/api/vendor-pos/ack-log/${encodeURIComponent(poNumber)}`);
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
-        }
-        const data = await resp.json();
-        const entries = (data && data.entries) || [];
-        if (!entries.length) {
-          container.innerHTML = '<div style="padding:8px; color:#6b7280;">No acknowledgements logged for this PO.</div>';
-          return;
-        }
-
-        const rows = entries.map(entry => {
-          const txShort = entry.transactionId ? `${entry.transactionId.slice(0, 10)}…` : "";
-          const errors = Array.isArray(entry.transactionErrors) ? entry.transactionErrors : [];
-          const errorLines = errors
-            .map(err => {
-              const code = err?.code || err?.errorCode || "";
-              const msg = err?.message || err?.errorMessage || "";
-              return [code, msg].filter(Boolean).join(": ");
-            })
-            .filter(Boolean);
-          const errorTip = errorLines.length ? errorLines.join("\n") : (entry.errorSummary || "");
-          const summary = errorTip
-            ? errorLines[0] || entry.errorSummary
-            : `${entry.lineCount || 0} lines, ${entry.acceptedTotal || 0} accepted, ${entry.rejectedTotal || 0} rejected`;
-
-          const txCell = entry.transactionId
-            ? `${txShort} <button class="btn" style="padding:2px 6px; font-size:11px; margin-left:4px; background:#0f172a;" onclick="copyTxId('${entry.transactionId}')">Copy</button>`
-            : "";
-
-          const status = entry.transactionStatus || "";
-          let statusColor = "#6b7280";
-          if (status === "Success") statusColor = "#16a34a";
-          else if (status === "Failure") statusColor = "#dc2626";
-          else if (status === "Processing") statusColor = "#b45309";
-          else if (status === "RateLimited") statusColor = "#0ea5e9";
-          const statusLabel = status || "—";
-          const statusHtml = `<span style="font-weight:700; color:${statusColor};" ${errorTip ? `title="${escapeAttr(errorTip)}"` : ""}>${statusLabel}</span>`;
-
-          return `<tr>
-            <td>${formatTs(entry.ts)}</td>
-            <td>${entry.httpStatus ?? ""}</td>
-            <td class="tx-id">${txCell}</td>
-            <td>${statusHtml}</td>
-            <td>${summary}</td>
-          </tr>`;
-        }).join("");
-
-        container.innerHTML = `
-          <div style="overflow:auto; max-height:200px;">
-            <table class="ack-history-table">
-              <thead>
-                <tr>
-                  <th style="width:120px;">TS</th>
-                  <th style="width:70px;">HTTP</th>
-                  <th style="width:200px;">Transaction ID</th>
-                  <th style="width:120px;">Status</th>
-                  <th>Summary</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        `;
-      } catch (err) {
-        console.error("Failed to load ack log", err);
-        container.innerHTML = '<div style="padding:8px; color:#dc2626;">Failed to load acknowledgement history.</div>';
-      }
-    }
-
-    function copyTxId(txId) {
-      if (!txId) return;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(txId).then(() => {
-          showToast("Transaction ID copied");
-        }).catch(() => {});
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = txId;
-        document.body.appendChild(textarea);
-        textarea.select();
-        try { document.execCommand("copy"); } catch (e) {}
-        document.body.removeChild(textarea);
-        showToast("Transaction ID copied");
-      }
-    }
-
-    async function refreshAckStatus(poNumber, targetId = "ack-history-content") {
-      if (!poNumber) return;
-      try {
-        const resp = await fetch(`/api/vendor-pos/ack-status/refresh/${encodeURIComponent(poNumber)}`, {
-          method: "POST",
-        });
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
-        }
-        const data = await resp.json();
-        if (data.updated) {
-          showToast("Status refreshed.");
-        } else {
-          showToast("No acknowledgements in processing state.");
-        }
-        loadAckHistory(poNumber, targetId);
-      } catch (err) {
-        console.error("Ack status refresh failed", err);
-        showToast("Failed to refresh status.");
-      }
-    }
 
     function copyCatalogJson() {
       const pre = document.getElementById("catalog-json");
@@ -1384,6 +1223,16 @@
       return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
     }
 
+    function escapeHtml(str) {
+      if (str === undefined || str === null) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     function formatSyncTime(d) {
       if (!d) return "—";
       const dd = String(d.getDate()).padStart(2, "0");
@@ -1434,6 +1283,13 @@
       const testerEl = document.getElementById("tester-tab");
       if (testerEl) {
         testerEl.style.display = tab === "tester" ? "block" : "none";
+      }
+      const notifEl = document.getElementById("notifications-tab");
+      if (notifEl) {
+        notifEl.style.display = tab === "notifications" ? "block" : "none";
+        if (tab === "notifications") {
+          loadNotifications();
+        }
       }
       if (tab === "catalog" && !asinList.length) {
         loadAsinList();

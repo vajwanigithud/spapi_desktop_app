@@ -68,3 +68,25 @@ def execute_write(sql: str, params: tuple = (), commit: bool = True):
                 if "database is locked" in str(e):
                     logger.error(f"[DB] Database locked after {_db_timeout}s timeout: {e}")
                 raise
+            except Exception as exc:
+                logger.error(f"[DB] Write failed for SQL: {sql} params={params}: {exc}", exc_info=True)
+                raise
+
+
+def execute_many_write(sql: str, seq_of_params: list[tuple], commit: bool = True) -> None:
+    """
+    Batched write helper with the same write lock/timeout safety.
+    """
+    with _db_write_lock:
+        with get_db_connection() as conn:
+            try:
+                conn.executemany(sql, seq_of_params)
+                if commit:
+                    conn.commit()
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    logger.error(f"[DB] Batch write locked after {_db_timeout}s timeout: {e}")
+                raise
+            except Exception as exc:
+                logger.error(f"[DB] Batch write failed for SQL: {sql} params_count={len(seq_of_params)}: {exc}", exc_info=True)
+                raise

@@ -115,13 +115,28 @@ class SpApiAuth:
             "x-amz-access-token": lwa_token
         }
 
-        resp = requests.post(url, json=body, headers=headers)
-        if resp.status_code != 200:
-            print("❌ RDT request failed")
-            print("Status:", resp.status_code)
-            print("URL:", url)
-            print("Body sent:", body)
-            print("Response:", resp.text)
-        resp.raise_for_status()
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(url, json=body, headers=headers, timeout=15)
+            except requests.RequestException as exc:
+                logger.warning(f"[Auth] RDT request error (attempt {attempt}/{max_attempts}): {exc}")
+                if attempt < max_attempts:
+                    time.sleep(attempt)
+                    continue
+                raise
 
-        return resp.json()["restrictedDataToken"]
+            if resp.status_code == 200:
+                return resp.json().get("restrictedDataToken")
+
+            logger.warning(
+                f"[Auth] RDT request failed (attempt {attempt}/{max_attempts}) "
+                f"status={resp.status_code} endpoint={url} body_snip={resp.text[:300]}"
+            )
+            if resp.status_code >= 500 or resp.status_code in (429, 408):
+                if attempt < max_attempts:
+                    time.sleep(attempt)
+                    continue
+            resp.raise_for_status()
+
+        raise RuntimeError("[Auth] Failed to obtain RDT after retries")

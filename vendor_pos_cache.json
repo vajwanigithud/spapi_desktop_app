@@ -2,10 +2,10 @@
   "items": [
     {
       "purchaseOrderNumber": "6HTP1VPO",
-      "purchaseOrderState": "New",
+      "purchaseOrderState": "Acknowledged",
       "orderDetails": {
         "purchaseOrderDate": "2025-12-08T00:42:59Z",
-        "purchaseOrderStateChangedDate": "2025-12-08T00:43:06Z",
+        "purchaseOrderStateChangedDate": "2025-12-08T11:04:19Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -120,7 +120,7 @@
           {
             "itemSequenceNumber": "6",
             "amazonProductIdentifier": "B0BWVF4JY4",
-            "vendorProductIdentifier": "B0BWVF4JY4",
+            "vendorProductIdentifier": "6959125752421",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -139,7 +139,7 @@
           {
             "itemSequenceNumber": "7",
             "amazonProductIdentifier": "B0G152Q5NX",
-            "vendorProductIdentifier": "B0G152Q5NX",
+            "vendorProductIdentifier": "6937517602684",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -177,7 +177,7 @@
           {
             "itemSequenceNumber": "9",
             "amazonProductIdentifier": "B0CL9SRHR6",
-            "vendorProductIdentifier": "B0CL9SRHR6",
+            "vendorProductIdentifier": "6976154504739",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -196,7 +196,7 @@
           {
             "itemSequenceNumber": "10",
             "amazonProductIdentifier": "B07RR1Z9Z8",
-            "vendorProductIdentifier": "B07RR1Z9Z8",
+            "vendorProductIdentifier": "9874586320156",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -234,7 +234,7 @@
           {
             "itemSequenceNumber": "12",
             "amazonProductIdentifier": "B0G1YTDY39",
-            "vendorProductIdentifier": "B0G1YTDY39",
+            "vendorProductIdentifier": "6937517602639",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -253,7 +253,7 @@
           {
             "itemSequenceNumber": "13",
             "amazonProductIdentifier": "B0G1H8R8CZ",
-            "vendorProductIdentifier": "B0G1H8R8CZ",
+            "vendorProductIdentifier": "6937517602677",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -291,7 +291,7 @@
           {
             "itemSequenceNumber": "15",
             "amazonProductIdentifier": "B0D7W7B2CT",
-            "vendorProductIdentifier": "B0D7W7B2CT",
+            "vendorProductIdentifier": "6976154509857",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -329,7 +329,7 @@
           {
             "itemSequenceNumber": "17",
             "amazonProductIdentifier": "B0G1HFR32V",
-            "vendorProductIdentifier": "B0G1HFR32V",
+            "vendorProductIdentifier": "6937517602400",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -367,7 +367,7 @@
           {
             "itemSequenceNumber": "19",
             "amazonProductIdentifier": "B0DG92ZFPJ",
-            "vendorProductIdentifier": "B0DG92ZFPJ",
+            "vendorProductIdentifier": "6976154507693",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -481,7 +481,7 @@
           {
             "itemSequenceNumber": "25",
             "amazonProductIdentifier": "B0FS7CFMQ3",
-            "vendorProductIdentifier": "B0FS7CFMQ3",
+            "vendorProductIdentifier": "6937517602202",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -519,7 +519,7 @@
           {
             "itemSequenceNumber": "27",
             "amazonProductIdentifier": "B0G1HB3NS1",
-            "vendorProductIdentifier": "B0G1HB3NS1",
+            "vendorProductIdentifier": "6937517602417",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -614,7 +614,7 @@
           {
             "itemSequenceNumber": "32",
             "amazonProductIdentifier": "B0CX8W6CWL",
-            "vendorProductIdentifier": "B0CX8W6CWL",
+            "vendorProductIdentifier": "6976154505897",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -652,7 +652,7 @@
           {
             "itemSequenceNumber": "34",
             "amazonProductIdentifier": "B0G1H5CH9Y",
-            "vendorProductIdentifier": "B0G1H5CH9Y",
+            "vendorProductIdentifier": "6937517602776",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -671,7 +671,7 @@
           {
             "itemSequenceNumber": "35",
             "amazonProductIdentifier": "B0G1H9T466",
-            "vendorProductIdentifier": "B0G1H9T466",
+            "vendorProductIdentifier": "6937517602769",
             "orderedQuantity": {
               "amount": 2,
               "unitOfMeasure": "Eaches",
@@ -823,7 +823,7 @@
           {
             "itemSequenceNumber": "43",
             "amazonProductIdentifier": "B0G1H8QM5Z",
-            "vendorProductIdentifier": "B0G1H8QM5Z",
+            "vendorProductIdentifier": "6937517602721",
             "orderedQuantity": {
               "amount": 1,
               "unitOfMeasure": "Eaches",
@@ -975,7 +975,7 @@
         ]
       },
       "total_received_qty": 0,
-      "total_pending_qty": 0
+      "total_pending_qty": 82
     },
     {
       "purchaseOrderNumber": "4EYAZAOY",
@@ -1929,8 +1929,8 @@
           }
         ]
       },
-      "total_received_qty": 0,
-      "total_pending_qty": 22
+      "total_received_qty": 22,
+      "total_pending_qty": 0
     },
     {
       "purchaseOrderNumber": "7TI5STLN",
@@ -4271,8 +4271,8 @@
           }
         ]
       },
-      "total_received_qty": 0,
-      "total_pending_qty": 297
+      "total_received_qty": 285,
+      "total_pending_qty": 12
     },
     {
       "purchaseOrderNumber": "1T1TA65C",
@@ -22636,8 +22636,8 @@
           }
         ]
       },
-      "total_received_qty": 0,
-      "total_pending_qty": 101
+      "total_received_qty": 90,
+      "total_pending_qty": 14
     },
     {
       "purchaseOrderNumber": "4AEMJ8ED",

@@ -1,3 +1,4 @@
+# NOTE: Forecast is currently disabled. This tool is kept only for manual maintenance of old data.
 import os
 import sys
 import sqlite3
