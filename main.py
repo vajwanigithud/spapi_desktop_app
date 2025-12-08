@@ -774,10 +774,11 @@ def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
     """
     For each item in items (from itemStatus), compute accepted_line_amount = accepted_qty * netCost.amount.
     Also accumulates PO-level accepted total.
+    Additionally extract received_qty from receivingStatus.receivedQuantity.
     
     Returns:
         (items_with_amounts, po_total_amount, currency_code)
-        where items_with_amounts is the list with accepted_line_amount added to each item
+        where items_with_amounts is the list with accepted_line_amount and received_qty added to each item
     """
     from decimal import Decimal, InvalidOperation
     
@@ -792,6 +793,14 @@ def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
             accepted_qty = 0
             if isinstance(accepted_qty_obj, dict):
                 accepted_qty = _parse_qty(accepted_qty_obj)
+            
+            # Extract received quantity from receivingStatus
+            recv_status = item.get("receivingStatus", {}) or {}
+            received_qty_obj = recv_status.get("receivedQuantity", {}) or {}
+            received_qty = 0
+            if isinstance(received_qty_obj, dict):
+                received_qty = _parse_qty(received_qty_obj)
+            item["received_qty"] = received_qty
             
             # If no acknowledgement yet, use 0 for accepted
             if accepted_qty <= 0:
@@ -830,6 +839,7 @@ def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
         except Exception as e:
             logger.error(f"[VendorPO] Error processing item for accepted amount: {e}", exc_info=True)
             item["accepted_line_amount"] = 0.0
+            item.setdefault("received_qty", 0)
             continue
     
     return items, po_total, currency_code

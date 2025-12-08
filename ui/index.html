@@ -67,6 +67,8 @@
       .qty-detail-btn:hover { background: #2563eb; }
       /* PO items modal: rejected line highlighting */
       .po-line-rejected { background-color: #fee2e2; }
+      /* PO items modal: received line highlighting */
+      .po-line-received { background-color: #dcfce7; }
       /* PO items modal: summary row */
       .po-items-summary td { border-top: 2px solid #e5e7eb; background-color: #f9fafb; font-weight: 600; }
   </style>
@@ -768,10 +770,19 @@
         const currStatus = (ack.confirmationStatus || "ACCEPTED").toUpperCase();
         const accAmt = toNum((ack.acceptedQuantity || {}).amount) || (currStatus === "ACCEPTED" ? qtyAmount : 0);
         const rejAmt = toNum((ack.rejectedQuantity || {}).amount) || (currStatus === "REJECTED" ? qtyAmount : 0);
+        
+        // Get received quantity (from backend extraction of receivingStatus.receivedQuantity)
+        const receivedQty = it.received_qty !== undefined ? it.received_qty : toNum(it.receivedQuantity?.amount) || 0;
 
-        // Determine if this line is rejected
+        // Determine if this line is rejected or received
         const isRejected = (currStatus === "REJECTED") || (accAmt === 0 && rejAmt > 0);
-        const rowClass = isRejected ? ' class="po-line-rejected"' : '';
+        const isReceived = !isRejected && receivedQty > 0;
+        let rowClass = '';
+        if (isRejected) {
+          rowClass = ' class="po-line-rejected"';
+        } else if (isReceived) {
+          rowClass = ' class="po-line-received"';
+        }
 
         const rawImageUrl = resolveImage(it);
         const img = rawImageUrl
@@ -784,6 +795,7 @@
           <td>${img}</td>
           <td data-col="ordered">${qtyAmount}</td>
           <td>${accAmt}</td>
+          <td>${receivedQty}</td>
           <td>${rejAmt}</td>
           <td>${currStatus}</td>
           <td>${Number.isFinite(netNum) && netNum ? netNum.toFixed(2) : ""}</td>
@@ -814,7 +826,7 @@
 
       // Build summary row
       const summaryRow = `<tr class="po-items-summary">
-        <td colspan="7"></td>
+        <td colspan="8"></td>
         <td style="text-align: right;">Accepted Total:</td>
         <td style="text-align: right; font-weight: 700;">${formattedTotal}</td>
       </tr>`;
@@ -830,6 +842,7 @@
                 <th>Image</th>
                 <th>Ordered</th>
                 <th>Accepted</th>
+                <th>Received</th>
                 <th>Rejected</th>
                 <th>Status</th>
                 <th>Net Amount</th>
@@ -837,7 +850,7 @@
                 <th>Total Amount</th>
               </tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="9" class="empty">No items</td></tr>'}${rows ? summaryRow : ''}</tbody>
+            <tbody>${rows || '<tr><td colspan="10" class="empty">No items</td></tr>'}${rows ? summaryRow : ''}</tbody>
           </table>
         </div>
       `;
@@ -1027,10 +1040,16 @@
       const searchInput = document.getElementById("po-search");
       const fcSelect    = document.getElementById("po-filter-fc");
       const statusSelect = document.getElementById("po-filter-status");
+      const dateWindowSelect = document.getElementById("po-start-days");
 
       const qRaw = (searchInput?.value || "").trim().toLowerCase();
       const fcFilter = (fcSelect?.value || "").trim().toLowerCase();
       const statusFilter = (statusSelect?.value || "").trim();
+      const daysWindow = Number(dateWindowSelect?.value || 60);
+
+      // Calculate date cutoff
+      const now = new Date();
+      const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysWindow);
 
       filteredPOs = (vendorPOs || []).filter(po => {
         const d = po.orderDetails || {};
@@ -1039,6 +1058,15 @@
         const poNumber = (po.purchaseOrderNumber || "").toLowerCase();
         const state = (po.purchaseOrderState || "").toLowerCase();
         const inhouseStatus = (po._internalStatus || po._inhouseStatus || po.inhouseStatus || "Pending").toLowerCase();
+
+        // Date window filter
+        const orderDateStr = po.purchaseOrderDate || d.purchaseOrderDate || "";
+        if (orderDateStr) {
+          const orderDate = new Date(orderDateStr);
+          if (!Number.isNaN(orderDate.getTime()) && orderDate < cutoff) {
+            return false;
+          }
+        }
 
         let asins = "";
         let skus = "";
@@ -2087,6 +2115,7 @@
     document.getElementById("po-search").addEventListener("input", filterPOs);
     document.getElementById("po-filter-fc").addEventListener("change", filterPOs);
     document.getElementById("po-filter-status").addEventListener("change", filterPOs);
+    document.getElementById("po-start-days").addEventListener("change", filterPOs);
     loadPOs(false);
     showTab("pos");
     scheduleInitialAutoSync();
