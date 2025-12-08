@@ -75,10 +75,12 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
-from io import BytesIO
+from io import BytesIO, StringIO
+import csv
 import time
 from urllib.parse import parse_qsl
 from endpoint_presets import ENDPOINT_PRESETS
+from services.utils_barcodes import is_asin, normalize_barcode, is_valid_ean13
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -93,7 +95,7 @@ except ImportError:
 
 import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
@@ -325,6 +327,11 @@ def load_oos_state() -> Dict[str, Any]:
         return {}
 
 
+def default_created_after(days: int = 60) -> str:
+    dt = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+    return dt.isoformat() + "Z"
+
+
 def save_oos_state(state: Dict[str, Any]) -> None:
     try:
         OOS_STATE_PATH.write_text(
@@ -333,6 +340,44 @@ def save_oos_state(state: Dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+
+def upsert_oos_entry(
+    state: Dict[str, Any],
+    *,
+    po_number: str,
+    asin: str,
+    vendor_sku: str | None = None,
+    po_date: str | None = None,
+    ship_to_party: str | None = None,
+    qty: Any = None,
+    image: str | None = None,
+) -> bool:
+    """
+    Add an OOS entry if missing. Returns True if newly added.
+    """
+    if not po_number or not asin:
+        return False
+    # Skip obviously invalid quantities
+    try:
+        if qty is not None and float(qty) <= 0:
+            return False
+    except Exception:
+        pass
+    key = f"{po_number}::{asin}"
+    if key in state:
+        return False
+    state[key] = {
+        "poNumber": po_number,
+        "asin": asin,
+        "vendorSku": vendor_sku,
+        "purchaseOrderDate": po_date,
+        "shipToPartyId": ship_to_party,
+        "qty": qty,
+        "image": image,
+        "isOutOfStock": True,
+    }
+    return True
 
 
 def get_latest_po_date_from_cache() -> str | None:
@@ -361,6 +406,7 @@ def init_catalog_db():
                 title TEXT,
                 image TEXT,
                 payload TEXT,
+                barcode TEXT,
                 fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -374,6 +420,15 @@ def init_catalog_db():
             """
         )
         conn.commit()
+        # Migration: add barcode column if missing
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(spapi_catalog)").fetchall()}
+            if "barcode" not in cols:
+                conn.execute("ALTER TABLE spapi_catalog ADD COLUMN barcode TEXT")
+                conn.commit()
+                schema_logger.info("[CatalogSchema] Added barcode column to spapi_catalog")
+        except Exception as exc:
+            schema_logger.warning(f"[CatalogSchema] Failed to add barcode column: {exc}")
     # Forecast feature disabled: skip creating forecast tables/indexes
     schema_logger.info("Forecast feature disabled: init_forecast_tables() not called")
 
@@ -589,12 +644,12 @@ def spapi_catalog_status() -> Dict[str, Dict[str, Any]]:
     with sqlite3.connect(CATALOG_DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT c.asin, c.title, c.image, c.payload, m.sku
+            SELECT c.asin, c.title, c.image, c.payload, c.barcode, m.sku
             FROM spapi_catalog c
             LEFT JOIN spapi_catalog_meta m ON c.asin = m.asin
             """
         ).fetchall()
-        for asin, title, image, payload_raw, sku in rows:
+        for asin, title, image, payload_raw, barcode, sku in rows:
             parsed = None
             model_number = None
             if (not title or not image) and payload_raw:
@@ -627,13 +682,66 @@ def spapi_catalog_status() -> Dict[str, Dict[str, Any]]:
                             model_number = model_number or attrs.get("modelNumber")
                 except Exception:
                     parsed = None
-            results[asin] = {"title": title, "image": image, "sku": sku, "model": model_number or sku}
+            results[asin] = {"title": title, "image": image, "sku": sku, "model": model_number or sku, "barcode": barcode}
             if parsed is not None:
                 updates.append((title, image, asin))
         if updates:
             conn.executemany("UPDATE spapi_catalog SET title = ?, image = ? WHERE asin = ?", updates)
             conn.commit()
     return results
+
+
+def update_catalog_barcode(asin: str, barcode: str) -> bool:
+    """
+    Update catalog barcode for an ASIN. Returns True if updated.
+    """
+    if not asin or not barcode:
+        return False
+    try:
+        from services.db import get_db_connection
+    except Exception as exc:
+        logger.error(f"[Catalog] DB import failed for barcode update: {exc}")
+        return False
+
+    with get_db_connection() as conn:
+        cur = conn.execute("SELECT barcode FROM spapi_catalog WHERE asin = ?", (asin,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        existing = row["barcode"]
+        if existing and existing != barcode:
+            logger.info(f"[Catalog] Barcode conflict for {asin}: existing={existing}, new={barcode}")
+        if existing == barcode:
+            return True
+        conn.execute("UPDATE spapi_catalog SET barcode = ? WHERE asin = ?", (barcode, asin))
+        conn.commit()
+        return True
+
+
+def set_catalog_barcode_if_absent(asin: str, barcode: str) -> bool:
+    """
+    Set barcode only if currently missing/empty. Returns True if set.
+    """
+    if not asin or not barcode:
+        return False
+    try:
+        from services.db import get_db_connection
+    except Exception:
+        return False
+    with get_db_connection() as conn:
+        cur = conn.execute("SELECT barcode FROM spapi_catalog WHERE asin = ?", (asin,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        existing = row["barcode"]
+        if existing:
+            if existing != barcode:
+                logger.info(f"[Catalog] Existing barcode retained for {asin} (existing={existing}, new={barcode})")
+            return False
+        conn.execute("UPDATE spapi_catalog SET barcode = ? WHERE asin = ?", (barcode, asin))
+        conn.commit()
+        return True
+
 
 # Ensure DB exists at import time
 init_catalog_db()
@@ -796,9 +904,49 @@ def enrich_items_with_catalog(po_list):
                     item.setdefault("title", master.get("title"))
                 if master.get("image"):
                     item.setdefault("image", master.get("image"))
+                if master.get("barcode"):
+                    item.setdefault("barcode", master.get("barcode"))
                 looked_up.add(asin)
                 continue
             looked_up.add(asin)
+
+
+def harvest_barcodes_from_pos(pos_list: List[Dict[str, Any]], log_prefix: str = "[BarcodeHarvest]") -> Dict[str, int]:
+    """
+    Scan PO lines for barcode-like external IDs and upsert into catalog if missing.
+    Returns counters: set, invalid, lines.
+    """
+    counts = {"set": 0, "invalid": 0, "lines": 0}
+    if not pos_list:
+        return counts
+    for po in pos_list:
+        po_num = po.get("purchaseOrderNumber") or ""
+        details = po.get("orderDetails") or {}
+        for item in details.get("items") or []:
+            counts["lines"] += 1
+            asin = item.get("amazonProductIdentifier") or ""
+            # Align with PO modal: prefer vendorProductIdentifier as externalId surrogate
+            candidate = (
+                item.get("vendorProductIdentifier")
+                or item.get("externalId")
+                or item.get("buyerProductIdentifier")
+                or ""
+            ).strip()
+            if not asin or not candidate or is_asin(candidate):
+                continue
+            barcode = normalize_barcode(candidate)
+            if not barcode:
+                counts["invalid"] += 1
+                logger.info(f"{log_prefix} Skipped invalid barcode candidate '{candidate}' for asin={asin} sku={item.get('vendorProductIdentifier')}")
+                continue
+            if set_catalog_barcode_if_absent(asin, barcode):
+                counts["set"] += 1
+                logger.info(
+                    f"{log_prefix} Set barcode {barcode} for catalog asin={asin} "
+                    f"sku={item.get('vendorProductIdentifier')} from PO {po_num} "
+                    f"line {item.get('itemSequenceNumber')}"
+                )
+    return counts
 
 
 @app.get("/api/catalog-cache-stats")
@@ -1013,14 +1161,19 @@ def submit_po_acknowledgement(req: AckRequest) -> Dict[str, Any]:
         resp_data = {"raw": resp.text}
     if status_code >= 400:
         # Log the failed attempt
+        now_ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         log_entry = {
-            "ts": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "ts": now_ts,
             "po": req.purchaseOrderNumber,
             "transactionId": None,
             "status": status_code,
             "payload": payload,
             "response": resp_data,
+            "transactionStatus": "Failure",
+            "transactionStatusCheckedAt": now_ts,
         }
+        if isinstance(resp_data, dict) and isinstance(resp_data.get("errors"), list):
+            log_entry["transactionErrors"] = resp_data["errors"]
         try:
             ACK_LOG_PATH.parent.mkdir(exist_ok=True)
             with ACK_LOG_PATH.open("a", encoding="utf-8") as f:
@@ -1038,14 +1191,20 @@ def submit_po_acknowledgement(req: AckRequest) -> Dict[str, Any]:
         )
 
     # Persist log entry
+    now_ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     log_entry = {
-        "ts": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "ts": now_ts,
         "po": req.purchaseOrderNumber,
         "transactionId": transaction_id,
         "status": status_code,
         "payload": payload,
         "response": resp_data,
     }
+    if 200 <= status_code < 300 and transaction_id:
+        log_entry["transactionStatus"] = "Processing"
+    elif status_code >= 400:
+        log_entry["transactionStatus"] = "Failure"
+        log_entry["transactionStatusCheckedAt"] = now_ts
     try:
         ACK_LOG_PATH.parent.mkdir(exist_ok=True)
         with ACK_LOG_PATH.open("a", encoding="utf-8") as f:
@@ -1131,6 +1290,12 @@ def get_vendor_transaction_status(transaction_id: str) -> dict | None:
     tx_id = payload.get("transactionId") if isinstance(payload, dict) else None
     if not tx_id and isinstance(raw_data, dict):
         tx_id = raw_data.get("transactionId")
+
+    try:
+        logger.info(f"[AckStatus] Checking transactionId={transaction_id} -> status={status}")
+    except Exception:
+        # Logging should never break the flow
+        pass
 
     return {
         "transactionId": tx_id or transaction_id,
@@ -1387,11 +1552,11 @@ def fetch_detailed_po_with_status(po_number: str):
 
 
 @app.post("/api/vendor-pos/sync")
-def sync_vendor_pos():
+def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
     """
-    Fetch Vendor POs from SP-API for a fixed window and persist to vendor_pos_cache.json.
+    Fetch Vendor POs from SP-API for a window and persist to vendor_pos_cache.json.
     """
-    created_after = get_latest_po_date_from_cache() or "2025-10-01T00:00:00Z"
+    created_after = createdAfter or default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     try:
         pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=5)
@@ -1399,6 +1564,13 @@ def sync_vendor_pos():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
+
+        try:
+            harvested = harvest_barcodes_from_pos(pos)
+            if harvested.get("set"):
+                logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from PO sync (lines={harvested['lines']}, invalid={harvested['invalid']})")
+        except Exception as exc:
+            logger.warning(f"[VendorPO] Barcode harvest failed during sync: {exc}")
 
     if not pos:
         print(f"[vendor-pos-sync] fetched 0 POs from {created_after} to {created_before} - leaving vendor_pos_cache.json unchanged")
@@ -1475,7 +1647,7 @@ def rebuild_vendor_pos_full():
     """
     Full rebuild: fetch all POs since 2025-10-01, attach status totals, overwrite cache, and sync vendor_po_lines.
     """
-    created_after = "2025-10-01T00:00:00Z"
+    created_after = default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     try:
         pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=10)
@@ -1483,6 +1655,13 @@ def rebuild_vendor_pos_full():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+
+    try:
+        harvested = harvest_barcodes_from_pos(pos)
+        if harvested.get("set"):
+            logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from rebuild (lines={harvested['lines']}, invalid={harvested['invalid']})")
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Barcode harvest failed during rebuild: {exc}")
 
     if not pos:
         print(f"[vendor-pos-rebuild] fetched 0 POs from {created_after} to {created_before} - leaving vendor_pos_cache.json unchanged")
@@ -1549,15 +1728,44 @@ def acknowledge_vendor_po(req: AckRequest):
     return {"status": "ok", **result}
 
 
+def _read_ack_log_entries() -> List[Dict[str, Any]]:
+    if not ACK_LOG_PATH.exists():
+        return []
+    entries: List[Dict[str, Any]] = []
+    try:
+        with ACK_LOG_PATH.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.warning(f"[AckLog] Failed to read ack log: {e}")
+    return entries
+
+
+def _write_ack_log_entries(entries: List[Dict[str, Any]]) -> None:
+    tmp_path = ACK_LOG_PATH.with_suffix(".jsonl.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        tmp_path.replace(ACK_LOG_PATH)
+    except Exception as e:
+        logger.warning(f"[AckLog] Failed to persist ack log: {e}")
+
+
 @app.get("/api/vendor-pos/ack-log/{po_number}")
 def get_vendor_po_ack_log(po_number: str):
     if not po_number:
         raise HTTPException(status_code=400, detail="po_number required")
 
-    if not ACK_LOG_PATH.exists():
+    entries_raw = _read_ack_log_entries()
+    if not entries_raw:
         return {"po_number": po_number, "entries": []}
-
-    entries: List[Dict[str, Any]] = []
 
     def _derive_totals_from_ack(payload: Dict[str, Any]) -> Tuple[int, int, int]:
         ack_list = payload.get("acknowledgements") or []
@@ -1582,64 +1790,157 @@ def get_vendor_po_ack_log(po_number: str):
                     rejected_total += amt
 
         return line_count, accepted_total, rejected_total
+    entries: List[Dict[str, Any]] = []
+    changed = False
 
-    try:
-        with ACK_LOG_PATH.open("r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line.strip())
-                except Exception:
-                    continue
-                if entry.get("po") != po_number:
-                    continue
+    for entry in entries_raw:
+        if entry.get("po") != po_number:
+            continue
 
-                ts = entry.get("ts") or ""
-                transaction_id = entry.get("transactionId") or ""
-                http_status = entry.get("status")
-                payload = entry.get("payload") or {}
+        ts = entry.get("ts") or ""
+        transaction_id = entry.get("transactionId") or entry.get("transactionID") or ""
+        http_status = entry.get("status")
+        payload = entry.get("payload") or {}
 
-                line_count, accepted_total, rejected_total = _derive_totals_from_ack(payload if isinstance(payload, dict) else {})
+        line_count, accepted_total, rejected_total = _derive_totals_from_ack(payload if isinstance(payload, dict) else {})
 
-                tx_status = None
-                error_summary = None
+        tx_status = entry.get("transactionStatus")
+        tx_errors = entry.get("transactionErrors") if isinstance(entry.get("transactionErrors"), list) else []
+        tx_checked = entry.get("transactionStatusCheckedAt")
+        error_summary = entry.get("errorSummary")
 
-                if (
-                    transaction_id
-                    and isinstance(http_status, int)
-                    and 200 <= http_status < 300
-                ):
-                    tx_info = get_vendor_transaction_status(transaction_id)
-                    if tx_info:
-                        if tx_info.get("rateLimited"):
-                            tx_status = "RateLimited"
-                            error_summary = "Vendor transaction status rate-limited"
-                        else:
-                            tx_status = tx_info.get("status")
-                            errors = tx_info.get("errors") or []
-                            if errors and isinstance(errors, list):
-                                first = errors[0] or {}
-                                code = first.get("code") or first.get("errorCode")
-                                msg = first.get("message") or first.get("errorMessage")
-                                if code or msg:
-                                    error_summary = f"{code}: {msg}" if code and msg else (code or msg)
+        try:
+            http_int = int(http_status) if http_status is not None else None
+        except Exception:
+            http_int = None
 
-                entries.append(
-                    {
-                        "ts": ts,
-                        "transactionId": transaction_id,
-                        "httpStatus": http_status,
-                        "transactionStatus": tx_status or None,
-                        "errorSummary": error_summary,
-                        "lineCount": line_count,
-                        "acceptedTotal": accepted_total,
-                        "rejectedTotal": rejected_total,
-                    }
-                )
-    except Exception as e:
-        logger.warning(f"[AckLog] Failed to read ack log: {e}")
+        if (
+            not tx_status
+            and transaction_id
+            and http_int is not None
+            and 200 <= http_int < 300
+        ):
+            tx_info = get_vendor_transaction_status(transaction_id)
+            if tx_info:
+                tx_status = tx_info.get("status")
+                tx_errors = tx_info.get("errors") if isinstance(tx_info.get("errors"), list) else []
+                tx_checked = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                entry["transactionStatus"] = tx_status
+                entry["transactionStatusCheckedAt"] = tx_checked
+                if tx_errors:
+                    entry["transactionErrors"] = tx_errors
+                elif "transactionErrors" in entry:
+                    entry.pop("transactionErrors", None)
+                if tx_info.get("rateLimited"):
+                    entry["transactionStatus"] = tx_status or "RateLimited"
+                    tx_status = entry["transactionStatus"]
+                    if not error_summary:
+                        error_summary = "Vendor transaction status rate-limited"
+                changed = True
+
+        if not error_summary and tx_errors:
+            first = tx_errors[0] or {}
+            code = first.get("code") or first.get("errorCode")
+            msg = first.get("message") or first.get("errorMessage")
+            if code or msg:
+                error_summary = f"{code}: {msg}" if code and msg else (code or msg)
+
+        entries.append(
+            {
+                "ts": ts,
+                "transactionId": transaction_id,
+                "httpStatus": http_status,
+                "transactionStatus": tx_status or None,
+                "transactionStatusCheckedAt": tx_checked,
+                "transactionErrors": tx_errors,
+                "errorSummary": error_summary,
+                "lineCount": line_count,
+                "acceptedTotal": accepted_total,
+                "rejectedTotal": rejected_total,
+            }
+        )
+
+    if changed:
+        _write_ack_log_entries(entries_raw)
 
     entries.sort(key=lambda e: e.get("ts") or "", reverse=True)
     return {"po_number": po_number, "entries": entries}
+
+
+@app.post("/api/vendor-pos/ack-status/refresh/{po_number}")
+def refresh_vendor_po_ack_status(po_number: str):
+    if not po_number:
+        raise HTTPException(status_code=400, detail="po_number required")
+
+    entries_raw = _read_ack_log_entries()
+    if not entries_raw:
+        return {"po": po_number, "checked": 0, "updated": 0, "results": []}
+
+    checked = 0
+    updated = 0
+    results: List[Dict[str, Any]] = []
+    changed = False
+
+    for entry in entries_raw:
+        if entry.get("po") != po_number:
+            continue
+
+        transaction_id = entry.get("transactionId") or entry.get("transactionID")
+        http_status = entry.get("status")
+        tx_status = entry.get("transactionStatus")
+
+        try:
+            http_int = int(http_status) if http_status is not None else None
+        except Exception:
+            http_int = None
+
+        if not transaction_id or http_int is None or not (200 <= http_int < 300):
+            continue
+        if (tx_status or "").lower() == "success":
+            continue
+
+        checked += 1
+        tx_info = None
+        try:
+            tx_info = get_vendor_transaction_status(transaction_id)
+        except Exception as exc:
+            logger.warning(f"[AckStatus] Failed to refresh transaction {transaction_id}: {exc}")
+
+        if tx_info:
+            status_val = tx_info.get("status")
+            errors = tx_info.get("errors") if isinstance(tx_info.get("errors"), list) else []
+            entry["transactionStatus"] = status_val
+            entry["transactionStatusCheckedAt"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            if errors:
+                entry["transactionErrors"] = errors
+            elif "transactionErrors" in entry:
+                entry.pop("transactionErrors", None)
+            if tx_info.get("rateLimited"):
+                entry["transactionStatus"] = status_val or "RateLimited"
+            updated += 1
+            changed = True
+            results.append(
+                {
+                    "transactionId": transaction_id,
+                    "status": entry.get("transactionStatus"),
+                    "errors": errors,
+                    "rateLimited": bool(tx_info.get("rateLimited")),
+                }
+            )
+        else:
+            results.append(
+                {
+                    "transactionId": transaction_id,
+                    "status": None,
+                    "errors": [],
+                    "rateLimited": False,
+                }
+            )
+
+    if changed:
+        _write_ack_log_entries(entries_raw)
+
+    return {"po": po_number, "checked": checked, "updated": updated, "results": results}
 
 
 def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
@@ -1732,10 +2033,12 @@ def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
 def get_vendor_pos(
     refresh: int = Query(0, description="If 1, refresh POs from SP-API before reading cache"),
     enrich: bool = Query(False, description="Enrich ASINs with Catalog data"),
+    createdAfter: Optional[str] = Query(None, description="ISO start date; defaults to 60d ago"),
 ):
     source = "cache"
+    created_after_param = createdAfter or default_created_after()
     if refresh == 1:
-        created_after = "2025-10-01T00:00:00Z"
+        created_after = created_after_param
         created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         try:
             pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=5)
@@ -1751,6 +2054,13 @@ def get_vendor_pos(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
         
+        try:
+            harvested = harvest_barcodes_from_pos(pos)
+            if harvested.get("set"):
+                logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from GET refresh (lines={harvested['lines']}, invalid={harvested['invalid']})")
+        except Exception as exc:
+            logger.warning(f"[VendorPO] Barcode harvest failed during GET refresh: {exc}")
+
         # FIX #1: Sync vendor_po_lines for all fetched POs (was missing!)
         po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
         # Attach status totals (received/pending) from purchaseOrdersStatus for freshly fetched POs
@@ -1775,6 +2085,18 @@ def get_vendor_pos(
         raise HTTPException(status_code=500, detail=f"Failed to read cache: {exc}")
 
     normalized = normalize_pos_entries(data)
+    try:
+        cutoff_dt = datetime.fromisoformat(created_after_param.replace("Z", "+00:00"))
+    except Exception:
+        cutoff_dt = None
+    if cutoff_dt:
+        filtered = []
+        for po in normalized:
+            po_dt = parse_po_date(po)
+            if po_dt and po_dt < cutoff_dt:
+                continue
+            filtered.append(po)
+        normalized = filtered
     cutoff = datetime(2025, 10, 1)
     print(f"[vendor-pos] normalized POs: {len(normalized)}")
     filtered = []
@@ -2070,11 +2392,80 @@ def update_po_status(po_number: str, payload: PoStatusUpdate):
 @app.get("/api/oos-items")
 def get_oos_items():
     """
-    Return all saved Out-of-Stock items as a flat list for the OOS tab.
+    Return consolidated Out-of-Stock items (one per ASIN) for the OOS tab.
     """
     state = load_oos_state()
     items = list(state.values())
-    return {"items": items}
+    catalog = spapi_catalog_status()
+
+    agg: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        asin = (it or {}).get("asin")
+        if not asin:
+            continue
+        qty_raw = (it or {}).get("qty")
+        try:
+            qty_val = float(qty_raw)
+        except Exception:
+            qty_val = 0
+        if qty_val <= 0:
+            continue
+        entry = agg.get(asin) or {
+            "asin": asin,
+            "vendorSku": (it or {}).get("vendorSku"),
+            "poNumbers": set(),
+            "purchaseOrderDate": (it or {}).get("purchaseOrderDate"),
+            "shipToPartyId": (it or {}).get("shipToPartyId"),
+            "qty": 0,
+            "image": (it or {}).get("image"),
+            "isOutOfStock": True,
+        }
+        entry["qty"] = (entry.get("qty") or 0) + qty_val
+        if (it or {}).get("poNumber"):
+            entry["poNumbers"].add(it.get("poNumber"))
+        # Prefer catalog image if missing
+        if not entry.get("image"):
+            entry["image"] = (catalog.get(asin) or {}).get("image")
+        agg[asin] = entry
+
+    consolidated = []
+    for asin, entry in agg.items():
+        entry["poNumbers"] = sorted(list(entry.get("poNumbers") or []))
+        consolidated.append(entry)
+
+    return {"items": consolidated}
+
+
+@app.get("/api/oos-items/export")
+def export_oos_items():
+    """
+    Export OOS items as a simple XLS-friendly TSV (ASINs only).
+    """
+    state = load_oos_state()
+    items = list(state.values())
+    asins: set[str] = set()
+    for it in items:
+        asin = (it or {}).get("asin")
+        if not asin:
+            continue
+        qty_raw = (it or {}).get("qty")
+        try:
+            qty_val = float(qty_raw)
+        except Exception:
+            qty_val = 0
+        if qty_val <= 0:
+            continue
+        asins.add(asin)
+
+    output = StringIO()
+    writer = csv.writer(output, delimiter="\t")
+    writer.writerow(["asin"])
+    for asin in sorted(asins):
+        writer.writerow([asin])
+
+    data = output.getvalue().encode("utf-8-sig")
+    headers_resp = {"Content-Disposition": 'attachment; filename="oos_items.xls"'}
+    return Response(content=data, media_type="application/vnd.ms-excel", headers=headers_resp)
 
 
 @app.post("/api/oos-items/mark")
@@ -2131,16 +2522,138 @@ def restock_oos_item(payload: Dict[str, Any]):
 
     po = payload.get("poNumber")
     asin = payload.get("asin")
-    if not po or not asin:
-        raise HTTPException(status_code=400, detail="poNumber and asin required")
+    if not asin:
+        raise HTTPException(status_code=400, detail="asin required")
 
-    key = f"{po}::{asin}"
     state = load_oos_state()
-    if key in state:
-        del state[key]
-    save_oos_state(state)
+    removed = 0
+    # Remove specific key if provided, else remove all entries for ASIN
+    if po:
+        key = f"{po}::{asin}"
+        if key in state:
+            del state[key]
+            removed = 1
+    else:
+        to_delete = [k for k, v in state.items() if (v or {}).get("asin") == asin]
+        for k in to_delete:
+            del state[k]
+        removed = len(to_delete)
 
-    return {"status": "ok", "key": key}
+    if removed:
+        save_oos_state(state)
+
+    return {"status": "ok", "asin": asin, "removed": removed}
+
+
+def seed_oos_from_rejected_lines(po_numbers: List[str], po_date_map: Dict[str, str] | None = None) -> int:
+    """
+    Ensure rejected lines from vendor_po_lines are present in OOS state.
+    Returns count of newly added entries.
+    """
+    if not po_numbers:
+        return 0
+    try:
+        from services.db import get_db_connection
+    except Exception:
+        return 0
+
+    state = load_oos_state()
+    added = 0
+    try:
+        qmarks = ",".join(["?"] * len(po_numbers))
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT po_number, asin, sku, ship_to_location, ordered_qty, cancelled_qty, accepted_qty
+                FROM vendor_po_lines
+                WHERE po_number IN ({qmarks})
+                """,
+                po_numbers,
+            ).fetchall()
+        for row in rows:
+            po_num = (row["po_number"] or "").strip()
+            asin_val = (row["asin"] or "").strip()
+            if not po_num or not asin_val:
+                continue
+            ordered_qty = row["ordered_qty"] or 0
+            cancelled_qty = row["cancelled_qty"] or 0
+            accepted_qty = row["accepted_qty"] or 0
+            is_rejected = cancelled_qty >= ordered_qty or (accepted_qty <= 0 and cancelled_qty > 0)
+            if not is_rejected:
+                continue
+            qty_val = ordered_qty or cancelled_qty or None
+            try:
+                if qty_val is not None and float(qty_val) <= 0:
+                    continue
+            except Exception:
+                pass
+            if upsert_oos_entry(
+                state,
+                po_number=po_num,
+                asin=asin_val,
+                vendor_sku=(row["sku"] or "").strip() or None,
+                po_date=(po_date_map or {}).get(po_num),
+                ship_to_party=(row["ship_to_location"] or "").strip() or None,
+                qty=qty_val,
+                image=None,
+            ):
+                added += 1
+        if added:
+            save_oos_state(state)
+    except Exception as exc:
+        logger.warning(f"[OOS] Failed to seed rejected lines into OOS: {exc}")
+    return added
+
+
+def seed_oos_from_rejected_payload(purchase_orders: List[Dict[str, Any]]) -> int:
+    """
+    Seed OOS entries from PO payload data where acknowledgementStatus is REJECTED.
+    """
+    if not purchase_orders:
+        return 0
+    state = load_oos_state()
+    added = 0
+
+    for po in purchase_orders:
+        po_num = po.get("purchaseOrderNumber") or ""
+        d = po.get("orderDetails") or {}
+        po_date = po.get("purchaseOrderDate") or d.get("purchaseOrderDate")
+        ship_to = d.get("shipToParty", {}).get("partyId") if isinstance(d.get("shipToParty"), dict) else None
+        items = d.get("items") or []
+        for it in items:
+            ack = it.get("acknowledgementStatus") or {}
+            conf = (ack.get("confirmationStatus") or it.get("status") or "").upper()
+            if conf != "REJECTED":
+                continue
+            asin = it.get("amazonProductIdentifier") or ""
+            if not po_num or not asin:
+                continue
+            sku = it.get("vendorProductIdentifier") or ""
+            qty_raw = it.get("orderedQuantity") or {}
+            qty_num = None
+            try:
+                qty_num = float(qty_raw.get("amount"))
+            except Exception:
+                qty_num = None
+            try:
+                if qty_num is not None and qty_num <= 0:
+                    continue
+            except Exception:
+                pass
+            if upsert_oos_entry(
+                state,
+                po_number=po_num,
+                asin=asin,
+                vendor_sku=sku or None,
+                po_date=po_date,
+                ship_to_party=ship_to,
+                qty=qty_num,
+                image=None,
+            ):
+                added += 1
+    if added:
+        save_oos_state(state)
+    return added
 
 
 def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
@@ -2158,24 +2671,98 @@ def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
 
     oos_state = load_oos_state()
     oos_keys = set(oos_state.keys()) if isinstance(oos_state, dict) else set()
+    new_oos_added = False
 
     catalog = spapi_catalog_status()
 
     consolidated: Dict[Tuple[str, str], Dict[str, Any]] = {}
     total_units = 0
 
+    # Load fully rejected lines from vendor_po_lines (uses cancelled/accepted qtys)
+    rejected_line_keys: set[str] = set()
+    try:
+        if po_numbers:
+            from services.db import get_db_connection
+
+            qmarks = ",".join(["?"] * len(po_numbers))
+            with get_db_connection() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT po_number, asin, sku, ship_to_location, ordered_qty, cancelled_qty, accepted_qty
+                    FROM vendor_po_lines
+                    WHERE po_number IN ({qmarks})
+                    """,
+                    po_numbers,
+                ).fetchall()
+            for row in rows:
+                po_num = (row["po_number"] or "").strip()
+                asin_val = (row["asin"] or "").strip()
+                sku_val = (row["sku"] or "").strip()
+                ship_to_loc = (row["ship_to_location"] or "").strip()
+                ordered_qty = row["ordered_qty"] or 0
+                cancelled_qty = row["cancelled_qty"] or 0
+                accepted_qty = row["accepted_qty"] or 0
+                # Treat as fully rejected if cancelled >= ordered, or no accepted qty and some cancelled qty
+                if not po_num or not asin_val:
+                    continue
+                is_rejected = cancelled_qty >= ordered_qty or (accepted_qty <= 0 and cancelled_qty > 0)
+                if is_rejected:
+                    key = f"{po_num}::{asin_val}"
+                    rejected_line_keys.add(key)
+                    if key not in oos_keys:
+                        added = upsert_oos_entry(
+                            oos_state,
+                            po_number=po_num,
+                            asin=asin_val,
+                            vendor_sku=sku_val or None,
+                            po_date=None,
+                            ship_to_party=ship_to_loc or None,
+                            qty=ordered_qty or cancelled_qty,
+                            image=None,
+                        )
+                        if added:
+                            new_oos_added = True
+                            oos_keys.add(key)
+    except Exception as exc:
+        logger.warning(f"[Picklist] Failed to load vendor_po_lines for rejection filter: {exc}")
+
+    def is_rejected_line(item: Dict[str, Any]) -> bool:
+        def norm(val: Any) -> str:
+            if val is None:
+                return ""
+            return str(val).strip().upper()
+
+        ack = item.get("acknowledgementStatus")
+        candidates = []
+        if isinstance(ack, dict):
+            candidates.extend(
+                [
+                    ack.get("confirmationStatus"),
+                    ack.get("status"),
+                    ack.get("overallStatus"),
+                ]
+            )
+        elif isinstance(ack, str):
+            candidates.append(ack)
+
+        candidates.extend(
+            [
+                item.get("confirmationStatus"),
+                item.get("status"),
+                item.get("_inhouseStatus"),
+                item.get("_internalStatus"),
+            ]
+        )
+
+        return any("REJECT" in norm(c) for c in candidates if norm(c))
+
     for po in selected:
         po_num = po.get("purchaseOrderNumber") or ""
         d = po.get("orderDetails") or {}
+        ship_to = d.get("shipToParty", {}).get("partyId") if isinstance(d.get("shipToParty"), dict) else None
+        po_date = po.get("purchaseOrderDate") or d.get("purchaseOrderDate")
         items = d.get("items") or []
         for it in items:
-            ack_status = it.get("acknowledgementStatus") or {}
-            if isinstance(ack_status, dict):
-                conf = (ack_status.get("confirmationStatus") or "").upper()
-                if conf == "REJECTED":
-                    continue
-            asin = it.get("amazonProductIdentifier") or ""
-            sku = it.get("vendorProductIdentifier") or ""
             qty = it.get("orderedQuantity") or {}
             qty_amount = qty.get("amount")
             try:
@@ -2183,10 +2770,34 @@ def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
             except Exception:
                 qty_num = 0
 
+            asin = it.get("amazonProductIdentifier") or ""
+            sku = it.get("vendorProductIdentifier") or ""
+            key_po_asin = f"{po_num}::{asin}" if asin else ""
+
+            if asin and (is_rejected_line(it) or key_po_asin in rejected_line_keys):
+                try:
+                    if qty_num <= 0:
+                        qty_num = None
+                except Exception:
+                    qty_num = None
+                added = upsert_oos_entry(
+                    oos_state,
+                    po_number=po_num,
+                    asin=asin,
+                    vendor_sku=sku or None,
+                    po_date=po_date,
+                    ship_to_party=ship_to,
+                    qty=qty_num,
+                    image=(catalog.get(asin) or {}).get("image"),
+                )
+                if added:
+                    new_oos_added = True
+                    oos_keys.add(key_po_asin)
+                continue
+
             if not asin:
                 continue
 
-            key_po_asin = f"{po_num}::{asin}"
             if key_po_asin in oos_keys:
                 continue
             # Also skip if an OOS entry matches asin+sku regardless of PO if stored
@@ -2211,6 +2822,9 @@ def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
                 }
             consolidated[ckey]["totalQty"] += qty_num
             total_units += qty_num
+
+    if new_oos_added:
+        save_oos_state(oos_state)
 
     items_out = list(consolidated.values())
     items_out.sort(key=lambda x: (0 - (x.get("totalQty") or 0)))
@@ -2330,6 +2944,7 @@ def list_catalog_asins():
                 "image": fetched.get(asin, {}).get("image"),
                 "sku": fetched.get(asin, {}).get("sku") or sku_map.get(asin),
                 "model": fetched.get(asin, {}).get("model"),
+                "barcode": fetched.get(asin, {}).get("barcode"),
             }
             for asin in asins
         ]
@@ -2418,6 +3033,28 @@ def get_catalog_payload(asin: str):
     except Exception:
         payload = {"raw": payload_raw}
     return {"asin": asin, "title": title, "image": image, "payload": payload}
+
+
+@app.post("/api/catalog/update-barcode")
+def update_catalog_barcode_endpoint(payload: Dict[str, Any]):
+    """
+    Manually update barcode for a catalog item (identified by ASIN).
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    asin = (payload.get("asin") or "").strip()
+    raw_barcode = (payload.get("barcode") or "").strip()
+    if not asin:
+        raise HTTPException(status_code=400, detail="asin is required")
+    normalized = normalize_barcode(raw_barcode)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid barcode. Expect 12-digit UPC or 13-digit EAN numeric value.")
+    if not update_catalog_barcode(asin, normalized):
+        raise HTTPException(status_code=404, detail="Catalog item not found")
+    # Return updated snapshot
+    item = spapi_catalog_status().get(asin) or {}
+    item["barcode"] = normalized
+    return {"status": "ok", "asin": asin, "barcode": normalized, "item": item}
 @app.post("/api/picklist/preview")
 def picklist_preview(payload: Dict[str, Any]):
     """
@@ -3324,6 +3961,14 @@ def rebuild_all_vendor_po_lines():
         normalized.sort(key=parse_po_date, reverse=True)
         
         po_numbers = [po.get("purchaseOrderNumber") for po in normalized if po.get("purchaseOrderNumber")]
+        po_date_map = {
+            po.get("purchaseOrderNumber"): (
+                po.get("purchaseOrderDate")
+                or po.get("orderDetails", {}).get("purchaseOrderDate")
+            )
+            for po in normalized
+            if po.get("purchaseOrderNumber")
+        }
         
     except Exception as e:
         logger.error(f"[VendorPO] Failed to read vendor_pos_cache.json: {e}")
@@ -3359,6 +4004,16 @@ def rebuild_all_vendor_po_lines():
             error_count += 1
             continue
     
+    try:
+        added_oos = seed_oos_from_rejected_lines(po_numbers, po_date_map)
+        if added_oos:
+            logger.info(f"[VendorPO] Seeded {added_oos} rejected lines into OOS after rebuild")
+        added_payload = seed_oos_from_rejected_payload(normalized)
+        if added_payload:
+            logger.info(f"[VendorPO] Seeded {added_payload} rejected payload lines into OOS after rebuild")
+    except Exception as e:
+        logger.warning(f"[VendorPO] Could not seed OOS from rejected lines: {e}")
+
     # Final summary
     try:
         with get_db_connection() as conn:

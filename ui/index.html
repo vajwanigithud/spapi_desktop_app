@@ -98,6 +98,11 @@
       <div style="padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <input id="po-search" type="text" placeholder="Search PO / SKU / F/C / Status" style="flex:1; min-width:240px; padding:8px 10px; border-radius:8px; border:1px solid var(--border);" />
+          <select id="po-start-days" style="padding:6px 8px; border-radius:8px; border:1px solid var(--border); font-size:13px;">
+            <option value="60" selected>60 Days</option>
+            <option value="30">30 Days</option>
+            <option value="15">15 Days</option>
+          </select>
           <select id="po-filter-fc" style="padding:6px 8px; border-radius:8px; border:1px solid var(--border); font-size:13px;">
             <option value="">All F/C</option>
           </select>
@@ -152,6 +157,7 @@
               <tr>
                 <th style="width:22%;">ASIN</th>
                 <th style="width:22%;">SKU</th>
+                <th style="width:18%;">Barcode</th>
                 <th style="width:26%;">Title</th>
                 <th style="width:12%;">Image</th>
                 <th style="width:10%;">Status</th>
@@ -159,7 +165,7 @@
               </tr>
             </thead>
             <tbody id="asin-rows">
-              <tr><td colspan="6" class="empty">Loading...</td></tr>
+              <tr><td colspan="7" class="empty">Loading...</td></tr>
             </tbody>
           </table>
         </div>
@@ -170,15 +176,16 @@
       <div style="padding:12px;">
         <div style="margin-bottom:8px; display:flex; gap:8px; align-items:center;">
           <button class="btn" onclick="loadOosItems()">Reload</button>
+          <button class="btn" style="background:#111827;" onclick="downloadOosXls()">Export OOS (XLS)</button>
           <span id="oos-status" style="font-size:12px; color:var(--muted); margin-left:8px;"></span>
         </div>
         <div style="overflow:auto; max-height: calc(100vh - 260px);">
           <table>
             <thead>
             <tr>
-              <th>PO Number</th>
-              <th>PO Date</th>
-              <th>Ship To</th>
+              <th style="display:none;">PO Number</th>
+              <th style="display:none;">PO Date</th>
+              <th style="display:none;">Ship To</th>
               <th>ASIN</th>
               <th>Image</th>
               <th>Vendor SKU</th>
@@ -314,12 +321,29 @@
       }
     }
 
+    function startDateIsoFromDays(days) {
+      const d = new Date();
+      d.setDate(d.getDate() - days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function currentStartDateParam() {
+      const sel = document.getElementById("po-start-days");
+      const days = Number(sel?.value || 60);
+      return startDateIsoFromDays(days);
+    }
+
     async function loadPOs(sync = false) {
       const btn = document.getElementById("sync-btn");
       if (btn && sync) { btn.disabled = true; btn.textContent = "Syncing..."; }
       try {
+        const createdAfter = currentStartDateParam();
         if (sync) {
-          const respSync = await fetch("/api/vendor-pos/sync", { method: "POST" });
+          const respSync = await fetch(`/api/vendor-pos/sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ createdAfter }),
+          });
           let fetched = 0;
           if (respSync.ok) {
             const syncData = await respSync.json();
@@ -333,7 +357,7 @@
           const mi = String(lastSyncTime.getMinutes()).padStart(2, "0");
           showToast(`Sync completed at ${hh}:${mi}, ${fetched} POs updated.`);
         }
-        const resp = await fetch("/api/vendor-pos?enrich=1&include_lines=true");
+        const resp = await fetch(`/api/vendor-pos?enrich=1&include_lines=true&createdAfter=${encodeURIComponent(createdAfter)}`);
         const data = await resp.json();
         vendorPOs = (data.items || []).sort((a, b) => getPoDate(b).localeCompare(getPoDate(a)));
         filteredPOs = vendorPOs;
@@ -473,6 +497,39 @@
       updateSelectAllCheckbox();
     }
 
+    async function syncRejectedLinesToOos(poNumber, items, poDate, shipTo) {
+      if (!items || !items.length) return;
+      const rejected = items.filter(it => {
+        const ack = it.acknowledgementStatus || {};
+        const conf = (ack.confirmationStatus || it.status || "").toUpperCase();
+        return conf === "REJECTED";
+      });
+      if (!rejected.length) return;
+      try {
+        await Promise.all(rejected.map(it => {
+          const qtyRaw = it.orderedQuantity || {};
+          const qtyNum = toNum(qtyRaw.amount) || toNum(qtyRaw.value) || toNum(qtyRaw?.orderedQuantity?.amount);
+          const payload = {
+            poNumber,
+            asin: it.amazonProductIdentifier || "",
+            vendorSku: it.vendorProductIdentifier || "",
+            purchaseOrderDate: poDate,
+            shipToPartyId: shipTo,
+            qty: qtyNum,
+            image: resolveImage(it) || "",
+          };
+          if (!payload.poNumber || !payload.asin) return Promise.resolve();
+          return fetch("/api/oos-items/mark", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }).catch(() => {});
+        }));
+      } catch (err) {
+        console.warn("Failed syncing rejected lines to OOS", err);
+      }
+    }
+
     async function openModal(po) {
       const modal = document.getElementById("modal");
       const body = document.getElementById("modal-body");
@@ -501,11 +558,8 @@
       }
 
       const d = enrichedPo.orderDetails || {};
-      const items = (d.items || []).filter(it => {
-        const ack = it.acknowledgementStatus || {};
-        const conf = (ack.confirmationStatus || "").toUpperCase();
-        return conf !== "REJECTED";
-      });
+      const items = d.items || [];
+      await syncRejectedLinesToOos(poNumber, items, getPoDate(enrichedPo), d.shipToParty?.partyId || "");
       const poDate = getPoDate(enrichedPo);
       const shipTo = d.shipToParty?.partyId || "";
       const rows = items.map(it => {
@@ -535,6 +589,8 @@
           <td>${seq}</td>
           <td>${img}</td>
           <td data-col="ordered">${qtyAmount}</td>
+          <td><input class="ack-accepted" data-seq="${seq}" type="number" min="0" step="1" value="${accAmt}" style="width:80px;" /></td>
+          <td><input class="ack-rejected" data-seq="${seq}" type="number" min="0" step="1" value="${rejAmt}" style="width:80px;" /></td>
           <td>
             <select class="ack-status" data-seq="${seq}" style="width:110px;">
               <option value="ACCEPTED" ${currStatus === "ACCEPTED" ? "selected" : ""}>ACCEPTED</option>
@@ -557,6 +613,8 @@
                 <th>Seq</th>
                 <th>Image</th>
                 <th>Ordered</th>
+                <th>Accepted</th>
+                <th>Rejected</th>
                 <th>Status</th>
                 <th>Net Amount</th>
                 <th>Currency</th>
@@ -569,7 +627,10 @@
             <button class="btn" style="background:#0d9488" onclick="submitAcknowledgement('${poNumber}')">Submit Acknowledgement</button>
           </div>
           <div class="ack-history-card">
-            <div style="font-weight:700; margin-bottom:8px;">Acknowledgement History</div>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+              <div style="font-weight:700;">Acknowledgement History</div>
+              <button class="btn" style="padding:4px 8px; font-size:12px; background:#0ea5e9;" onclick="refreshAckStatus('${poNumber}', 'ack-history-content-modal')">Refresh Status</button>
+            </div>
             <div id="ack-history-content-modal" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
           </div>
           <pre id="ack-log" style="margin-top:10px; padding:8px; background:#0b1221; color:#cbd5e1; border-radius:6px; max-height:180px; overflow:auto; font-size:12px;"></pre>
@@ -1011,7 +1072,10 @@
               </table>
             </div>
             <div class="ack-history-card">
-              <div style="font-weight:700; margin-bottom:8px;">Acknowledgement History</div>
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                <div style="font-weight:700;">Acknowledgement History</div>
+                <button class="btn" style="padding:4px 8px; font-size:12px; background:#0ea5e9;" onclick="refreshAckStatus('${poNumber}', 'ack-history-content')">Refresh Status</button>
+              </div>
               <div id="ack-history-content" style="max-height:220px; overflow:auto; font-size:12px;">Loading acknowledgement history...</div>
             </div>
           </div>
@@ -1087,6 +1151,12 @@
       const container = document.getElementById(targetId);
       if (!container) return;
       container.innerHTML = '<div style="padding:8px; color:#6b7280;">Loading acknowledgement history...</div>';
+
+      const escapeAttr = (val) => {
+        if (!val) return "";
+        return String(val).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      };
+
       try {
         const resp = await fetch(`/api/vendor-pos/ack-log/${encodeURIComponent(poNumber)}`);
         if (!resp.ok) {
@@ -1101,18 +1171,37 @@
 
         const rows = entries.map(entry => {
           const txShort = entry.transactionId ? `${entry.transactionId.slice(0, 10)}…` : "";
-          const summary = entry.errorSummary
-            ? entry.errorSummary
+          const errors = Array.isArray(entry.transactionErrors) ? entry.transactionErrors : [];
+          const errorLines = errors
+            .map(err => {
+              const code = err?.code || err?.errorCode || "";
+              const msg = err?.message || err?.errorMessage || "";
+              return [code, msg].filter(Boolean).join(": ");
+            })
+            .filter(Boolean);
+          const errorTip = errorLines.length ? errorLines.join("\n") : (entry.errorSummary || "");
+          const summary = errorTip
+            ? errorLines[0] || entry.errorSummary
             : `${entry.lineCount || 0} lines, ${entry.acceptedTotal || 0} accepted, ${entry.rejectedTotal || 0} rejected`;
+
           const txCell = entry.transactionId
             ? `${txShort} <button class="btn" style="padding:2px 6px; font-size:11px; margin-left:4px; background:#0f172a;" onclick="copyTxId('${entry.transactionId}')">Copy</button>`
             : "";
+
+          const status = entry.transactionStatus || "";
+          let statusColor = "#6b7280";
+          if (status === "Success") statusColor = "#16a34a";
+          else if (status === "Failure") statusColor = "#dc2626";
+          else if (status === "Processing") statusColor = "#b45309";
+          else if (status === "RateLimited") statusColor = "#0ea5e9";
+          const statusLabel = status || "—";
+          const statusHtml = `<span style="font-weight:700; color:${statusColor};" ${errorTip ? `title="${escapeAttr(errorTip)}"` : ""}>${statusLabel}</span>`;
 
           return `<tr>
             <td>${formatTs(entry.ts)}</td>
             <td>${entry.httpStatus ?? ""}</td>
             <td class="tx-id">${txCell}</td>
-            <td>${entry.transactionStatus || ""}</td>
+            <td>${statusHtml}</td>
             <td>${summary}</td>
           </tr>`;
         }).join("");
@@ -1153,6 +1242,28 @@
         try { document.execCommand("copy"); } catch (e) {}
         document.body.removeChild(textarea);
         showToast("Transaction ID copied");
+      }
+    }
+
+    async function refreshAckStatus(poNumber, targetId = "ack-history-content") {
+      if (!poNumber) return;
+      try {
+        const resp = await fetch(`/api/vendor-pos/ack-status/refresh/${encodeURIComponent(poNumber)}`, {
+          method: "POST",
+        });
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        if (data.updated) {
+          showToast("Status refreshed.");
+        } else {
+          showToast("No acknowledgements in processing state.");
+        }
+        loadAckHistory(poNumber, targetId);
+      } catch (err) {
+        console.error("Ack status refresh failed", err);
+        showToast("Failed to refresh status.");
       }
     }
 
@@ -1593,6 +1704,10 @@
       }
     }
 
+    function downloadOosXls() {
+      window.open("/api/oos-items/export", "_blank");
+    }
+
     function renderOosTable() {
       const tbody = document.getElementById("oos-rows");
       if (!tbody) return;
@@ -1601,7 +1716,7 @@
         return;
       }
       tbody.innerHTML = oosItems.map(it => {
-        const poNumber = it.poNumber || "";
+        const poNumber = Array.isArray(it.poNumbers) ? it.poNumbers.join(", ") : (it.poNumber || "");
         const poDate = fmtDate(it.purchaseOrderDate || "");
         const shipTo = it.shipToPartyId || "";
         const asin = it.asin || "";
@@ -1612,9 +1727,9 @@
           : "";
         return `
           <tr>
-            <td>${poNumber}</td>
-            <td>${poDate}</td>
-            <td>${shipTo}</td>
+            <td style="display:none;">${poNumber}</td>
+            <td style="display:none;">${poDate}</td>
+            <td style="display:none;">${shipTo}</td>
             <td>${asin}</td>
             <td>${img}</td>
             <td>${sku}</td>
@@ -1631,7 +1746,7 @@
     }
 
     async function restockOosItem(poNumber, asin) {
-      if (!poNumber || !asin) return;
+      if (!asin) return;
       const statusEl = document.getElementById("oos-status");
       if (statusEl) statusEl.textContent = "Updating...";
       try {
@@ -1641,7 +1756,7 @@
           body: JSON.stringify({ poNumber, asin }),
         });
         await loadOosItems();
-        if (statusEl) statusEl.textContent = `Restocked ${poNumber} / ${asin}`;
+        if (statusEl) statusEl.textContent = `Restocked ${asin}`;
       } catch (err) {
         if (statusEl) statusEl.textContent = `Failed to restock: ${err}`;
       }
@@ -1650,16 +1765,24 @@
     function renderAsinList() {
       const tbody = document.getElementById("asin-rows");
       if (!filteredAsins.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">No ASINs found in Vendor POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No ASINs found in Vendor POs</td></tr>';
         return;
       }
       tbody.innerHTML = filteredAsins.map(item => {
         const disabled = item.fetched ? "disabled" : "";
         const label = item.fetched ? "Fetched" : "Fetch";
         const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />` : "";
+        const bc = item.barcode || "";
+        const bcDisplay = bc || "—";
         return `<tr ondblclick="showCatalogDetails('${item.asin}')">
           <td>${item.asin}</td>
           <td>${item.sku || ""}</td>
+          <td>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span id="bc-${item.asin}">${bcDisplay}</span>
+              <button class="btn" style="padding:4px 8px; background:#0f172a;" onclick="editBarcode('${item.asin}', '${bc}')">Edit</button>
+            </div>
+          </td>
           <td>${item.title || ""}</td>
           <td>${img}</td>
           <td>${item.fetched ? "Saved" : "Not fetched"}</td>
@@ -1689,6 +1812,37 @@
           btnEl.textContent = "Fetch";
         }
         alert(`Failed to fetch catalog for ${asin}: ${err}`);
+      }
+    }
+
+    async function editBarcode(asin, current) {
+      if (!asin) return;
+      const val = prompt("Enter barcode (12-digit UPC or 13-digit EAN)", current || "");
+      if (val === null) return;
+      const trimmed = (val || "").trim();
+      if (!trimmed) return;
+      if (!/^\d{12,13}$/.test(trimmed)) {
+        alert("Barcode must be 12 or 13 digits (numeric).");
+        return;
+      }
+      try {
+        const resp = await fetch("/api/catalog/update-barcode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ asin, barcode: trimmed }),
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          const msg = data.detail || `HTTP ${resp.status}`;
+          alert(msg);
+          return;
+        }
+        const data = await resp.json();
+        const bcSpan = document.getElementById(`bc-${asin}`);
+        if (bcSpan) bcSpan.textContent = data.barcode || trimmed;
+        showToast("Barcode updated");
+      } catch (err) {
+        alert(`Failed to update barcode: ${err}`);
       }
     }
 
