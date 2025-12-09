@@ -184,7 +184,6 @@ logging.getLogger("uvicorn.error").propagate = True
 logging.getLogger("uvicorn.access").propagate = True
 # --- End logging configuration ---
 
-schema_logger = logging.getLogger("forecast_schema")
 tester_logger = logging.getLogger("spapi_tester")
 if not tester_logger.handlers:
     tester_handler = RotatingFileHandler(
