@@ -316,10 +316,10 @@
         <table style="table-layout:fixed; width:100%;">
           <thead>
             <tr>
-              <th style="flex:1; word-break:break-word;">ASIN</th>
+              <th style="flex:1; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('asin')">ASIN <span id="rt-sales-sort-asin"></span></th>
               <th style="flex:1; text-align:center; word-break:break-word;">Image</th>
-              <th style="flex:1; text-align:right; word-break:break-word;">Units</th>
-              <th style="flex:1; text-align:right; word-break:break-word;">Revenue</th>
+              <th style="flex:1; text-align:right; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('units')">Units <span id="rt-sales-sort-units"></span></th>
+              <th style="flex:1; text-align:right; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('revenue')">Revenue <span id="rt-sales-sort-revenue"></span></th>
             </tr>
           </thead>
           <tbody id="rt-sales-top-asins-rows">
@@ -2186,6 +2186,88 @@
       });
     }
 
+    // Vendor Real Time Sales sorting state
+    let rtSalesData = [];
+    let rtSalesSortState = {
+      column: null,
+      direction: "asc"  // "asc" or "desc"
+    };
+
+    function sortRtSalesTable(column) {
+      // Toggle direction if same column clicked
+      if (rtSalesSortState.column === column) {
+        rtSalesSortState.direction = rtSalesSortState.direction === "asc" ? "desc" : "asc";
+      } else {
+        // New column, default to ascending (for ASIN) or descending (for numeric columns)
+        rtSalesSortState.column = column;
+        rtSalesSortState.direction = (column === "asin") ? "asc" : "desc";
+      }
+
+      // Sort the data
+      const sorted = [...rtSalesData].sort((a, b) => {
+        let aVal, bVal;
+
+        if (column === "asin") {
+          aVal = a.asin.toLowerCase();
+          bVal = b.asin.toLowerCase();
+          // String comparison
+          const cmp = aVal.localeCompare(bVal);
+          return rtSalesSortState.direction === "asc" ? cmp : -cmp;
+        } else if (column === "units") {
+          aVal = parseFloat(a.units) || 0;
+          bVal = parseFloat(b.units) || 0;
+        } else if (column === "revenue") {
+          aVal = parseFloat(a.revenue) || 0;
+          bVal = parseFloat(b.revenue) || 0;
+        }
+
+        // Numeric comparison
+        if (rtSalesSortState.direction === "asc") {
+          return aVal - bVal;
+        } else {
+          return bVal - aVal;
+        }
+      });
+
+      // Update sort indicators
+      document.getElementById("rt-sales-sort-asin").textContent = "";
+      document.getElementById("rt-sales-sort-units").textContent = "";
+      document.getElementById("rt-sales-sort-revenue").textContent = "";
+
+      if (rtSalesSortState.column === "asin") {
+        document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      } else if (rtSalesSortState.column === "units") {
+        document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      } else if (rtSalesSortState.column === "revenue") {
+        document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      }
+
+      // Re-render the sorted data
+      renderRtSalesTable(sorted);
+    }
+
+    function renderRtSalesTable(data) {
+      const tbody = document.getElementById("rt-sales-top-asins-rows");
+      if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.map(asin_row => {
+        const imageHtml = asin_row.imageUrl
+          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" style="max-width:40px; max-height:40px; object-fit:contain; border-radius:4px;" />`
+          : '—';
+        return `
+          <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
+            <td><strong>${asin_row.asin}</strong></td>
+            <td style="text-align:center;">${imageHtml}</td>
+            <td style="text-align:right;"><strong>${(asin_row.units || 0).toLocaleString()}</strong></td>
+            <td style="text-align:right;"><strong>${asin_row.currency_code ? asin_row.currency_code + ' ' : ''}${formatNumberWithCommas(asin_row.revenue || 0)}</strong></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
     async function refreshVendorRtSales() {
       const btn = document.querySelector("button[onclick='refreshVendorRtSales()']");
       const status = document.getElementById("rt-sales-status");
@@ -2264,26 +2346,23 @@
         document.getElementById("rt-sales-total-revenue").textContent =
           `${data.currency_code} ${formatNumberWithCommas(data.total_revenue || 0)}`;
 
-        // Render top ASINs
-        const tbody = document.getElementById("rt-sales-top-asins-rows");
+        // Store data for sorting
         if (!data.top_asins || data.top_asins.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
+          rtSalesData = [];
+          document.getElementById("rt-sales-top-asins-rows").innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
           return;
         }
 
-        tbody.innerHTML = data.top_asins.map(asin_row => {
-          const imageHtml = asin_row.imageUrl
-            ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" style="max-width:40px; max-height:40px; object-fit:contain; border-radius:4px;" />`
-            : '—';
-          return `
-            <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
-              <td><strong>${asin_row.asin}</strong></td>
-              <td style="text-align:center;">${imageHtml}</td>
-              <td style="text-align:right;"><strong>${(asin_row.units || 0).toLocaleString()}</strong></td>
-              <td style="text-align:right;"><strong>${asin_row.currency_code ? asin_row.currency_code + ' ' : ''}${formatNumberWithCommas(asin_row.revenue || 0)}</strong></td>
-            </tr>
-          `;
-        }).join("");
+        rtSalesData = data.top_asins;
+        // Reset sort state when loading new data
+        rtSalesSortState.column = null;
+        rtSalesSortState.direction = "asc";
+        document.getElementById("rt-sales-sort-asin").textContent = "";
+        document.getElementById("rt-sales-sort-units").textContent = "";
+        document.getElementById("rt-sales-sort-revenue").textContent = "";
+
+        // Render the data
+        renderRtSalesTable(rtSalesData);
       } catch (err) {
         console.error("Failed to load RT sales summary:", err);
         document.getElementById("rt-sales-top-asins-rows").innerHTML =
