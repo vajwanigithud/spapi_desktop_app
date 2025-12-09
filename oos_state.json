@@ -2303,10 +2303,10 @@
     "poNumber": "6HTP1VPO",
     "asin": "B0BWVF4JY4",
     "vendorSku": "6959125752421",
-    "purchaseOrderDate": null,
-    "shipToPartyId": null,
-    "qty": 1.0,
-    "image": "https://m.media-amazon.com/images/I/61QaGCQnOIL.jpg",
+    "purchaseOrderDate": "2025-12-08T00:42:59Z",
+    "shipToPartyId": "AUH1",
+    "qty": "1",
+    "image": null,
     "isOutOfStock": true
   },
   "6HTP1VPO::B0G152Q5NX": {
@@ -2543,10 +2543,10 @@
     "poNumber": "6HTP1VPO",
     "asin": "B0BWVC6T2L",
     "vendorSku": "6959125752384",
-    "purchaseOrderDate": null,
-    "shipToPartyId": null,
-    "qty": 1.0,
-    "image": "https://m.media-amazon.com/images/I/51gRokNisEL.jpg",
+    "purchaseOrderDate": "2025-12-08T00:42:59Z",
+    "shipToPartyId": "AUH1",
+    "qty": "1",
+    "image": null,
     "isOutOfStock": true
   },
   "6HTP1VPO::B0F9YY4JMH": {
@@ -2693,10 +2693,10 @@
     "poNumber": "6HTP1VPO",
     "asin": "B0C3CPJP7R",
     "vendorSku": "6976154501912",
-    "purchaseOrderDate": null,
-    "shipToPartyId": null,
-    "qty": 3.0,
-    "image": "https://m.media-amazon.com/images/I/61AuujhK9rL.jpg",
+    "purchaseOrderDate": "2025-12-08T00:42:59Z",
+    "shipToPartyId": "AUH1",
+    "qty": "3",
+    "image": null,
     "isOutOfStock": true
   },
   "6HTP1VPO::B0BWMSZ3MW": {

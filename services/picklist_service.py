@@ -36,143 +36,81 @@ def consolidate_picklist(
 
     oos_state = load_oos_state_fn()
     oos_keys = set(oos_state.keys()) if isinstance(oos_state, dict) else set()
-    new_oos_added = False
 
     catalog = spapi_catalog_status_fn()
 
     consolidated: Dict[Tuple[str, str], Dict[str, Any]] = {}
     total_units = 0
 
-    rejected_line_keys: set[str] = set()
+    # Build a map of fully rejected lines (accepted_qty == 0 AND ordered_qty > 0)
+    # These should be excluded from picklist entirely
+    fully_rejected_lines: set[str] = set()
     try:
         with time_block("picklist_rejected_lookup"):
             rows = fetch_rejected_lines_fn(po_numbers) or []
         for row in rows:
             po_num = (row.get("po_number") or "").strip()
             asin = (row.get("asin") or "").strip()
-            sku = (row.get("sku") or "").strip()
-            key = f"{po_num}::{asin}"
             if po_num and asin:
-                rejected_line_keys.add(key)
-                if key in oos_keys:
-                    continue
                 try:
                     accepted_qty = float(row.get("accepted_qty") or 0)
+                    ordered_qty = float(row.get("ordered_qty") or 0)
                 except Exception:
-                    accepted_qty = 0
-                if accepted_qty <= 0:
-                    try:
-                        qty_num = float(row.get("ordered_qty") or 0)
-                    except Exception:
-                        qty_num = 0
-                    added = upsert_oos_entry_fn(
-                        oos_state,
-                        po_number=po_num,
-                        asin=asin,
-                        vendor_sku=sku or None,
-                        po_date=None,
-                        ship_to_party=None,
-                        qty=qty_num,
-                        image=(catalog.get(asin) or {}).get("image"),
-                    )
-                    if added:
-                        new_oos_added = True
-                        oos_keys.add(key)
+                    continue
+                # Only mark as fully rejected if accepted is 0 and ordered is > 0
+                if accepted_qty == 0 and ordered_qty > 0:
+                    key = f"{po_num}::{asin}"
+                    fully_rejected_lines.add(key)
     except Exception as exc:
         logger.warning(f"[Picklist] Failed to load vendor_po_lines for rejection filter: {exc}")
-
-    def is_rejected_line(item: Dict[str, Any]) -> bool:
-        def norm(val: Any) -> str:
-            if val is None:
-                return ""
-            return str(val).strip().upper()
-
-        ack = item.get("acknowledgementStatus")
-        candidates = []
-        if isinstance(ack, dict):
-            candidates.extend(
-                [
-                    ack.get("confirmationStatus"),
-                    ack.get("status"),
-                    ack.get("overallStatus"),
-                ]
-            )
-        elif isinstance(ack, str):
-            candidates.append(ack)
-
-        candidates.extend(
-            [
-                item.get("confirmationStatus"),
-                item.get("status"),
-                item.get("_inhouseStatus"),
-                item.get("_internalStatus"),
-            ]
-        )
-
-        return any("REJECT" in norm(c) for c in candidates if norm(c))
 
     with time_block("picklist_consolidate_items"):
         for po in selected:
             po_num = po.get("purchaseOrderNumber") or ""
             d = po.get("orderDetails") or {}
-            ship_to = d.get("shipToParty", {}).get("partyId") if isinstance(d.get("shipToParty"), dict) else None
-            po_date = po.get("purchaseOrderDate") or d.get("purchaseOrderDate")
             items = d.get("items") or []
             for it in items:
-                qty = it.get("orderedQuantity") or {}
-                qty_amount = qty.get("amount")
-                try:
-                    qty_num = float(qty_amount)
-                except Exception:
-                    qty_num = 0
-
                 asin = it.get("amazonProductIdentifier") or ""
                 sku = it.get("vendorProductIdentifier") or ""
                 key_po_asin = f"{po_num}::{asin}" if asin else ""
 
-                if asin and key_po_asin in rejected_line_keys:
-                    accepted_qty = 0
-                    ack = it.get("acknowledgementStatus") or {}
-                    if isinstance(ack, dict):
-                        try:
-                            accepted_qty = float(ack.get("acceptedQuantity") or 0)
-                        except Exception:
-                            accepted_qty = 0
-                    if accepted_qty > 0:
-                        pass
-                    else:
-                        try:
-                            if qty_num <= 0:
-                                qty_num = None
-                        except Exception:
-                            qty_num = None
-                        added = upsert_oos_entry_fn(
-                            oos_state,
-                            po_number=po_num,
-                            asin=asin,
-                            vendor_sku=sku or None,
-                            po_date=po_date,
-                            ship_to_party=ship_to,
-                            qty=qty_num,
-                            image=(catalog.get(asin) or {}).get("image"),
-                        )
-                        if added:
-                            new_oos_added = True
-                            oos_keys.add(key_po_asin)
-                        continue
+                # SKIP fully rejected lines entirely (not on picklist)
+                if key_po_asin in fully_rejected_lines:
+                    continue
 
                 if not asin:
+                    continue
+
+                # Use ACCEPTED quantity, not ordered
+                # First try acknowledgementStatus.acceptedQuantity (for items with status)
+                accepted_qty = 0
+                ack = it.get("acknowledgementStatus") or {}
+                if isinstance(ack, dict):
+                    try:
+                        acc_qty_obj = ack.get("acceptedQuantity") or {}
+                        accepted_qty = float(acc_qty_obj.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        accepted_qty = 0
+                
+                # If no accepted quantity, fall back to ordered quantity (for fresh POs)
+                if accepted_qty == 0:
+                    qty = it.get("orderedQuantity") or {}
+                    qty_amount = qty.get("amount")
+                    try:
+                        accepted_qty = float(qty_amount or 0)
+                    except (TypeError, ValueError):
+                        accepted_qty = 0
+
+                # Skip lines with 0 accepted quantity
+                if accepted_qty == 0:
                     continue
 
                 ckey = (asin, sku)
                 is_oos = False
                 
-                if key_po_asin in oos_keys:
-                    is_oos = True
-                elif any(
-                    (entry.get("asin") == asin and entry.get("vendorSku") == sku)
-                    for entry in (oos_state.values() if isinstance(oos_state, dict) else [])
-                ):
+                # Only mark as OOS if the item has 0 accepted quantity
+                # Do NOT check the oos_state dictionary as it accumulates stale data
+                if accepted_qty == 0:
                     is_oos = True
 
                 if ckey not in consolidated:
@@ -188,12 +126,10 @@ def consolidate_picklist(
                         "totalQty": 0,
                         "isOutOfStock": is_oos,
                     }
-                consolidated[ckey]["totalQty"] += qty_num
-                if not is_oos:
-                    total_units += qty_num
-
-    if new_oos_added:
-        save_oos_state_fn(oos_state)
+                # Add accepted quantity (not ordered)
+                consolidated[ckey]["totalQty"] += int(accepted_qty)
+                # Count all accepted items in total
+                total_units += int(accepted_qty)
 
     items_out = list(consolidated.values())
     items_out.sort(key=lambda x: (0 - (x.get("totalQty") or 0)))
