@@ -93,6 +93,7 @@
         <button class="tab-btn active" data-tab="pos" onclick="showTab('pos')">Vendor POs</button>
         <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
         <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
+        <button class="tab-btn" data-tab="vendor-rt-sales" onclick="showTab('vendor-rt-sales')">Vendor Real Time Sales</button>
         <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button>
         <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button>
       </div>
@@ -278,6 +279,72 @@
             <tr><td colspan="4" class="empty">No notifications</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="vendor-rt-sales-tab" style="display:none; margin-top:14px;">
+    <h2>Vendor Real Time Sales</h2>
+    <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="rt-sales-window" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;">
+          <option value="last_3h">Last 3 hours</option>
+          <option value="last_24h" selected>Last 24 hours</option>
+          <option value="today">Today (UTC)</option>
+          <option value="yesterday">Yesterday (UTC)</option>
+          <option value="custom">Custom range</option>
+        </select>
+        <input type="datetime-local" id="rt-sales-start" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px; display:none;" />
+        <input type="datetime-local" id="rt-sales-end" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px; display:none;" />
+        <button class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
+        <span id="rt-sales-status" style="font-size:12px; color:#6b7280;"></span>
+      </div>
+
+      <div id="rt-sales-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
+        <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
+          <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
+          <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">—</div>
+        </div>
+        <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
+          <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
+          <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">—</div>
+        </div>
+      </div>
+
+      <div style="font-weight:600; margin-top:8px;">Top ASINs</div>
+      <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
+        <table style="table-layout:fixed; width:100%;">
+          <thead>
+            <tr>
+              <th style="flex:1; word-break:break-word;">ASIN</th>
+              <th style="flex:1; text-align:center; word-break:break-word;">Image</th>
+              <th style="flex:1; text-align:right; word-break:break-word;">Units</th>
+              <th style="flex:1; text-align:right; word-break:break-word;">Revenue</th>
+            </tr>
+          </thead>
+          <tbody id="rt-sales-top-asins-rows">
+            <tr><td colspan="4" class="empty">No data. Click "Refresh Now" to fetch.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="rt-sales-asin-detail" style="margin-top:16px; display:none;">
+        <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">—</span></div>
+        <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
+          <table>
+            <thead>
+              <tr>
+                <th style="min-width:160px;">Hour (UTC)</th>
+                <th style="text-align:right; width:80px;">Units</th>
+                <th style="text-align:right; width:100px;">Revenue</th>
+              </tr>
+            </thead>
+            <tbody id="rt-sales-asin-detail-rows">
+              <tr><td colspan="3" class="empty">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
       </div>
     </div>
   </div>
@@ -1522,6 +1589,13 @@
           loadNotifications();
         }
       }
+      const rtSalesEl = document.getElementById("vendor-rt-sales-tab");
+      if (rtSalesEl) {
+        rtSalesEl.style.display = tab === "vendor-rt-sales" ? "block" : "none";
+        if (tab === "vendor-rt-sales") {
+          loadVendorRtSalesSummary();
+        }
+      }
       if (tab === "catalog" && !asinList.length) {
         loadAsinList();
       }
@@ -2099,6 +2173,194 @@
         alert(`Failed to mark OOS: ${err}`);
       }
     }
+
+    // ========================================
+    // Vendor Real Time Sales functions
+    // ========================================
+    let currentRtSalesWindow = "last_24h";
+
+    function formatNumberWithCommas(num) {
+      return (Math.round(num * 100) / 100).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    async function refreshVendorRtSales() {
+      const btn = document.querySelector("button[onclick='refreshVendorRtSales()']");
+      const status = document.getElementById("rt-sales-status");
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = "Refreshing...";
+
+      try {
+        const window = document.getElementById("rt-sales-window").value;
+        const body = {
+          window: window
+        };
+
+        if (window === "custom") {
+          const start = document.getElementById("rt-sales-start").value;
+          const end = document.getElementById("rt-sales-end").value;
+          if (!start || !end) {
+            if (status) status.textContent = "Please select start and end times for custom range";
+            if (btn) btn.disabled = false;
+            return;
+          }
+          body.start_utc = new Date(start).toISOString();
+          body.end_utc = new Date(end).toISOString();
+        }
+
+        const resp = await fetch("/api/vendor-realtime-sales/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+          throw new Error(err.error || err.detail || `HTTP ${resp.status}`);
+        }
+
+        const result = await resp.json();
+        if (status) {
+          status.textContent = `✓ Ingested ${result.ingest_summary.rows} rows (${result.ingest_summary.asins} ASINs, ${result.ingest_summary.hours} hours)`;
+        }
+
+        // Reload summary
+        await loadVendorRtSalesSummary();
+      } catch (err) {
+        if (status) status.textContent = `✗ Failed: ${err.message}`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function loadVendorRtSalesSummary() {
+      try {
+        const window = document.getElementById("rt-sales-window").value;
+        currentRtSalesWindow = window;
+
+        let params = `?window=${encodeURIComponent(window)}`;
+
+        if (window === "custom") {
+          const start = document.getElementById("rt-sales-start").value;
+          const end = document.getElementById("rt-sales-end").value;
+          if (!start || !end) {
+            document.getElementById("rt-sales-top-asins-rows").innerHTML =
+              '<tr><td colspan="4" class="empty">Please select start and end times for custom range</td></tr>';
+            return;
+          }
+          params += `&start_utc=${encodeURIComponent(new Date(start).toISOString())}`;
+          params += `&end_utc=${encodeURIComponent(new Date(end).toISOString())}`;
+        }
+
+        const resp = await fetch("/api/vendor-realtime-sales/summary" + params);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+        const data = await resp.json();
+
+        // Update summary cards
+        document.getElementById("rt-sales-total-units").textContent = (data.total_units || 0).toLocaleString();
+        document.getElementById("rt-sales-total-revenue").textContent =
+          `${data.currency_code} ${formatNumberWithCommas(data.total_revenue || 0)}`;
+
+        // Render top ASINs
+        const tbody = document.getElementById("rt-sales-top-asins-rows");
+        if (!data.top_asins || data.top_asins.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = data.top_asins.map(asin_row => {
+          const imageHtml = asin_row.imageUrl
+            ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" style="max-width:40px; max-height:40px; object-fit:contain; border-radius:4px;" />`
+            : '—';
+          return `
+            <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
+              <td><strong>${asin_row.asin}</strong></td>
+              <td style="text-align:center;">${imageHtml}</td>
+              <td style="text-align:right;"><strong>${(asin_row.units || 0).toLocaleString()}</strong></td>
+              <td style="text-align:right;"><strong>${asin_row.currency_code ? asin_row.currency_code + ' ' : ''}${formatNumberWithCommas(asin_row.revenue || 0)}</strong></td>
+            </tr>
+          `;
+        }).join("");
+      } catch (err) {
+        console.error("Failed to load RT sales summary:", err);
+        document.getElementById("rt-sales-top-asins-rows").innerHTML =
+          `<tr><td colspan="4" class="empty">Error: ${err.message}</td></tr>`;
+      }
+    }
+
+    async function openRtSalesAsinDetail(asin) {
+      try {
+        let params = `?window=${encodeURIComponent(currentRtSalesWindow)}`;
+
+        if (currentRtSalesWindow === "custom") {
+          const start = document.getElementById("rt-sales-start").value;
+          const end = document.getElementById("rt-sales-end").value;
+          if (start && end) {
+            params += `&start_utc=${encodeURIComponent(new Date(start).toISOString())}`;
+            params += `&end_utc=${encodeURIComponent(new Date(end).toISOString())}`;
+          }
+        }
+
+        const resp = await fetch(`/api/vendor-realtime-sales/asin/${encodeURIComponent(asin)}` + params);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+        const data = await resp.json();
+
+        // Show detail panel
+        document.getElementById("rt-sales-asin-detail-title").textContent = asin;
+        const tbody = document.getElementById("rt-sales-asin-detail-rows");
+
+        if (!data.data || data.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="3" class="empty">No hourly data for this ASIN in selected window</td></tr>';
+        } else {
+          tbody.innerHTML = data.data.map(row => `
+            <tr>
+              <td>${row.hour_start_utc}</td>
+              <td style="text-align:right;">${(row.ordered_units || 0).toLocaleString()}</td>
+              <td style="text-align:right;">${formatNumberWithCommas(row.ordered_revenue || 0)}</td>
+            </tr>
+          `).join("");
+        }
+
+        document.getElementById("rt-sales-asin-detail").style.display = "block";
+      } catch (err) {
+        alert("Failed to load ASIN detail: " + err.message);
+      }
+    }
+
+    function closeRtSalesAsinDetail() {
+      document.getElementById("rt-sales-asin-detail").style.display = "none";
+      document.getElementById("rt-sales-asin-detail-rows").innerHTML = '<tr><td colspan="3" class="empty">—</td></tr>';
+    }
+
+    // Window selector handler
+    document.getElementById("rt-sales-window").addEventListener("change", async (e) => {
+      const customInputs = [
+        document.getElementById("rt-sales-start"),
+        document.getElementById("rt-sales-end")
+      ];
+      const isCustom = e.target.value === "custom";
+      customInputs.forEach(inp => inp.style.display = isCustom ? "block" : "none");
+      
+      if (!isCustom) {
+        await loadVendorRtSalesSummary();
+      }
+    });
+
+    document.getElementById("rt-sales-start").addEventListener("change", () => {
+      if (document.getElementById("rt-sales-window").value === "custom") {
+        loadVendorRtSalesSummary();
+      }
+    });
+
+    document.getElementById("rt-sales-end").addEventListener("change", () => {
+      if (document.getElementById("rt-sales-window").value === "custom") {
+        loadVendorRtSalesSummary();
+      }
+    });
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
     const rebuildBtn = document.getElementById("rebuild-btn");

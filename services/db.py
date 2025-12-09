@@ -90,3 +90,200 @@ def execute_many_write(sql: str, seq_of_params: list[tuple], commit: bool = True
             except Exception as exc:
                 logger.error(f"[DB] Batch write failed for SQL: {sql} params_count={len(seq_of_params)}: {exc}", exc_info=True)
                 raise
+
+
+def init_vendor_rt_sales_state_table() -> None:
+    """
+    Create vendor_rt_sales_state table if it does not exist.
+    Tracks the last ingested hour end time per marketplace to avoid gaps.
+    Also tracks daily and weekly audit timestamps.
+    """
+    sql = """
+    CREATE TABLE IF NOT EXISTS vendor_rt_sales_state (
+        marketplace_id TEXT PRIMARY KEY,
+        last_ingested_end_utc TEXT,
+        last_daily_audit_utc TEXT,
+        last_weekly_audit_utc TEXT
+    )
+    """
+    try:
+        execute_write(sql)
+        logger.info("[DB] vendor_rt_sales_state table ensured")
+        
+        # Lightweight migration for older DBs: add audit columns if missing
+        with get_db_connection() as conn:
+            for col in ("last_daily_audit_utc", "last_weekly_audit_utc"):
+                try:
+                    conn.execute(f"ALTER TABLE vendor_rt_sales_state ADD COLUMN {col} TEXT")
+                    conn.commit()
+                    logger.info(f"[DB] Added column {col} to vendor_rt_sales_state")
+                except sqlite3.OperationalError:
+                    # Column already exists – ignore
+                    pass
+    except Exception as exc:
+        logger.error(f"[DB] Failed to ensure vendor_rt_sales_state table: {exc}", exc_info=True)
+        raise
+
+
+def get_last_ingested_end_utc_db(conn, marketplace_id: str):
+    """
+    Query the last ingested end time for a marketplace from the DB connection.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+    
+    Returns:
+        The ISO8601 timestamp string or None if not found.
+    """
+    try:
+        row = conn.execute(
+            "SELECT last_ingested_end_utc FROM vendor_rt_sales_state WHERE marketplace_id = ?",
+            (marketplace_id,)
+        ).fetchone()
+        return row["last_ingested_end_utc"] if row else None
+    except Exception as exc:
+        logger.error(f"[DB] Failed to get last_ingested_end_utc for {marketplace_id}: {exc}")
+        raise
+
+
+def update_last_ingested_end_utc_db(conn, marketplace_id: str, end_utc_str: str) -> None:
+    """
+    Update or insert the last ingested end time for a marketplace.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+        end_utc_str: ISO8601 timestamp string
+    """
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO vendor_rt_sales_state
+            (marketplace_id, last_ingested_end_utc)
+            VALUES (?, ?)
+            """,
+            (marketplace_id, end_utc_str)
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.error(
+            f"[DB] Failed to update last_ingested_end_utc for {marketplace_id} to {end_utc_str}: {exc}"
+        )
+        raise
+
+
+def update_last_daily_audit_utc_db(conn, marketplace_id: str, audit_utc_str: str) -> None:
+    """
+    Update or insert the last daily audit timestamp for a marketplace.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+        audit_utc_str: ISO8601 timestamp string
+    """
+    try:
+        # Get current row or create with NULLs
+        current = conn.execute(
+            "SELECT * FROM vendor_rt_sales_state WHERE marketplace_id = ?",
+            (marketplace_id,)
+        ).fetchone()
+        
+        if current:
+            conn.execute(
+                "UPDATE vendor_rt_sales_state SET last_daily_audit_utc = ? WHERE marketplace_id = ?",
+                (audit_utc_str, marketplace_id)
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO vendor_rt_sales_state
+                (marketplace_id, last_daily_audit_utc)
+                VALUES (?, ?)
+                """,
+                (marketplace_id, audit_utc_str)
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.error(
+            f"[DB] Failed to update last_daily_audit_utc for {marketplace_id} to {audit_utc_str}: {exc}"
+        )
+        raise
+
+
+def update_last_weekly_audit_utc_db(conn, marketplace_id: str, audit_utc_str: str) -> None:
+    """
+    Update or insert the last weekly audit timestamp for a marketplace.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+        audit_utc_str: ISO8601 timestamp string
+    """
+    try:
+        # Get current row or create with NULLs
+        current = conn.execute(
+            "SELECT * FROM vendor_rt_sales_state WHERE marketplace_id = ?",
+            (marketplace_id,)
+        ).fetchone()
+        
+        if current:
+            conn.execute(
+                "UPDATE vendor_rt_sales_state SET last_weekly_audit_utc = ? WHERE marketplace_id = ?",
+                (audit_utc_str, marketplace_id)
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO vendor_rt_sales_state
+                (marketplace_id, last_weekly_audit_utc)
+                VALUES (?, ?)
+                """,
+                (marketplace_id, audit_utc_str)
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.error(
+            f"[DB] Failed to update last_weekly_audit_utc for {marketplace_id} to {audit_utc_str}: {exc}"
+        )
+        raise
+
+
+def get_vendor_rt_sales_state_db(conn, marketplace_id: str) -> dict:
+    """
+    Get the full audit state for a marketplace.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+    
+    Returns:
+        A dict with keys: marketplace_id, last_ingested_end_utc, last_daily_audit_utc, last_weekly_audit_utc
+        All timestamp values are ISO8601 strings or None.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT marketplace_id, last_ingested_end_utc, last_daily_audit_utc, last_weekly_audit_utc
+            FROM vendor_rt_sales_state
+            WHERE marketplace_id = ?
+            """,
+            (marketplace_id,)
+        ).fetchone()
+        
+        if row:
+            return {
+                "marketplace_id": row["marketplace_id"],
+                "last_ingested_end_utc": row["last_ingested_end_utc"],
+                "last_daily_audit_utc": row["last_daily_audit_utc"],
+                "last_weekly_audit_utc": row["last_weekly_audit_utc"],
+            }
+        return {
+            "marketplace_id": marketplace_id,
+            "last_ingested_end_utc": None,
+            "last_daily_audit_utc": None,
+            "last_weekly_audit_utc": None,
+        }
+    except Exception as exc:
+        logger.error(f"[DB] Failed to get vendor_rt_sales_state for {marketplace_id}: {exc}")
+        raise

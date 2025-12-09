@@ -121,6 +121,8 @@ from services.vendor_notifications import (
     get_recent_notifications,
 )
 from services.perf import time_block, get_recent_timings
+import services.vendor_realtime_sales as vendor_realtime_sales_service
+from services import spapi_reports
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -208,6 +210,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def startup_event():
+    """Initialize background tasks on app startup."""
+    try:
+        # Spawn startup backfill in background thread (non-blocking)
+        start_vendor_rt_sales_startup_backfill_thread()
+        # Start auto-sync loop in background thread
+        start_vendor_rt_sales_auto_sync()
+        logger.info("[Startup] Background tasks initialized successfully")
+    except Exception as e:
+        logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
 
 
 # -------------------------------
@@ -317,6 +332,290 @@ try:
 except Exception as e:
     logger.warning(f"[Startup] Schema migration skipped or failed (non-critical): {e}")
 
+# Initialize vendor_realtime_sales table & state
+try:
+    vendor_realtime_sales_service.init_vendor_realtime_sales_table()
+    from services.db import init_vendor_rt_sales_state_table
+    init_vendor_rt_sales_state_table()
+except Exception as e:
+    logger.warning(f"[Startup] Failed to init vendor_realtime_sales tables (non-critical): {e}")
+
+
+# ========================================
+# Vendor Real Time Sales Auto-Sync
+# ========================================
+VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES = 15  # Now 15 minutes instead of 60
+_rt_sales_auto_sync_thread = None
+_rt_sales_auto_sync_stop = False
+
+
+def start_vendor_rt_sales_startup_backfill_thread():
+    """
+    Spawn a daemon thread that runs the vendor real-time sales startup backfill
+    in the background so the FastAPI startup event returns quickly.
+    """
+    import threading
+    t = threading.Thread(
+        target=run_vendor_rt_sales_startup_backfill,
+        name="VendorRtSalesStartupBackfill",
+        daemon=True,
+    )
+    t.start()
+    logger.debug("[RTSalesStartupBackfill] Daemon thread spawned")
+
+
+def run_vendor_rt_sales_startup_backfill():
+    """
+    On app startup, ensure vendor_realtime_sales has no gaps up to safe_now.
+    Uses vendor_rt_sales_state to determine last_ingested_end_utc and backfills
+    up to MAX_HISTORY_DAYS in the past.
+    
+    This function is intended to run in a background daemon thread so startup is non-blocking.
+    """
+    try:
+        from services.vendor_realtime_sales import (
+            get_safe_now_utc,
+            get_last_ingested_end_utc,
+            backfill_realtime_sales_for_gap,
+            MAX_HISTORY_DAYS,
+        )
+        from services.db import get_db_connection
+        
+        safe_now = get_safe_now_utc()
+        earliest_allowed = safe_now - timedelta(days=MAX_HISTORY_DAYS)
+        
+        marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+        marketplace_id = marketplace_ids[0]
+        
+        logger.info(f"[RTSalesStartupBackfill] Starting startup backfill for {marketplace_id}")
+        
+        # Get last ingested end time from state
+        with get_db_connection() as conn:
+            last_end = get_last_ingested_end_utc(conn, marketplace_id)
+        
+        if last_end is None:
+            # First time: backfill last 24h
+            start_window = safe_now - timedelta(hours=24)
+            logger.info(f"[RTSalesStartupBackfill] First time setup, backfilling from {start_window}")
+        else:
+            if last_end < earliest_allowed:
+                # Too old, backfill from earliest_allowed
+                start_window = earliest_allowed
+                logger.info(f"[RTSalesStartupBackfill] Last ingested {last_end} is too old, starting from {start_window}")
+            else:
+                # Normal gap backfill
+                start_window = last_end
+                logger.info(f"[RTSalesStartupBackfill] Backfilling gap from {last_end}")
+        
+        if start_window < safe_now:
+            logger.info(f"[RTSalesStartupBackfill] Backfilling [{start_window}, {safe_now})")
+            rows, asins, hours = backfill_realtime_sales_for_gap(
+                spapi_client=None,  # Will use global spapi_client
+                marketplace_id=marketplace_id,
+                start_utc=start_window,
+                end_utc=safe_now,
+            )
+            logger.info(f"[RTSalesStartupBackfill] Completed: {rows} rows, {asins} ASINs, {hours} hours")
+        else:
+            logger.info("[RTSalesStartupBackfill] Already up-to-date, no backfill needed")
+    
+    except Exception as e:
+        logger.error(f"[RTSalesStartupBackfill] Failed (non-critical): {e}", exc_info=True)
+        # Do not crash the app on startup backfill failure
+
+
+def vendor_rt_sales_auto_sync_loop():
+    """
+    Background loop that periodically syncs Vendor Real Time Sales data.
+    Runs every VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES minutes.
+    
+    Logic:
+    - Checks for gaps in vendor_rt_sales_state.
+    - If no state: backfill last 24h.
+    - If gap > 2h: backfill the gap.
+    - Otherwise: sync overlapping last 3h (for late adjustments).
+    """
+    global _rt_sales_auto_sync_stop
+    import time
+    
+    logger.info(f"[RTSalesAutoSync] Started, will sync every {VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES} minutes")
+    
+    interval_seconds = VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES * 60
+    
+    marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+    marketplace_id = marketplace_ids[0]
+    
+    while not _rt_sales_auto_sync_stop:
+        try:
+            from services.vendor_realtime_sales import (
+                get_safe_now_utc,
+                get_last_ingested_end_utc,
+                backfill_realtime_sales_for_gap,
+            )
+            from services.db import get_db_connection
+            
+            safe_now = get_safe_now_utc()
+            
+            # Get last ingested end time
+            with get_db_connection() as conn:
+                last_end = get_last_ingested_end_utc(conn, marketplace_id)
+            
+            if last_end is None:
+                # First time in this cycle: backfill last 24h
+                start_window = safe_now - timedelta(hours=24)
+                logger.info(
+                    f"[RTSalesAutoSync] No state found, backfilling last 24h "
+                    f"[{start_window.isoformat()}, {safe_now.isoformat()})"
+                )
+            elif safe_now - last_end > timedelta(hours=2):
+                # Gap detected (app was sleeping)
+                start_window = last_end
+                logger.info(
+                    f"[RTSalesAutoSync] Gap detected ({(safe_now - last_end).total_seconds() / 3600:.1f}h), "
+                    f"backfilling [{start_window.isoformat()}, {safe_now.isoformat()})"
+                )
+            else:
+                # Normal sync: overlap last 3h to catch late adjustments
+                start_window = safe_now - timedelta(hours=3)
+                logger.info(
+                    f"[RTSalesAutoSync] Normal sync, refreshing last 3h "
+                    f"[{start_window.isoformat()}, {safe_now.isoformat()})"
+                )
+            
+            # Perform backfill/sync
+            rows, asins, hours = backfill_realtime_sales_for_gap(
+                spapi_client=None,  # Will use global
+                marketplace_id=marketplace_id,
+                start_utc=start_window,
+                end_utc=safe_now,
+            )
+            
+            logger.info(
+                f"[RTSalesAutoSync] Cycle complete: "
+                f"{rows} rows, {asins} unique ASINs, {hours} hours processed"
+            )
+            
+            # =====================================================================
+            # DAILY AUDIT: re-download last 24 hours once per day
+            # =====================================================================
+            try:
+                from services.vendor_realtime_sales import (
+                    get_vendor_rt_sales_state,
+                    update_daily_audit_state,
+                    run_realtime_sales_audit_window,
+                )
+                
+                with get_db_connection() as conn:
+                    state = get_vendor_rt_sales_state(conn, marketplace_id)
+                
+                last_daily_audit = state.get("last_daily_audit_utc")
+                
+                # Define audit window: last 24 full hours
+                audit_end = safe_now.replace(minute=0, second=0, microsecond=0)
+                audit_start = audit_end - timedelta(hours=24)
+                
+                # Check if we need to run daily audit
+                should_run_daily = False
+                if last_daily_audit is None:
+                    should_run_daily = True
+                else:
+                    try:
+                        from datetime import datetime as dt_type
+                        last_audit_dt = dt_type.fromisoformat(last_daily_audit.replace("Z", "+00:00"))
+                        if audit_start > last_audit_dt:
+                            should_run_daily = True
+                    except Exception as e:
+                        logger.warning(f"[RTSalesAutoSync] Failed to parse last_daily_audit_utc: {e}")
+                        should_run_daily = True
+                
+                if should_run_daily:
+                    logger.info(f"[RTSalesAutoSync] Running daily audit [{audit_start.isoformat()}, {audit_end.isoformat()})")
+                    audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
+                        spapi_client=None,
+                        start_utc=audit_start,
+                        end_utc=audit_end,
+                        marketplace_id=marketplace_id,
+                        label="daily"
+                    )
+                    update_daily_audit_state(marketplace_id, audit_end)
+                    logger.info(f"[RTSalesAutoSync] Daily audit done: {audit_rows} rows, {audit_asins} ASINs, {audit_hours} hours")
+                
+            except Exception as e:
+                logger.error(f"[RTSalesAutoSync] Daily audit error: {e}", exc_info=True)
+            
+            # =====================================================================
+            # WEEKLY AUDIT: re-download last 7 days once per week
+            # =====================================================================
+            try:
+                from services.vendor_realtime_sales import (
+                    get_vendor_rt_sales_state,
+                    update_weekly_audit_state,
+                    run_realtime_sales_audit_window,
+                )
+                
+                with get_db_connection() as conn:
+                    state = get_vendor_rt_sales_state(conn, marketplace_id)
+                
+                last_weekly_audit = state.get("last_weekly_audit_utc")
+                
+                # Define audit window: last 7 full days
+                audit_end = safe_now.replace(minute=0, second=0, microsecond=0)
+                audit_start = audit_end - timedelta(days=7)
+                
+                # Check if we need to run weekly audit
+                should_run_weekly = False
+                if last_weekly_audit is None:
+                    should_run_weekly = True
+                else:
+                    try:
+                        from datetime import datetime as dt_type
+                        last_audit_dt = dt_type.fromisoformat(last_weekly_audit.replace("Z", "+00:00"))
+                        if audit_start > last_audit_dt:
+                            should_run_weekly = True
+                    except Exception as e:
+                        logger.warning(f"[RTSalesAutoSync] Failed to parse last_weekly_audit_utc: {e}")
+                        should_run_weekly = True
+                
+                if should_run_weekly:
+                    logger.info(f"[RTSalesAutoSync] Running weekly audit [{audit_start.isoformat()}, {audit_end.isoformat()})")
+                    audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
+                        spapi_client=None,
+                        start_utc=audit_start,
+                        end_utc=audit_end,
+                        marketplace_id=marketplace_id,
+                        label="weekly"
+                    )
+                    update_weekly_audit_state(marketplace_id, audit_end)
+                    logger.info(f"[RTSalesAutoSync] Weekly audit done: {audit_rows} rows, {audit_asins} ASINs, {audit_hours} hours")
+                
+            except Exception as e:
+                logger.error(f"[RTSalesAutoSync] Weekly audit error: {e}", exc_info=True)
+        
+        except Exception as e:
+            logger.error(f"[RTSalesAutoSync] Cycle failed: {e}", exc_info=True)
+        
+        # Sleep until next sync
+        logger.debug(f"[RTSalesAutoSync] Next sync in {VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES} minutes")
+        time.sleep(interval_seconds)
+
+
+def start_vendor_rt_sales_auto_sync():
+    """Start the vendor real-time sales auto-sync background thread."""
+    global _rt_sales_auto_sync_thread, _rt_sales_auto_sync_stop
+    
+    if _rt_sales_auto_sync_thread is not None and _rt_sales_auto_sync_thread.is_alive():
+        logger.warning("[RTSalesAutoSync] Already running; skipping duplicate start")
+        return
+    
+    _rt_sales_auto_sync_stop = False
+    import threading
+    _rt_sales_auto_sync_thread = threading.Thread(
+        target=vendor_rt_sales_auto_sync_loop,
+        daemon=True,
+        name="VendorRtSalesAutoSync"
+    )
+    _rt_sales_auto_sync_thread.start()
+    logger.info("[RTSalesAutoSync] Background thread started")
 
 
 
@@ -1510,6 +1809,237 @@ def get_vendor_po_lines(po_number: str):
             "items": [],
             "message": "Failed to fetch line details. Please try again."
         }
+
+
+# ====================================================================
+# VENDOR REAL TIME SALES ENDPOINTS
+# ====================================================================
+
+@app.post("/api/vendor-realtime-sales/refresh")
+async def refresh_vendor_realtime_sales(
+    background_tasks: BackgroundTasks,
+    request: Request
+):
+    """
+    Trigger a GET_VENDOR_REAL_TIME_SALES_REPORT fetch and ingest.
+    
+    Request body:
+    {
+      "window": "last_3h" | "last_24h" | "today" | "yesterday" | "custom",
+      "start_utc": "ISO8601 (for custom only)",
+      "end_utc": "ISO8601 (for custom only)"
+    }
+    """
+    try:
+        body = await request.json() if await request.body() else {}
+    except:
+        body = {}
+    
+    window = body.get("window", "last_24h")
+    now_utc = datetime.now(timezone.utc)
+    
+    # Resolve window to start/end times
+    if window == "last_3h":
+        data_end = now_utc
+        data_start = now_utc - timedelta(hours=3)
+    elif window == "last_24h":
+        data_end = now_utc
+        data_start = now_utc - timedelta(hours=24)
+    elif window == "today":
+        data_end = now_utc.replace(hour=23, minute=59, second=59)
+        data_start = now_utc.replace(hour=0, minute=0, second=0)
+    elif window == "yesterday":
+        yesterday = now_utc - timedelta(days=1)
+        data_end = yesterday.replace(hour=23, minute=59, second=59)
+        data_start = yesterday.replace(hour=0, minute=0, second=0)
+    elif window == "custom":
+        try:
+            data_start = datetime.fromisoformat(body.get("start_utc", ""))
+            data_end = datetime.fromisoformat(body.get("end_utc", ""))
+            if data_start.tzinfo is None:
+                data_start = data_start.replace(tzinfo=timezone.utc)
+            if data_end.tzinfo is None:
+                data_end = data_end.replace(tzinfo=timezone.utc)
+        except:
+            return {"error": "Invalid start_utc or end_utc for custom window"}
+    else:
+        data_end = now_utc
+        data_start = now_utc - timedelta(hours=24)
+    
+    marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+    marketplace_id = marketplace_ids[0]
+    
+    try:
+        logger.info(
+            f"[VendorRtSales] Requesting report window={window} "
+            f"start={data_start.isoformat()} end={data_end.isoformat()}"
+        )
+        
+        # Request report via SP-API
+        report_id = spapi_reports.request_vendor_report(
+            report_type="GET_VENDOR_REAL_TIME_SALES_REPORT",
+            data_start=data_start,
+            data_end=data_end,
+            extra_options={"currencyCode": "AED"}
+        )
+        logger.info(f"[VendorRtSales] Report requested report_id={report_id}")
+        
+        # Poll until DONE
+        report_data = spapi_reports.poll_vendor_report(report_id)
+        logger.info(f"[VendorRtSales] Report DONE: status={report_data.get('processingStatus')}")
+        
+        # Download document
+        document_id = report_data.get("reportDocumentId")
+        if not document_id:
+            return {"error": f"No document ID in report response: {report_data}"}
+        
+        content, _ = spapi_reports.download_vendor_report_document(document_id)
+        
+        # Parse JSON
+        if isinstance(content, bytes):
+            report_json = json.loads(content.decode("utf-8"))
+        elif isinstance(content, str):
+            report_json = json.loads(content)
+        else:
+            report_json = content
+        
+        logger.info(f"[VendorRtSales] Downloaded report, parsing...")
+        
+        # Ingest
+        summary = vendor_realtime_sales_service.ingest_realtime_sales_report(
+            report_json,
+            marketplace_id=marketplace_id,
+            currency_code="AED"
+        )
+        
+        logger.info(f"[VendorRtSales] Ingested report: {summary}")
+        
+        return {
+            "status": "success",
+            "window": window,
+            "ingest_summary": summary,
+            "report_id": report_id
+        }
+    
+    except Exception as e:
+        logger.error(f"[VendorRtSales] Failed to refresh: {e}", exc_info=True)
+        return {"error": str(e), "status": "failed"}
+
+
+@app.get("/api/vendor-realtime-sales/summary")
+def get_vendor_realtime_sales_summary(
+    window: str = "last_24h",
+    start_utc: Optional[str] = None,
+    end_utc: Optional[str] = None
+):
+    """
+    Get aggregated real-time sales summary for a window.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        
+        # Resolve window
+        if window == "last_3h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=3)
+        elif window == "last_24h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=24)
+        elif window == "today":
+            resolved_end = now_utc.replace(hour=23, minute=59, second=59)
+            resolved_start = now_utc.replace(hour=0, minute=0, second=0)
+        elif window == "yesterday":
+            yesterday = now_utc - timedelta(days=1)
+            resolved_end = yesterday.replace(hour=23, minute=59, second=59)
+            resolved_start = yesterday.replace(hour=0, minute=0, second=0)
+        elif window == "custom" and start_utc and end_utc:
+            resolved_start = datetime.fromisoformat(start_utc)
+            resolved_end = datetime.fromisoformat(end_utc)
+            if resolved_start.tzinfo is None:
+                resolved_start = resolved_start.replace(tzinfo=timezone.utc)
+            if resolved_end.tzinfo is None:
+                resolved_end = resolved_end.replace(tzinfo=timezone.utc)
+        else:
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=24)
+        
+        start_str = resolved_start.isoformat()
+        end_str = resolved_end.isoformat()
+        
+        marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+        
+        summary = vendor_realtime_sales_service.get_realtime_sales_summary(
+            start_utc=start_str,
+            end_utc=end_str,
+            marketplace_id=marketplace_id
+        )
+        
+        return summary
+    
+    except Exception as e:
+        logger.error(f"[VendorRtSales] Failed to get summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/vendor-realtime-sales/asin/{asin}")
+def get_vendor_realtime_sales_for_asin(
+    asin: str,
+    window: str = "last_24h",
+    start_utc: Optional[str] = None,
+    end_utc: Optional[str] = None
+):
+    """
+    Get hourly sales detail for a specific ASIN.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        
+        # Resolve window
+        if window == "last_3h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=3)
+        elif window == "last_24h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=24)
+        elif window == "today":
+            resolved_end = now_utc.replace(hour=23, minute=59, second=59)
+            resolved_start = now_utc.replace(hour=0, minute=0, second=0)
+        elif window == "yesterday":
+            yesterday = now_utc - timedelta(days=1)
+            resolved_end = yesterday.replace(hour=23, minute=59, second=59)
+            resolved_start = yesterday.replace(hour=0, minute=0, second=0)
+        elif window == "custom" and start_utc and end_utc:
+            resolved_start = datetime.fromisoformat(start_utc)
+            resolved_end = datetime.fromisoformat(end_utc)
+            if resolved_start.tzinfo is None:
+                resolved_start = resolved_start.replace(tzinfo=timezone.utc)
+            if resolved_end.tzinfo is None:
+                resolved_end = resolved_end.replace(tzinfo=timezone.utc)
+        else:
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=24)
+        
+        start_str = resolved_start.isoformat()
+        end_str = resolved_end.isoformat()
+        
+        marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+        
+        detail = vendor_realtime_sales_service.get_realtime_sales_for_asin(
+            asin=asin,
+            start_utc=start_str,
+            end_utc=end_str,
+            marketplace_id=marketplace_id
+        )
+        
+        return {
+            "asin": asin,
+            "window": window,
+            "data": detail
+        }
+    
+    except Exception as e:
+        logger.error(f"[VendorRtSales] Failed to get ASIN detail: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/spapi-tester/meta")
