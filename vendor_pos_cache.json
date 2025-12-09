@@ -1937,20 +1937,21 @@
       "purchaseOrderState": "Acknowledged",
       "orderDetails": {
         "purchaseOrderDate": "2025-11-26T00:23:57Z",
+        "purchaseOrderChangedDate": "2025-12-09T05:41:50Z",
         "purchaseOrderStateChangedDate": "2025-11-28T05:41:48Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "sellingParty": {
           "partyId": "FK6EI"
         },
         "shipToParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "billToParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "deliveryWindow": "2025-11-25T23:00:00Z--2025-12-01T00:00:00Z",
         "items": [
@@ -4279,20 +4280,21 @@
       "purchaseOrderState": "Acknowledged",
       "orderDetails": {
         "purchaseOrderDate": "2025-11-24T00:53:26Z",
+        "purchaseOrderChangedDate": "2025-12-09T05:42:20Z",
         "purchaseOrderStateChangedDate": "2025-11-25T12:01:44Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "sellingParty": {
           "partyId": "FK6EI"
         },
         "shipToParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "billToParty": {
-          "partyId": "AUH1"
+          "partyId": "DXB6"
         },
         "deliveryWindow": "2025-11-23T23:00:00Z--2025-11-27T00:00:00Z",
         "items": [
@@ -20896,10 +20898,11 @@
     },
     {
       "purchaseOrderNumber": "4MCIV2IO",
-      "purchaseOrderState": "Acknowledged",
+      "purchaseOrderState": "Closed",
       "orderDetails": {
         "purchaseOrderDate": "2025-10-27T01:04:25Z",
-        "purchaseOrderStateChangedDate": "2025-11-01T09:40:21Z",
+        "purchaseOrderChangedDate": "2025-12-09T17:52:17Z",
+        "purchaseOrderStateChangedDate": "2025-12-09T17:52:17Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -21225,7 +21228,7 @@
             "amazonProductIdentifier": "B0DKFGYBX1",
             "vendorProductIdentifier": "B0DKFGYBX1",
             "orderedQuantity": {
-              "amount": 5,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21358,7 +21361,7 @@
             "amazonProductIdentifier": "B0DRCVLNSD",
             "vendorProductIdentifier": "6976154508515",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21662,7 +21665,7 @@
             "amazonProductIdentifier": "B092D7RH8P",
             "vendorProductIdentifier": "0726667955810",
             "orderedQuantity": {
-              "amount": 3,
+              "amount": 1,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21700,7 +21703,7 @@
             "amazonProductIdentifier": "B0DG8NZ9K4",
             "vendorProductIdentifier": "6976154507648",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21738,7 +21741,7 @@
             "amazonProductIdentifier": "B0DS5QF2MV",
             "vendorProductIdentifier": "B0DS5QF2MV",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21757,7 +21760,7 @@
             "amazonProductIdentifier": "B0FP9GK55H",
             "vendorProductIdentifier": "6937517603148",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21776,7 +21779,7 @@
             "amazonProductIdentifier": "B0FPFW6FHY",
             "vendorProductIdentifier": "6937517602356",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21795,7 +21798,7 @@
             "amazonProductIdentifier": "B0DKFH5G6Z",
             "vendorProductIdentifier": "B0DKFH5G6Z",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21949,10 +21952,11 @@
     },
     {
       "purchaseOrderNumber": "6JNKPO7S",
-      "purchaseOrderState": "Acknowledged",
+      "purchaseOrderState": "Closed",
       "orderDetails": {
         "purchaseOrderDate": "2025-10-27T01:04:25Z",
-        "purchaseOrderStateChangedDate": "2025-11-01T09:40:19Z",
+        "purchaseOrderChangedDate": "2025-12-09T17:44:41Z",
+        "purchaseOrderStateChangedDate": "2025-12-09T17:44:41Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -22012,7 +22016,7 @@
             "amazonProductIdentifier": "B0C2PV4HGD",
             "vendorProductIdentifier": "6976154500977",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 1,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22088,7 +22092,7 @@
             "amazonProductIdentifier": "B0CNCN1RGT",
             "vendorProductIdentifier": "6976154505286",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22126,7 +22130,7 @@
             "amazonProductIdentifier": "B0DLB8PST1",
             "vendorProductIdentifier": "6976154508270",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22202,7 +22206,7 @@
             "amazonProductIdentifier": "B0DRCVLNSD",
             "vendorProductIdentifier": "6976154508515",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22316,7 +22320,7 @@
             "amazonProductIdentifier": "B0FP9GK55H",
             "vendorProductIdentifier": "6937517603148",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22392,7 +22396,7 @@
             "amazonProductIdentifier": "B092D6VSTH",
             "vendorProductIdentifier": "0726667955803",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22506,7 +22510,7 @@
             "amazonProductIdentifier": "B0D97M3KGD",
             "vendorProductIdentifier": "6976154509604",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -22582,7 +22586,7 @@
             "amazonProductIdentifier": "B0DYVHXTNH",
             "vendorProductIdentifier": "B0DYVHXTNH",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -32173,7 +32177,7 @@
       "purchaseOrderState": "Closed",
       "orderDetails": {
         "purchaseOrderDate": "2025-10-13T01:16:44Z",
-        "purchaseOrderStateChangedDate": "2025-11-27T05:21:53Z",
+        "purchaseOrderStateChangedDate": "2025-12-08T23:22:19Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -33218,8 +33222,8 @@
           }
         ]
       },
-      "total_received_qty": 58,
-      "total_pending_qty": 161
+      "total_received_qty": 60,
+      "total_pending_qty": 159
     },
     {
       "purchaseOrderNumber": "12JZ31VA",

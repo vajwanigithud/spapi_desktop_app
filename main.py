@@ -1838,7 +1838,10 @@ async def refresh_vendor_realtime_sales(
     now_utc = datetime.now(timezone.utc)
     
     # Resolve window to start/end times
-    if window == "last_3h":
+    if window == "last_1h":
+        data_end = now_utc
+        data_start = now_utc - timedelta(hours=1)
+    elif window == "last_3h":
         data_end = now_utc
         data_start = now_utc - timedelta(hours=3)
     elif window == "last_24h":
@@ -1938,7 +1941,10 @@ def get_vendor_realtime_sales_summary(
         now_utc = datetime.now(timezone.utc)
         
         # Resolve window
-        if window == "last_3h":
+        if window == "last_1h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=1)
+        elif window == "last_3h":
             resolved_end = now_utc
             resolved_start = now_utc - timedelta(hours=3)
         elif window == "last_24h":
@@ -1994,7 +2000,10 @@ def get_vendor_realtime_sales_for_asin(
         now_utc = datetime.now(timezone.utc)
         
         # Resolve window
-        if window == "last_3h":
+        if window == "last_1h":
+            resolved_end = now_utc
+            resolved_start = now_utc - timedelta(hours=1)
+        elif window == "last_3h":
             resolved_end = now_utc
             resolved_start = now_utc - timedelta(hours=3)
         elif window == "last_24h":

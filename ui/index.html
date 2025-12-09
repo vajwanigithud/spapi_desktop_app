@@ -22,6 +22,10 @@
     .empty { padding:14px; color:var(--muted); text-align:center; }
     select.po-status-select { padding:8px 12px; border-radius:8px; font-size:15px; font-weight:700; min-width:170px; }
     input.po-date-input { padding:6px 10px; border-radius:8px; font-size:15px; font-weight:700; border:1px solid var(--border); }
+    .rt-sales-sortable-header { cursor:pointer; user-select:none; transition: background-color 0.15s ease; }
+    .rt-sales-sortable-header:hover { background-color:#f1f5f9; }
+    .rt-sales-sort-arrow { display:inline-block; margin-left:4px; font-size:12px; transition:transform 0.2s ease, opacity 0.2s ease; }
+    .rt-sales-window-info { font-size:12px; color:#666; margin-bottom:8px; }
     /* Row status colors */
     tr.po-status-preparing { background-color: #fef9c3; }
     tr.po-status-appointment { background-color: #e0f2fe; }
@@ -287,7 +291,8 @@
     <h2>Vendor Real Time Sales</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <select id="rt-sales-window" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;">
+        <select id="rt-sales-window" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesWindowChange()">
+          <option value="last_1h">Last 1 hour</option>
           <option value="last_3h">Last 3 hours</option>
           <option value="last_24h" selected>Last 24 hours</option>
           <option value="today">Today (UTC)</option>
@@ -312,14 +317,15 @@
       </div>
 
       <div style="font-weight:600; margin-top:8px;">Top ASINs</div>
+      <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
       <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
         <table style="table-layout:fixed; width:100%;">
           <thead>
             <tr>
-              <th style="flex:1; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('asin')">ASIN <span id="rt-sales-sort-asin"></span></th>
+              <th style="flex:1; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
               <th style="flex:1; text-align:center; word-break:break-word;">Image</th>
-              <th style="flex:1; text-align:right; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('units')">Units <span id="rt-sales-sort-units"></span></th>
-              <th style="flex:1; text-align:right; word-break:break-word; cursor:pointer; user-select:none;" onclick="sortRtSalesTable('revenue')">Revenue <span id="rt-sales-sort-revenue"></span></th>
+              <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
+              <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
             </tr>
           </thead>
           <tbody id="rt-sales-top-asins-rows">
@@ -1593,6 +1599,7 @@
       if (rtSalesEl) {
         rtSalesEl.style.display = tab === "vendor-rt-sales" ? "block" : "none";
         if (tab === "vendor-rt-sales") {
+          loadRtSalesWindowSelection();
           loadVendorRtSalesSummary();
         }
       }
@@ -2178,6 +2185,8 @@
     // Vendor Real Time Sales functions
     // ========================================
     let currentRtSalesWindow = "last_24h";
+    const RTS_SORT_STORAGE_KEY = "vendor_rt_sales_sort";
+    const RTS_WINDOW_STORAGE_KEY = "rtSalesWindow";
 
     function formatNumberWithCommas(num) {
       return (Math.round(num * 100) / 100).toLocaleString('en-US', {
@@ -2193,14 +2202,152 @@
       direction: "asc"  // "asc" or "desc"
     };
 
-    function sortRtSalesTable(column) {
-      // Toggle direction if same column clicked
+    // ========== FEATURE 1: Window Selection Storage ==========
+    function saveRtSalesWindowSelection() {
+      const windowSelect = document.getElementById("rt-sales-window");
+      if (windowSelect) {
+        try {
+          localStorage.setItem(RTS_WINDOW_STORAGE_KEY, windowSelect.value);
+        } catch (e) {
+          console.warn("Failed to save RT sales window selection:", e);
+        }
+      }
+    }
+
+    function loadRtSalesWindowSelection() {
+      const windowSelect = document.getElementById("rt-sales-window");
+      if (windowSelect) {
+        try {
+          const saved = localStorage.getItem(RTS_WINDOW_STORAGE_KEY);
+          if (saved) {
+            windowSelect.value = saved;
+          }
+        } catch (e) {
+          console.warn("Failed to load RT sales window selection:", e);
+        }
+      }
+    }
+
+    function onRtSalesWindowChange() {
+      saveRtSalesWindowSelection();
+      updateRtSalesWindowInfo();
+      loadVendorRtSalesSummary();
+    }
+
+    // ========== FEATURE 2: Window Info Label ==========
+    function updateRtSalesWindowInfo() {
+      const windowSelect = document.getElementById("rt-sales-window");
+      const infoEl = document.getElementById("rt-sales-window-info");
+      if (!windowSelect || !infoEl) return;
+
+      const window = windowSelect.value;
+      const now = new Date();
+      const uaeTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
+      
+      let startTime, endTime, label;
+
+      if (window === "last_1h") {
+        startTime = new Date(uaeTime.getTime() - 60 * 60 * 1000);
+        endTime = uaeTime;
+        label = "Last 1 hour";
+      } else if (window === "last_3h") {
+        startTime = new Date(uaeTime.getTime() - 3 * 60 * 60 * 1000);
+        endTime = uaeTime;
+        label = "Last 3 hours";
+      } else if (window === "last_24h") {
+        startTime = new Date(uaeTime.getTime() - 24 * 60 * 60 * 1000);
+        endTime = uaeTime;
+        label = "Last 24 hours";
+      } else if (window === "today") {
+        startTime = new Date(uaeTime);
+        startTime.setHours(0, 0, 0, 0);
+        endTime = uaeTime;
+        label = "Today";
+      } else if (window === "yesterday") {
+        const yesterday = new Date(uaeTime);
+        yesterday.setDate(yesterday.getDate() - 1);
+        startTime = new Date(yesterday);
+        startTime.setHours(0, 0, 0, 0);
+        endTime = new Date(yesterday);
+        endTime.setHours(23, 59, 59, 999);
+        label = "Yesterday";
+      } else if (window === "custom") {
+        const startInput = document.getElementById("rt-sales-start").value;
+        const endInput = document.getElementById("rt-sales-end").value;
+        if (startInput && endInput) {
+          startTime = new Date(startInput);
+          endTime = new Date(endInput);
+          label = "Custom range";
+        } else {
+          infoEl.textContent = "Window: Custom range (no dates selected)";
+          return;
+        }
+      } else {
+        infoEl.textContent = "";
+        return;
+      }
+
+      const startStr = startTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const endStr = endTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      infoEl.textContent = `Window: ${label} (${startStr} → ${endStr} UAE)`;
+    }
+
+    function saveRtSalesSortState() {
+      try {
+        localStorage.setItem(RTS_SORT_STORAGE_KEY, JSON.stringify(rtSalesSortState));
+      } catch (e) {
+        console.warn("Failed to save sort state to localStorage", e);
+      }
+    }
+
+    function loadRtSalesSortState() {
+      try {
+        const stored = localStorage.getItem(RTS_SORT_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          rtSalesSortState.column = parsed.column || null;
+          rtSalesSortState.direction = parsed.direction || "asc";
+        }
+      } catch (e) {
+        console.warn("Failed to load sort state from localStorage", e);
+      }
+    }
+
+    function updateRtSalesArrows() {
+      document.getElementById("rt-sales-sort-asin").textContent = "";
+      document.getElementById("rt-sales-sort-units").textContent = "";
+      document.getElementById("rt-sales-sort-revenue").textContent = "";
+
+      if (rtSalesSortState.column === "asin") {
+        document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      } else if (rtSalesSortState.column === "units") {
+        document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      } else if (rtSalesSortState.column === "revenue") {
+        document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      }
+    }
+
+    function onRtSalesHeaderClick(column) {
+      // If clicking the same column, toggle direction
       if (rtSalesSortState.column === column) {
         rtSalesSortState.direction = rtSalesSortState.direction === "asc" ? "desc" : "asc";
       } else {
-        // New column, default to ascending (for ASIN) or descending (for numeric columns)
+        // New column, set default direction based on column type
         rtSalesSortState.column = column;
         rtSalesSortState.direction = (column === "asin") ? "asc" : "desc";
+      }
+
+      // Save sort state
+      saveRtSalesSortState();
+
+      // Re-sort and render
+      sortRtSalesTable(column);
+    }
+
+    function sortRtSalesTable(column) {
+      if (!rtSalesData || rtSalesData.length === 0) {
+        renderRtSalesTable(rtSalesData);
+        return;
       }
 
       // Sort the data
@@ -2230,17 +2377,7 @@
       });
 
       // Update sort indicators
-      document.getElementById("rt-sales-sort-asin").textContent = "";
-      document.getElementById("rt-sales-sort-units").textContent = "";
-      document.getElementById("rt-sales-sort-revenue").textContent = "";
-
-      if (rtSalesSortState.column === "asin") {
-        document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-      } else if (rtSalesSortState.column === "units") {
-        document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-      } else if (rtSalesSortState.column === "revenue") {
-        document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-      }
+      updateRtSalesArrows();
 
       // Re-render the sorted data
       renderRtSalesTable(sorted);
@@ -2341,6 +2478,9 @@
 
         const data = await resp.json();
 
+        // Update window info label
+        updateRtSalesWindowInfo();
+
         // Update summary cards
         document.getElementById("rt-sales-total-units").textContent = (data.total_units || 0).toLocaleString();
         document.getElementById("rt-sales-total-revenue").textContent =
@@ -2350,19 +2490,26 @@
         if (!data.top_asins || data.top_asins.length === 0) {
           rtSalesData = [];
           document.getElementById("rt-sales-top-asins-rows").innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
+          // Still update arrows even if no data
+          updateRtSalesArrows();
           return;
         }
 
         rtSalesData = data.top_asins;
-        // Reset sort state when loading new data
-        rtSalesSortState.column = null;
-        rtSalesSortState.direction = "asc";
-        document.getElementById("rt-sales-sort-asin").textContent = "";
-        document.getElementById("rt-sales-sort-units").textContent = "";
-        document.getElementById("rt-sales-sort-revenue").textContent = "";
+        
+        // Load saved sort state from localStorage
+        loadRtSalesSortState();
+        
+        // Update arrows to show current state
+        updateRtSalesArrows();
 
-        // Render the data
-        renderRtSalesTable(rtSalesData);
+        // Apply saved sort if one exists
+        if (rtSalesSortState.column) {
+          sortRtSalesTable(rtSalesSortState.column);
+        } else {
+          // No saved sort, just render as-is
+          renderRtSalesTable(rtSalesData);
+        }
       } catch (err) {
         console.error("Failed to load RT sales summary:", err);
         document.getElementById("rt-sales-top-asins-rows").innerHTML =
