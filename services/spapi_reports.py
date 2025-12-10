@@ -299,6 +299,9 @@ def download_vendor_report_document(document_id: str) -> tuple:
     beyond the expiresAt/expirationTime returned by getReportDocument. Re-call
     this function if the URL expires.
     
+    Raises:
+        SpApiQuotaError: If the getReportDocument or document download returns 429 QuotaExceeded
+    
     Returns:
         tuple: (content, expiration_info) where:
             - content is the decompressed document (dict, list, or bytes)
@@ -312,6 +315,16 @@ def download_vendor_report_document(document_id: str) -> tuple:
         "accept": "application/json",
     }
     meta_resp = requests.get(meta_url, headers=headers, timeout=30)
+    
+    # Check for quota exceeded on getReportDocument call
+    if meta_resp.status_code == 429:
+        try:
+            payload = meta_resp.json()
+        except Exception:
+            payload = meta_resp.text
+        logger.error(f"[spapi_reports] getReportDocument failed 429 QuotaExceeded: {payload}")
+        raise SpApiQuotaError(f"QuotaExceeded downloading report document: {payload}")
+    
     if meta_resp.status_code >= 300:
         logger.error(f"[spapi_reports] getReportDocument failed {meta_resp.status_code}: {meta_resp.text}")
         meta_resp.raise_for_status()
@@ -332,6 +345,16 @@ def download_vendor_report_document(document_id: str) -> tuple:
         raise RuntimeError(f"Missing download URL for document {document_id}: {meta}")
 
     doc_resp = requests.get(download_url, timeout=60)
+    
+    # Check for quota exceeded on document download
+    if doc_resp.status_code == 429:
+        try:
+            payload = doc_resp.json()
+        except Exception:
+            payload = doc_resp.text
+        logger.error(f"[spapi_reports] Document download failed 429 QuotaExceeded: {payload}")
+        raise SpApiQuotaError(f"QuotaExceeded downloading report document payload: {payload}")
+    
     if doc_resp.status_code >= 300:
         logger.error(f"[spapi_reports] Document download failed {doc_resp.status_code}")
         doc_resp.raise_for_status()

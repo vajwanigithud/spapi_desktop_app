@@ -6,6 +6,7 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 - State tracking (vendor_rt_sales_state table) to avoid gaps
 - Backfill logic with safe time windows
 - Aggregation and querying for UI
+- Support for flexible lookback windows and view-by modes (ASIN / Time)
 """
 
 import logging
@@ -14,10 +15,138 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal
 
+try:
+    # Python 3.9+ standard lib
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except Exception:
+    # Fallback for environments without zoneinfo
+    ZoneInfo = None
+    class ZoneInfoNotFoundError(Exception):
+        pass
+
 from services.db import execute_write, get_db_connection, execute_many_write
 from services.perf import time_block
 
 logger = logging.getLogger(__name__)
+
+# UAE timezone: prefer real IANA zone, fall back to fixed UTC+4
+try:
+    if ZoneInfo is None:
+        raise ZoneInfoNotFoundError("zoneinfo not available")
+    UAE_TZ = ZoneInfo("Asia/Dubai")
+except ZoneInfoNotFoundError:
+    # Fallback: fixed UTC+4, good enough for UAE (no DST)
+    UAE_TZ = timezone(timedelta(hours=4))
+
+# ====================================================================
+# QUOTA AND AUDIT CONFIGURATION
+# ====================================================================
+# Set to False to disable weekly audits (which can generate many API calls)
+ENABLE_VENDOR_RT_SALES_WEEKLY_AUDIT = False
+
+# Set to False to disable daily audits
+ENABLE_VENDOR_RT_SALES_DAILY_AUDIT = True
+
+# In-memory quota cooldown tracking
+_rt_sales_quota_cooldown_until_utc = None  # type: Optional[datetime]
+QUOTA_COOLDOWN_MINUTES = 30
+
+# In-memory backfill lock to prevent overlapping cycles
+_rt_sales_backfill_in_progress = False
+_rt_sales_backfill_lock_acquired_at_utc = None  # type: Optional[datetime]
+
+
+def is_in_quota_cooldown(now_utc: datetime) -> bool:
+    """Check if we're currently in a quota cooldown period."""
+    global _rt_sales_quota_cooldown_until_utc
+    return (
+        _rt_sales_quota_cooldown_until_utc is not None
+        and now_utc < _rt_sales_quota_cooldown_until_utc
+    )
+
+
+def is_backfill_in_progress() -> bool:
+    """Check if a backfill is currently running."""
+    global _rt_sales_backfill_in_progress
+    return _rt_sales_backfill_in_progress
+
+
+def start_backfill() -> bool:
+    """
+    Attempt to acquire the backfill lock.
+    Returns True if acquired, False if already in progress.
+    """
+    global _rt_sales_backfill_in_progress, _rt_sales_backfill_lock_acquired_at_utc
+    if _rt_sales_backfill_in_progress:
+        return False
+    _rt_sales_backfill_in_progress = True
+    _rt_sales_backfill_lock_acquired_at_utc = datetime.now(timezone.utc)
+    logger.debug("[VendorRtSales] Backfill lock acquired")
+    return True
+
+
+def end_backfill() -> None:
+    """Release the backfill lock."""
+    global _rt_sales_backfill_in_progress, _rt_sales_backfill_lock_acquired_at_utc
+    if _rt_sales_backfill_in_progress and _rt_sales_backfill_lock_acquired_at_utc:
+        elapsed = (datetime.now(timezone.utc) - _rt_sales_backfill_lock_acquired_at_utc).total_seconds()
+        logger.debug(f"[VendorRtSales] Backfill lock released (held for {elapsed:.1f}s)")
+    _rt_sales_backfill_in_progress = False
+    _rt_sales_backfill_lock_acquired_at_utc = None
+
+
+def start_quota_cooldown(now_utc: datetime) -> None:
+    """Start a quota cooldown period (prevents further API calls for a while)."""
+    global _rt_sales_quota_cooldown_until_utc
+    _rt_sales_quota_cooldown_until_utc = now_utc + timedelta(minutes=QUOTA_COOLDOWN_MINUTES)
+    logger.warning(
+        f"[VendorRtSales] Quota cooldown started until {_rt_sales_quota_cooldown_until_utc.isoformat()}"
+    )
+
+
+def get_rt_sales_status(now_utc: Optional[datetime] = None) -> dict:
+    """
+    Return status of the Real-Time Sales auto-sync/backfill system.
+    
+    Returns:
+        {
+            "busy": bool,  # True if backfill/auto-sync is actively running
+            "cooldown_active": bool,  # True if quota cooldown is active
+            "cooldown_until_utc": Optional[str],  # ISO8601, or None
+            "cooldown_until_uae": Optional[str],  # ISO8601 in UAE time, or None
+            "message": str  # "busy", "cooldown", or "idle"
+        }
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    
+    global _rt_sales_backfill_in_progress, _rt_sales_quota_cooldown_until_utc
+    
+    busy = _rt_sales_backfill_in_progress
+    cooldown_active = is_in_quota_cooldown(now_utc)
+    
+    cooldown_until_utc = None
+    cooldown_until_uae = None
+    
+    if cooldown_active and _rt_sales_quota_cooldown_until_utc:
+        cooldown_until_utc = _rt_sales_quota_cooldown_until_utc.isoformat()
+        cooldown_until_uae = _rt_sales_quota_cooldown_until_utc.astimezone(UAE_TZ).isoformat()
+    
+    if busy:
+        message = "busy"
+    elif cooldown_active:
+        message = "cooldown"
+    else:
+        message = "idle"
+    
+    return {
+        "busy": busy,
+        "cooldown_active": cooldown_active,
+        "cooldown_until_utc": cooldown_until_utc,
+        "cooldown_until_uae": cooldown_until_uae,
+        "message": message
+    }
+
 
 # ====================================================================
 # TIME CONSTANTS FOR SAFE BACKFILLING
@@ -357,21 +486,52 @@ def ingest_realtime_sales_report(
     }
 
 
+def utc_to_uae_str(dt_utc: datetime) -> str:
+    """
+    Convert UTC datetime to UAE timezone and return ISO format string.
+    
+    Args:
+        dt_utc: timezone-aware UTC datetime
+    
+    Returns:
+        ISO format string of the time in UAE (Asia/Dubai) timezone
+    """
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    
+    dt_uae = dt_utc.astimezone(UAE_TZ)
+    return dt_uae.isoformat()
+
+
 def get_realtime_sales_summary(
     start_utc: str,
     end_utc: str,
     marketplace_id: Optional[str] = None,
+    view_by: str = "asin"
 ) -> dict:
     """
     Aggregate real-time sales data for a window.
     
-    Returns:
+    Args:
+        start_utc: ISO8601 string (UTC) - start of window
+        end_utc: ISO8601 string (UTC) - end of window
+        marketplace_id: Optional marketplace filter
+        view_by: "asin" (default) or "time" for different aggregation
+    
+    Returns for view_by="asin":
     {
-        "window": { "start_utc": ..., "end_utc": ... },
+        "lookback_hours": int,
+        "view_by": "asin",
+        "window": {
+            "start_utc": "...",
+            "end_utc": "...",
+            "start_uae": "...",
+            "end_uae": "..."
+        },
         "total_units": int,
         "total_revenue": float,
         "currency_code": str,
-        "top_asins": [
+        "rows": [
             {
                 "asin": "...",
                 "units": int,
@@ -383,8 +543,36 @@ def get_realtime_sales_summary(
             ...
         ]
     }
+    
+    Returns for view_by="time":
+    {
+        "lookback_hours": int,
+        "view_by": "time",
+        "window": { ... },
+        "total_units": int,
+        "total_revenue": float,
+        "currency_code": str,
+        "rows": [
+            {
+                "bucket_start_utc": "...",
+                "bucket_end_utc": "...",
+                "bucket_start_uae": "...",
+                "bucket_end_uae": "...",
+                "units": int,
+                "revenue": float
+            },
+            ...
+        ]
+    }
     """
     try:
+        # Parse input times
+        start_dt = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_utc.replace("Z", "+00:00"))
+        
+        # Calculate lookback_hours for metadata
+        lookback_hours = round((end_dt - start_dt).total_seconds() / 3600)
+        
         with get_db_connection() as conn:
             # Get total units and revenue
             query = """
@@ -405,56 +593,141 @@ def get_realtime_sales_summary(
             total_revenue = totals_row["total_revenue"] or 0.0
             currency_code = totals_row["currency_code"] or "AED"
             
-            # Get top 50 ASINs by units with catalog image LEFT JOIN
-            query = """
-            SELECT
-                vrs.asin,
-                SUM(vrs.ordered_units) as units,
-                SUM(vrs.ordered_revenue) as revenue,
-                MIN(vrs.hour_start_utc) as first_hour_utc,
-                MAX(vrs.hour_start_utc) as last_hour_utc,
-                sc.image AS image_url
-            FROM vendor_realtime_sales vrs
-            LEFT JOIN spapi_catalog sc ON vrs.asin = sc.asin
-            WHERE vrs.hour_start_utc >= ? AND vrs.hour_start_utc < ?
-            """
-            params = [start_utc, end_utc]
-            if marketplace_id:
-                query += " AND vrs.marketplace_id = ?"
-                params.append(marketplace_id)
+            # Build window metadata
+            window_data = {
+                "start_utc": start_utc,
+                "end_utc": end_utc,
+                "start_uae": utc_to_uae_str(start_dt),
+                "end_uae": utc_to_uae_str(end_dt)
+            }
             
-            query += """
-            GROUP BY vrs.asin
-            ORDER BY units DESC
-            LIMIT 50
-            """
+            # Aggregate by ASIN or by time bucket
+            if view_by == "time":
+                rows = _get_realtime_sales_by_time(
+                    conn, start_utc, end_utc, marketplace_id
+                )
+            else:
+                # Default: view_by="asin"
+                rows = _get_realtime_sales_by_asin(
+                    conn, start_utc, end_utc, marketplace_id
+                )
             
-            top_asins_rows = conn.execute(query, params).fetchall()
-            top_asins = [
-                {
-                    "asin": row["asin"],
-                    "units": row["units"] or 0,
-                    "revenue": row["revenue"] or 0.0,
-                    "imageUrl": row["image_url"],
-                    "first_hour_utc": row["first_hour_utc"],
-                    "last_hour_utc": row["last_hour_utc"]
-                }
-                for row in top_asins_rows
-            ]
-        
-        return {
-            "window": {"start_utc": start_utc, "end_utc": end_utc},
-            "total_units": total_units,
-            "total_revenue": round(float(total_revenue), 2),
-            "currency_code": currency_code,
-            "top_asins": top_asins
-        }
+            return {
+                "lookback_hours": lookback_hours,
+                "view_by": view_by,
+                "window": window_data,
+                "total_units": total_units,
+                "total_revenue": round(float(total_revenue), 2),
+                "currency_code": currency_code,
+                "rows": rows
+            }
     except Exception as exc:
         logger.error(
             f"[VendorRtSales] Failed to get summary [{start_utc}, {end_utc}): {exc}",
             exc_info=True
         )
         raise
+
+
+def _get_realtime_sales_by_asin(
+    conn,
+    start_utc: str,
+    end_utc: str,
+    marketplace_id: Optional[str] = None
+) -> List[dict]:
+    """
+    Aggregate real-time sales by ASIN for a time window.
+    
+    Returns list of dicts with: asin, units, revenue, imageUrl, first_hour_utc, last_hour_utc
+    """
+    query = """
+    SELECT
+        vrs.asin,
+        SUM(vrs.ordered_units) as units,
+        SUM(vrs.ordered_revenue) as revenue,
+        MIN(vrs.hour_start_utc) as first_hour_utc,
+        MAX(vrs.hour_start_utc) as last_hour_utc,
+        sc.image AS image_url
+    FROM vendor_realtime_sales vrs
+    LEFT JOIN spapi_catalog sc ON vrs.asin = sc.asin
+    WHERE vrs.hour_start_utc >= ? AND vrs.hour_start_utc < ?
+    """
+    params = [start_utc, end_utc]
+    if marketplace_id:
+        query += " AND vrs.marketplace_id = ?"
+        params.append(marketplace_id)
+    
+    query += """
+    GROUP BY vrs.asin
+    ORDER BY units DESC
+    LIMIT 50
+    """
+    
+    rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "asin": row["asin"],
+            "units": row["units"] or 0,
+            "revenue": round(float(row["revenue"] or 0.0), 2),
+            "imageUrl": row["image_url"],
+            "first_hour_utc": row["first_hour_utc"],
+            "last_hour_utc": row["last_hour_utc"]
+        }
+        for row in rows
+    ]
+
+
+def _get_realtime_sales_by_time(
+    conn,
+    start_utc: str,
+    end_utc: str,
+    marketplace_id: Optional[str] = None
+) -> List[dict]:
+    """
+    Aggregate real-time sales by hourly time buckets for a time window.
+    
+    Returns list of dicts with: bucket_start_utc, bucket_end_utc, bucket_start_uae, 
+                                bucket_end_uae, units, revenue
+    """
+    query = """
+    SELECT
+        vrs.hour_start_utc as bucket_start_utc,
+        vrs.hour_end_utc as bucket_end_utc,
+        SUM(vrs.ordered_units) as units,
+        SUM(vrs.ordered_revenue) as revenue
+    FROM vendor_realtime_sales vrs
+    WHERE vrs.hour_start_utc >= ? AND vrs.hour_start_utc < ?
+    """
+    params = [start_utc, end_utc]
+    if marketplace_id:
+        query += " AND vrs.marketplace_id = ?"
+        params.append(marketplace_id)
+    
+    query += """
+    GROUP BY vrs.hour_start_utc, vrs.hour_end_utc
+    ORDER BY vrs.hour_start_utc ASC
+    """
+    
+    rows = conn.execute(query, params).fetchall()
+    result = []
+    for row in rows:
+        bucket_start_dt = datetime.fromisoformat(
+            row["bucket_start_utc"].replace("Z", "+00:00")
+        )
+        bucket_end_dt = datetime.fromisoformat(
+            row["bucket_end_utc"].replace("Z", "+00:00")
+        )
+        
+        result.append({
+            "bucket_start_utc": row["bucket_start_utc"],
+            "bucket_end_utc": row["bucket_end_utc"],
+            "bucket_start_uae": utc_to_uae_str(bucket_start_dt),
+            "bucket_end_uae": utc_to_uae_str(bucket_end_dt),
+            "units": row["units"] or 0,
+            "revenue": round(float(row["revenue"] or 0.0), 2)
+        })
+    
+    return result
 
 
 def get_realtime_sales_for_asin(
@@ -555,37 +828,49 @@ def backfill_realtime_sales_for_gap(
     Backfill vendor_realtime_sales data for [start_utc, end_utc) in CHUNK_HOURS increments.
     Uses GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API.
     
+    On SpApiQuotaError:
+    - Logs the error with the chunk details
+    - Immediately stops processing further chunks (hard-stop)
+    - Re-raises SpApiQuotaError so caller can handle quota cooldown
+    
+    For other exceptions:
+    - Logs and continues to next chunk (does not corrupt state)
+    
     Returns:
         (total_rows_ingested, total_asins, total_hours_processed)
+    
+    Raises:
+        SpApiQuotaError: If quota is exceeded (caller should activate cooldown)
     """
     import time
     from services import spapi_reports
-    
+    from services.spapi_reports import SpApiQuotaError
+
     # Clamp end to safe_now
     safe_now = get_safe_now_utc()
     if start_utc >= safe_now:
         logger.debug("[VendorRtSalesBackfill] Start time already >= safe_now; nothing to backfill")
         return (0, 0, 0)
-    
+
     end_utc_clamped = min(end_utc, safe_now)
     if end_utc_clamped <= start_utc:
         logger.debug("[VendorRtSalesBackfill] Clamped end <= start; nothing to backfill")
         return (0, 0, 0)
-    
+
     total_rows = 0
     total_asins = set()
     total_hours = set()
-    
+
     current_start = start_utc
     while current_start < end_utc_clamped:
         current_end = min(current_start + timedelta(hours=CHUNK_HOURS), end_utc_clamped)
-        
+
         logger.info(
             "[VendorRtSalesBackfill] Requesting chunk [%s, %s)",
             current_start.isoformat(),
             current_end.isoformat()
         )
-        
+
         try:
             # Request report
             report_id = spapi_reports.request_vendor_report(
@@ -595,12 +880,12 @@ def backfill_realtime_sales_for_gap(
                 extra_options={"currencyCode": "AED"}
             )
             logger.debug(f"[VendorRtSalesBackfill] Report requested: {report_id}")
-            
+
             # Poll until DONE
             report_data = spapi_reports.poll_vendor_report(report_id)
             processing_status = report_data.get("processingStatus", "UNKNOWN")
             logger.debug(f"[VendorRtSalesBackfill] Report status: {processing_status}")
-            
+
             if processing_status == "DONE":
                 document_id = report_data.get("reportDocumentId")
                 if document_id:
@@ -612,21 +897,21 @@ def backfill_realtime_sales_for_gap(
                         report_json = json.loads(content)
                     else:
                         report_json = content
-                    
+
                     # Ingest
                     summary = ingest_realtime_sales_report(
                         report_json,
                         marketplace_id=marketplace_id,
                         currency_code="AED"
                     )
-                    
+
                     total_rows += summary.get("rows", 0)
                     total_asins.update(summary.get("asins", []) if isinstance(summary.get("asins"), (list, set)) else [])
-                    
+
                     # Track unique hours
                     if summary.get("rows", 0) > 0:
                         total_hours.add(current_start.isoformat())
-                    
+
                     logger.info(
                         "[VendorRtSalesBackfill] Chunk done: %d rows, cumulative total: %d rows",
                         summary.get("rows", 0),
@@ -640,7 +925,20 @@ def backfill_realtime_sales_for_gap(
                     processing_status
                 )
                 # Still consider it an attempt; move on
+
+        except SpApiQuotaError as e:
+            # HARD STOP: Quota exceeded, abort remaining chunks and re-raise
+            logger.error(
+                "[VendorRtSalesBackfill] QUOTA EXCEEDED at chunk [%s, %s): %s. "
+                "Aborting remaining chunks.",
+                current_start.isoformat(),
+                current_end.isoformat(),
+                e,
+            )
+            raise  # Re-raise so caller can activate cooldown
+
         except Exception as e:
+            # Other errors: log and continue (do not corrupt state)
             logger.error(
                 "[VendorRtSalesBackfill] Failed to process chunk [%s, %s): %s",
                 current_start.isoformat(),
@@ -649,10 +947,10 @@ def backfill_realtime_sales_for_gap(
                 exc_info=True
             )
             # Continue with next chunk despite error
-        
+
         current_start = current_end
         time.sleep(1)  # Small delay between requests
-    
+
     logger.info(
         "[VendorRtSalesBackfill] Backfill complete: %d total rows, %d unique hours",
         total_rows,
@@ -672,6 +970,8 @@ def run_realtime_sales_audit_window(
     Run an audit window for real-time sales (daily/weekly).
     Wrapper around backfill_realtime_sales_for_gap with special logging.
     
+    Propagates SpApiQuotaError to allow caller to activate cooldown.
+    
     Args:
         spapi_client: SP-API client
         start_utc: Start of audit window (should already be clamped to safe_now)
@@ -681,6 +981,9 @@ def run_realtime_sales_audit_window(
     
     Returns:
         (rows_ingested, unique_asins, unique_hours)
+    
+    Raises:
+        SpApiQuotaError: Propagated from backfill if quota exceeded
     """
     logger.info(
         "[VendorRtSalesAudit] Starting %s audit for [%s, %s)",
@@ -707,11 +1010,21 @@ def run_realtime_sales_audit_window(
         
         return (rows, asins, hours)
     except Exception as e:
-        logger.error(
-            "[VendorRtSalesAudit] %s audit failed: %s",
-            label.capitalize(),
-            e,
-            exc_info=True
-        )
-        return (0, 0, 0)
+        # Re-raise quota errors; log and suppress others
+        from services.spapi_reports import SpApiQuotaError
+        if isinstance(e, SpApiQuotaError):
+            logger.error(
+                "[VendorRtSalesAudit] %s audit hit quota: %s",
+                label.capitalize(),
+                e
+            )
+            raise  # Propagate quota error to caller
+        else:
+            logger.error(
+                "[VendorRtSalesAudit] %s audit failed: %s",
+                label.capitalize(),
+                e,
+                exc_info=True
+            )
+            return (0, 0, 0)  # Suppress other errors
 

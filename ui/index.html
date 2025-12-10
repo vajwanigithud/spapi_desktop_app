@@ -75,6 +75,34 @@
       .po-line-received { background-color: #dcfce7; }
       /* PO items modal: summary row */
       .po-items-summary td { border-top: 2px solid #e5e7eb; background-color: #f9fafb; font-weight: 600; }
+      /* Real-Time Sales status label */
+      .rt-sales-status-label { font-size: 12px; margin-top: 4px; color: #666; }
+      .rt-sales-status-busy { color: #d97706; font-weight: 500; }
+      .rt-sales-status-cooldown { color: #b91c1c; font-weight: 500; }
+      .rt-sales-status-idle { color: #059669; font-weight: 500; }
+      /* Out-of-Stock export status */
+      .export-status-pending { font-weight: 600; color: #d97706; }
+      .export-status-exported { opacity: 0.6; color: #6b7280; }
+      .oos-row-exported { opacity: 0.7; }
+      /* Inventory subtabs */
+      .subtab-bar {
+        margin: 15px 0;
+      }
+      .subtab-btn {
+        padding: 8px 14px;
+        margin-right: 10px;
+        background: #f0f0f0;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .subtab-btn.active {
+        background: #3498db;
+        color: white;
+      }
+      .inventory-subtab {
+        margin-top: 20px;
+      }
   </style>
 </head>
 <body>
@@ -98,6 +126,7 @@
         <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
         <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
         <button class="tab-btn" data-tab="vendor-rt-sales" onclick="showTab('vendor-rt-sales')">Vendor Real Time Sales</button>
+        <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
         <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button>
         <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button>
       </div>
@@ -291,19 +320,25 @@
     <h2>Vendor Real Time Sales</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <select id="rt-sales-window" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesWindowChange()">
-          <option value="last_1h">Last 1 hour</option>
-          <option value="last_3h">Last 3 hours</option>
-          <option value="last_24h" selected>Last 24 hours</option>
-          <option value="today">Today (UTC)</option>
-          <option value="yesterday">Yesterday (UTC)</option>
-          <option value="custom">Custom range</option>
+        <label style="font-size:14px; font-weight:600;">Lookback:</label>
+        <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
+          <option value="2">Trailing 2 hours</option>
+          <option value="4">Trailing 4 hours</option>
+          <option value="8">Trailing 8 hours</option>
+          <option value="12">Trailing 12 hours</option>
+          <option value="24">Trailing 24 hours</option>
+          <option value="48">Trailing 48 hours</option>
         </select>
-        <input type="datetime-local" id="rt-sales-start" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px; display:none;" />
-        <input type="datetime-local" id="rt-sales-end" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px; display:none;" />
-        <button class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
-        <span id="rt-sales-status" style="font-size:12px; color:#6b7280;"></span>
+        
+        <label style="font-size:14px; font-weight:600; margin-left:12px;">View By:</label>
+        <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
+          <option value="asin" selected>ASIN</option>
+          <option value="time">Time</option>
+        </select>
+        
+        <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()" style="margin-left:12px;">Refresh Now</button>
       </div>
+      <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
 
       <div id="rt-sales-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
         <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
@@ -316,10 +351,11 @@
         </div>
       </div>
 
-      <div style="font-weight:600; margin-top:8px;">Top ASINs</div>
+      <div style="font-weight:600; margin-top:8px;" id="rt-sales-table-title">Top ASINs</div>
       <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
       <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
-        <table style="table-layout:fixed; width:100%;">
+        <!-- ASIN View Table -->
+        <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
           <thead>
             <tr>
               <th style="flex:1; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
@@ -330,6 +366,20 @@
           </thead>
           <tbody id="rt-sales-top-asins-rows">
             <tr><td colspan="4" class="empty">No data. Click "Refresh Now" to fetch.</td></tr>
+          </tbody>
+        </table>
+        
+        <!-- Time View Table -->
+        <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
+          <thead>
+            <tr>
+              <th style="flex:2; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('bucket_time')">Time Bucket (UAE) <span id="rt-sales-sort-bucket-time" class="rt-sales-sort-arrow"></span></th>
+              <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-time-units" class="rt-sales-sort-arrow"></span></th>
+              <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-time-revenue" class="rt-sales-sort-arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="rt-sales-time-rows">
+            <tr><td colspan="3" class="empty">No data available</td></tr>
           </tbody>
         </table>
       </div>
@@ -355,6 +405,19 @@
     </div>
   </div>
   </div>
+  </div>
+
+  <div class="panel" id="inventory-tab" style="display:none; margin-top:14px;">
+    <h2>Inventory</h2>
+    <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+      <div class="subtab-bar">
+        <button class="subtab-btn active" onclick="showInventorySubtab('overview')">Overview (Latest Week)</button>
+        <button class="subtab-btn" onclick="showInventorySubtab('asin')">ASIN Breakdown (Latest Week)</button>
+      </div>
+
+      <div id="inventory-overview-subtab" class="inventory-subtab"></div>
+      <div id="inventory-asin-subtab" class="inventory-subtab" style="display:none;"></div>
+    </div>
   </div>
 
   <div class="backdrop" id="modal">
@@ -1599,9 +1662,16 @@
       if (rtSalesEl) {
         rtSalesEl.style.display = tab === "vendor-rt-sales" ? "block" : "none";
         if (tab === "vendor-rt-sales") {
-          loadRtSalesWindowSelection();
+          initRtSalesTab();
           loadVendorRtSalesSummary();
+          startRtSalesStatusPolling();
+        } else {
+          stopRtSalesStatusPolling();
         }
+      }
+      const inventoryEl = document.getElementById("inventory-tab");
+      if (inventoryEl) {
+        inventoryEl.style.display = tab === "inventory" ? "block" : "none";
       }
       if (tab === "catalog" && !asinList.length) {
         loadAsinList();
@@ -1612,6 +1682,23 @@
       if (tab === "tester") {
         loadTesterMeta();
       }
+    }
+
+    function showInventorySubtab(name) {
+      const overviewSubtab = document.getElementById("inventory-overview-subtab");
+      const asinSubtab = document.getElementById("inventory-asin-subtab");
+      
+      overviewSubtab.style.display = "none";
+      asinSubtab.style.display = "none";
+
+      if (name === "overview") {
+        overviewSubtab.style.display = "block";
+      } else if (name === "asin") {
+        asinSubtab.style.display = "block";
+      }
+
+      document.querySelectorAll(".subtab-btn").forEach(btn => btn.classList.remove("active"));
+      document.querySelector(`.subtab-btn[onclick="showInventorySubtab('${name}')"]`).classList.add("active");
     }
 
     async function loadTesterMeta() {
@@ -1873,7 +1960,26 @@
     }
 
     function downloadOosXls() {
-      window.open("/api/oos-items/export", "_blank");
+      const statusEl = document.getElementById("oos-status");
+      if (statusEl) statusEl.textContent = "Exporting...";
+      
+      try {
+        // Download the file
+        window.open("/api/oos-items/export", "_blank");
+        
+        // Wait a moment for export to complete on backend, then refresh the list
+        setTimeout(async () => {
+          await loadOosItems();
+          
+          // Count how many are now marked as exported
+          const exportedCount = oosItems.filter(it => it.export_status === "exported").length;
+          if (statusEl) {
+            statusEl.textContent = `Export complete. ${exportedCount} total items marked as exported.`;
+          }
+        }, 1000);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = "Export failed: " + err.message;
+      }
     }
 
     function renderOosTable() {
@@ -1890,11 +1996,21 @@
         const asin = it.asin || "";
         const sku = it.vendorSku || "";
         const qty = it.qty ?? "";
+        const exportStatus = it.export_status || "pending";
         const img = it.image
           ? `<img src="${it.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />`
           : "";
+        
+        // Row styling: slightly grey out exported items
+        const rowClass = exportStatus === "exported" ? ' class="oos-row-exported"' : '';
+        
+        // Status display
+        const statusHTML = exportStatus === "exported"
+          ? '<span class="export-status-exported">Exported</span>'
+          : '<span class="export-status-pending">Pending for export</span>';
+        
         return `
-          <tr>
+          <tr${rowClass}>
             <td style="display:none;">${poNumber}</td>
             <td style="display:none;">${poDate}</td>
             <td style="display:none;">${shipTo}</td>
@@ -1902,12 +2018,7 @@
             <td>${img}</td>
             <td>${sku}</td>
             <td>${qty}</td>
-            <td>
-              <button class="btn" style="background:#16a34a"
-                      onclick="restockOosItem('${poNumber}','${asin}')">
-                Restocked
-              </button>
-            </td>
+            <td>${statusHTML}</td>
           </tr>
         `;
       }).join("");
@@ -2184,9 +2295,9 @@
     // ========================================
     // Vendor Real Time Sales functions
     // ========================================
-    let currentRtSalesWindow = "last_24h";
+    const RTS_LOOKBACK_STORAGE_KEY = "rtSalesLookbackHours";
+    const RTS_VIEW_BY_STORAGE_KEY = "rtSalesViewBy";
     const RTS_SORT_STORAGE_KEY = "vendor_rt_sales_sort";
-    const RTS_WINDOW_STORAGE_KEY = "rtSalesWindow";
 
     function formatNumberWithCommas(num) {
       return (Math.round(num * 100) / 100).toLocaleString('en-US', {
@@ -2195,101 +2306,186 @@
       });
     }
 
-    // Vendor Real Time Sales sorting state
+    // Vendor Real Time Sales state
     let rtSalesData = [];
+    let rtSalesCurrentViewBy = "asin";
     let rtSalesSortState = {
       column: null,
       direction: "asc"  // "asc" or "desc"
     };
 
-    // ========== FEATURE 1: Window Selection Storage ==========
-    function saveRtSalesWindowSelection() {
-      const windowSelect = document.getElementById("rt-sales-window");
-      if (windowSelect) {
+    // ========== Storage Handlers: Lookback ==========
+    function saveRtSalesLookback() {
+      const lookbackSelect = document.getElementById("rt-sales-lookback");
+      if (lookbackSelect) {
         try {
-          localStorage.setItem(RTS_WINDOW_STORAGE_KEY, windowSelect.value);
+          localStorage.setItem(RTS_LOOKBACK_STORAGE_KEY, lookbackSelect.value);
         } catch (e) {
-          console.warn("Failed to save RT sales window selection:", e);
+          console.warn("Failed to save RT sales lookback:", e);
         }
       }
     }
 
-    function loadRtSalesWindowSelection() {
-      const windowSelect = document.getElementById("rt-sales-window");
-      if (windowSelect) {
+    function loadRtSalesLookback() {
+      const lookbackSelect = document.getElementById("rt-sales-lookback");
+      if (lookbackSelect) {
         try {
-          const saved = localStorage.getItem(RTS_WINDOW_STORAGE_KEY);
+          const saved = localStorage.getItem(RTS_LOOKBACK_STORAGE_KEY);
           if (saved) {
-            windowSelect.value = saved;
+            lookbackSelect.value = saved;
+          } else {
+            lookbackSelect.value = "2";  // Default: 2 hours
           }
         } catch (e) {
-          console.warn("Failed to load RT sales window selection:", e);
+          console.warn("Failed to load RT sales lookback:", e);
         }
       }
     }
 
-    function onRtSalesWindowChange() {
-      saveRtSalesWindowSelection();
+    function onRtSalesLookbackChange() {
+      saveRtSalesLookback();
       updateRtSalesWindowInfo();
       loadVendorRtSalesSummary();
     }
 
-    // ========== FEATURE 2: Window Info Label ==========
+    // ========== Storage Handlers: View By ==========
+    function saveRtSalesViewBy() {
+      const viewBySelect = document.getElementById("rt-sales-view-by");
+      if (viewBySelect) {
+        try {
+          localStorage.setItem(RTS_VIEW_BY_STORAGE_KEY, viewBySelect.value);
+        } catch (e) {
+          console.warn("Failed to save RT sales view-by:", e);
+        }
+      }
+    }
+
+    function loadRtSalesViewBy() {
+      const viewBySelect = document.getElementById("rt-sales-view-by");
+      if (viewBySelect) {
+        try {
+          const saved = localStorage.getItem(RTS_VIEW_BY_STORAGE_KEY);
+          if (saved && (saved === "asin" || saved === "time")) {
+            viewBySelect.value = saved;
+          } else {
+            viewBySelect.value = "asin";  // Default: ASIN
+          }
+        } catch (e) {
+          console.warn("Failed to load RT sales view-by:", e);
+        }
+      }
+    }
+
+    function onRtSalesViewByChange() {
+      saveRtSalesViewBy();
+      const viewBySelect = document.getElementById("rt-sales-view-by");
+      rtSalesCurrentViewBy = viewBySelect.value;
+      // Reset sort state when switching view
+      rtSalesSortState.column = null;
+      rtSalesSortState.direction = "asc";
+      loadVendorRtSalesSummary();
+    }
+
+    // ========== Window Info Label (UAE Time) ==========
     function updateRtSalesWindowInfo() {
-      const windowSelect = document.getElementById("rt-sales-window");
+      const lookbackSelect = document.getElementById("rt-sales-lookback");
       const infoEl = document.getElementById("rt-sales-window-info");
-      if (!windowSelect || !infoEl) return;
+      if (!lookbackSelect || !infoEl) return;
 
-      const window = windowSelect.value;
+      const lookbackHours = parseInt(lookbackSelect.value, 10);
       const now = new Date();
-      const uaeTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
       
-      let startTime, endTime, label;
+      // Calculate start time (trailing window)
+      const endTime = new Date(now);
+      const startTime = new Date(endTime.getTime() - lookbackHours * 60 * 60 * 1000);
+      
+      // Format times in UAE timezone
+      const uaeFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Dubai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      
+      const startStr = uaeFormatter.format(startTime);
+      const endStr = uaeFormatter.format(endTime);
+      
+      infoEl.textContent = `Trailing ${lookbackHours} hours (${startStr} → ${endStr} UAE)`;
+    }
 
-      if (window === "last_1h") {
-        startTime = new Date(uaeTime.getTime() - 60 * 60 * 1000);
-        endTime = uaeTime;
-        label = "Last 1 hour";
-      } else if (window === "last_3h") {
-        startTime = new Date(uaeTime.getTime() - 3 * 60 * 60 * 1000);
-        endTime = uaeTime;
-        label = "Last 3 hours";
-      } else if (window === "last_24h") {
-        startTime = new Date(uaeTime.getTime() - 24 * 60 * 60 * 1000);
-        endTime = uaeTime;
-        label = "Last 24 hours";
-      } else if (window === "today") {
-        startTime = new Date(uaeTime);
-        startTime.setHours(0, 0, 0, 0);
-        endTime = uaeTime;
-        label = "Today";
-      } else if (window === "yesterday") {
-        const yesterday = new Date(uaeTime);
-        yesterday.setDate(yesterday.getDate() - 1);
-        startTime = new Date(yesterday);
-        startTime.setHours(0, 0, 0, 0);
-        endTime = new Date(yesterday);
-        endTime.setHours(23, 59, 59, 999);
-        label = "Yesterday";
-      } else if (window === "custom") {
-        const startInput = document.getElementById("rt-sales-start").value;
-        const endInput = document.getElementById("rt-sales-end").value;
-        if (startInput && endInput) {
-          startTime = new Date(startInput);
-          endTime = new Date(endInput);
-          label = "Custom range";
-        } else {
-          infoEl.textContent = "Window: Custom range (no dates selected)";
+    // ========== Sync Status Monitoring ==========
+    let rtSalesStatusIntervalId = null;
+
+    async function updateRtSalesSyncStatus() {
+      const statusEl = document.getElementById("rt-sales-sync-status");
+      const refreshBtn = document.getElementById("rt-sales-refresh-btn");
+      if (!statusEl || !refreshBtn) return;
+
+      try {
+        const resp = await fetch("/api/vendor-realtime-sales/status");
+        if (!resp.ok) {
+          statusEl.textContent = "Status: unavailable";
+          statusEl.className = "rt-sales-status-label";
+          refreshBtn.disabled = false;
           return;
         }
-      } else {
-        infoEl.textContent = "";
-        return;
-      }
 
-      const startStr = startTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-      const endStr = endTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-      infoEl.textContent = `Window: ${label} (${startStr} → ${endStr} UAE)`;
+        const data = await resp.json();
+
+        const busy = !!data.busy;
+        const cooldown = !!data.cooldown_active;
+        const cooldownUntilUae = data.cooldown_until_uae || null;
+
+        // Reset base class
+        statusEl.className = "rt-sales-status-label";
+
+        if (busy) {
+          statusEl.textContent = "🔵 Auto-sync running… (Real-time sales backfill in progress)";
+          statusEl.classList.add("rt-sales-status-busy");
+          refreshBtn.disabled = true;
+        } else if (cooldown) {
+          let label = "🟡 In quota cooldown (Refresh temporarily disabled)";
+          if (cooldownUntilUae) {
+            try {
+              const dt = new Date(cooldownUntilUae);
+              const hh = dt.getHours().toString().padStart(2, "0");
+              const mm = dt.getMinutes().toString().padStart(2, "0");
+              label = `🟡 In quota cooldown until ${hh}:${mm} UAE (Refresh temporarily disabled)`;
+            } catch (e) {
+              // ignore parse errors, keep generic label
+            }
+          }
+          statusEl.textContent = label;
+          statusEl.classList.add("rt-sales-status-cooldown");
+          refreshBtn.disabled = true;
+        } else {
+          statusEl.textContent = "🟢 Idle (Auto-sync OK — you can refresh now)";
+          statusEl.classList.add("rt-sales-status-idle");
+          refreshBtn.disabled = false;
+        }
+      } catch (err) {
+        console.error("[RtSales] Failed to update sync status", err);
+        statusEl.textContent = "Status: unavailable";
+        statusEl.className = "rt-sales-status-label";
+        refreshBtn.disabled = false;
+      }
+    }
+
+    function startRtSalesStatusPolling() {
+      // Clear any existing interval
+      if (rtSalesStatusIntervalId !== null) {
+        clearInterval(rtSalesStatusIntervalId);
+      }
+      // Poll every 30 seconds
+      updateRtSalesSyncStatus(); // Initial update
+      rtSalesStatusIntervalId = setInterval(updateRtSalesSyncStatus, 30000);
+    }
+
+    function stopRtSalesStatusPolling() {
+      if (rtSalesStatusIntervalId !== null) {
+        clearInterval(rtSalesStatusIntervalId);
+        rtSalesStatusIntervalId = null;
+      }
     }
 
     function saveRtSalesSortState() {
@@ -2314,16 +2510,37 @@
     }
 
     function updateRtSalesArrows() {
-      document.getElementById("rt-sales-sort-asin").textContent = "";
-      document.getElementById("rt-sales-sort-units").textContent = "";
-      document.getElementById("rt-sales-sort-revenue").textContent = "";
+      // Clear all arrows
+      const arrows = [
+        "rt-sales-sort-asin",
+        "rt-sales-sort-units",
+        "rt-sales-sort-revenue",
+        "rt-sales-sort-bucket-time",
+        "rt-sales-sort-time-units",
+        "rt-sales-sort-time-revenue"
+      ];
+      arrows.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = "";
+      });
 
-      if (rtSalesSortState.column === "asin") {
-        document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-      } else if (rtSalesSortState.column === "units") {
-        document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-      } else if (rtSalesSortState.column === "revenue") {
-        document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+      // Update relevant arrow based on current sort
+      if (rtSalesCurrentViewBy === "asin") {
+        if (rtSalesSortState.column === "asin") {
+          document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        } else if (rtSalesSortState.column === "units") {
+          document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        } else if (rtSalesSortState.column === "revenue") {
+          document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        }
+      } else if (rtSalesCurrentViewBy === "time") {
+        if (rtSalesSortState.column === "bucket_time") {
+          document.getElementById("rt-sales-sort-bucket-time").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        } else if (rtSalesSortState.column === "units") {
+          document.getElementById("rt-sales-sort-time-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        } else if (rtSalesSortState.column === "revenue") {
+          document.getElementById("rt-sales-sort-time-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        }
       }
     }
 
@@ -2332,15 +2549,13 @@
       if (rtSalesSortState.column === column) {
         rtSalesSortState.direction = rtSalesSortState.direction === "asc" ? "desc" : "asc";
       } else {
-        // New column, set default direction based on column type
+        // New column, set default direction
         rtSalesSortState.column = column;
-        rtSalesSortState.direction = (column === "asin") ? "asc" : "desc";
+        // For time, default to desc (newest first); for others, desc for numeric
+        rtSalesSortState.direction = (column === "asin" || column === "bucket_time") ? "asc" : "desc";
       }
 
-      // Save sort state
       saveRtSalesSortState();
-
-      // Re-sort and render
       sortRtSalesTable(column);
     }
 
@@ -2354,18 +2569,34 @@
       const sorted = [...rtSalesData].sort((a, b) => {
         let aVal, bVal;
 
-        if (column === "asin") {
-          aVal = a.asin.toLowerCase();
-          bVal = b.asin.toLowerCase();
-          // String comparison
-          const cmp = aVal.localeCompare(bVal);
-          return rtSalesSortState.direction === "asc" ? cmp : -cmp;
-        } else if (column === "units") {
-          aVal = parseFloat(a.units) || 0;
-          bVal = parseFloat(b.units) || 0;
-        } else if (column === "revenue") {
-          aVal = parseFloat(a.revenue) || 0;
-          bVal = parseFloat(b.revenue) || 0;
+        if (rtSalesCurrentViewBy === "asin") {
+          // ASIN view sorting
+          if (column === "asin") {
+            aVal = a.asin.toLowerCase();
+            bVal = b.asin.toLowerCase();
+            const cmp = aVal.localeCompare(bVal);
+            return rtSalesSortState.direction === "asc" ? cmp : -cmp;
+          } else if (column === "units") {
+            aVal = parseFloat(a.units) || 0;
+            bVal = parseFloat(b.units) || 0;
+          } else if (column === "revenue") {
+            aVal = parseFloat(a.revenue) || 0;
+            bVal = parseFloat(b.revenue) || 0;
+          }
+        } else if (rtSalesCurrentViewBy === "time") {
+          // Time view sorting
+          if (column === "bucket_time") {
+            aVal = a.bucket_start_utc;
+            bVal = b.bucket_start_utc;
+            const cmp = aVal.localeCompare(bVal);
+            return rtSalesSortState.direction === "asc" ? cmp : -cmp;
+          } else if (column === "units") {
+            aVal = parseFloat(a.units) || 0;
+            bVal = parseFloat(b.units) || 0;
+          } else if (column === "revenue") {
+            aVal = parseFloat(a.revenue) || 0;
+            bVal = parseFloat(b.revenue) || 0;
+          }
         }
 
         // Numeric comparison
@@ -2376,14 +2607,30 @@
         }
       });
 
-      // Update sort indicators
       updateRtSalesArrows();
-
-      // Re-render the sorted data
       renderRtSalesTable(sorted);
     }
 
     function renderRtSalesTable(data) {
+      // Show/hide appropriate table based on view_by
+      const asinTable = document.getElementById("rt-sales-asin-table");
+      const timeTable = document.getElementById("rt-sales-time-table");
+      const tableTitle = document.getElementById("rt-sales-table-title");
+
+      if (rtSalesCurrentViewBy === "asin") {
+        asinTable.style.display = "table";
+        timeTable.style.display = "none";
+        tableTitle.textContent = "Top ASINs";
+        renderAsinTable(data);
+      } else if (rtSalesCurrentViewBy === "time") {
+        asinTable.style.display = "none";
+        timeTable.style.display = "table";
+        tableTitle.textContent = "Sales by Time";
+        renderTimeTable(data);
+      }
+    }
+
+    function renderAsinTable(data) {
       const tbody = document.getElementById("rt-sales-top-asins-rows");
       if (!data || data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
@@ -2405,29 +2652,56 @@
       }).join("");
     }
 
+    function renderTimeTable(data) {
+      const tbody = document.getElementById("rt-sales-time-rows");
+      if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty">No data available</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.map(time_row => {
+        // Parse UAE start time for display
+        let uaeDateStr = time_row.bucket_start_uae;
+        try {
+          const dt = new Date(uaeDateStr);
+          // Extract just time part HH:MM in UAE
+          const uaeTime = dt.toLocaleTimeString('en-US', {
+            timeZone: 'Asia/Dubai',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+          });
+          // Get date
+          const uaeDate = dt.toLocaleDateString('en-US', {
+            timeZone: 'Asia/Dubai',
+            month: '2-digit',
+            day: '2-digit'
+          });
+          uaeDateStr = `${uaeDate} ${uaeTime} UAE`;
+        } catch (e) {
+          // Fallback
+          uaeDateStr = time_row.bucket_start_uae;
+        }
+
+        return `
+          <tr>
+            <td><strong>${uaeDateStr}</strong></td>
+            <td style="text-align:right;"><strong>${(time_row.units || 0).toLocaleString()}</strong></td>
+            <td style="text-align:right;"><strong>${time_row.currency_code ? time_row.currency_code + ' ' : ''}${formatNumberWithCommas(time_row.revenue || 0)}</strong></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
     async function refreshVendorRtSales() {
-      const btn = document.querySelector("button[onclick='refreshVendorRtSales()']");
-      const status = document.getElementById("rt-sales-status");
+      const btn = document.getElementById("rt-sales-refresh-btn");
       if (btn) btn.disabled = true;
-      if (status) status.textContent = "Refreshing...";
 
       try {
-        const window = document.getElementById("rt-sales-window").value;
+        const lookbackHours = document.getElementById("rt-sales-lookback").value;
         const body = {
-          window: window
+          window: `trailing_${lookbackHours}h`  // Use a window value for backward compat
         };
-
-        if (window === "custom") {
-          const start = document.getElementById("rt-sales-start").value;
-          const end = document.getElementById("rt-sales-end").value;
-          if (!start || !end) {
-            if (status) status.textContent = "Please select start and end times for custom range";
-            if (btn) btn.disabled = false;
-            return;
-          }
-          body.start_utc = new Date(start).toISOString();
-          body.end_utc = new Date(end).toISOString();
-        }
 
         const resp = await fetch("/api/vendor-realtime-sales/refresh", {
           method: "POST",
@@ -2441,37 +2715,34 @@
         }
 
         const result = await resp.json();
-        if (status) {
-          status.textContent = `✓ Ingested ${result.ingest_summary.rows} rows (${result.ingest_summary.asins} ASINs, ${result.ingest_summary.hours} hours)`;
+        
+        if (result.status === "error") {
+          if (result.error === "QuotaExceeded") {
+            console.warn("[VendorRtSales] Quota exceeded; using cached data");
+            await loadVendorRtSalesSummary();
+          } else {
+            throw new Error(result.message || result.error || "Unknown error");
+          }
+        } else if (result.status === "success" && result.ingest_summary) {
+          await loadVendorRtSalesSummary();
+        } else {
+          throw new Error("Invalid response from server");
         }
-
-        // Reload summary
-        await loadVendorRtSalesSummary();
       } catch (err) {
-        if (status) status.textContent = `✗ Failed: ${err.message}`;
+        console.error("[VendorRtSales] Refresh failed:", err.message);
       } finally {
-        if (btn) btn.disabled = false;
+        // Let status endpoint decide whether button can be re-enabled
+        await updateRtSalesSyncStatus();
       }
     }
 
     async function loadVendorRtSalesSummary() {
       try {
-        const window = document.getElementById("rt-sales-window").value;
-        currentRtSalesWindow = window;
+        const lookbackHours = parseInt(document.getElementById("rt-sales-lookback").value, 10);
+        const viewBy = document.getElementById("rt-sales-view-by").value;
+        rtSalesCurrentViewBy = viewBy;
 
-        let params = `?window=${encodeURIComponent(window)}`;
-
-        if (window === "custom") {
-          const start = document.getElementById("rt-sales-start").value;
-          const end = document.getElementById("rt-sales-end").value;
-          if (!start || !end) {
-            document.getElementById("rt-sales-top-asins-rows").innerHTML =
-              '<tr><td colspan="4" class="empty">Please select start and end times for custom range</td></tr>';
-            return;
-          }
-          params += `&start_utc=${encodeURIComponent(new Date(start).toISOString())}`;
-          params += `&end_utc=${encodeURIComponent(new Date(end).toISOString())}`;
-        }
+        let params = `?lookback_hours=${lookbackHours}&view_by=${viewBy}`;
 
         const resp = await fetch("/api/vendor-realtime-sales/summary" + params);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -2487,15 +2758,14 @@
           `${data.currency_code} ${formatNumberWithCommas(data.total_revenue || 0)}`;
 
         // Store data for sorting
-        if (!data.top_asins || data.top_asins.length === 0) {
+        if (!data.rows || data.rows.length === 0) {
           rtSalesData = [];
-          document.getElementById("rt-sales-top-asins-rows").innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
-          // Still update arrows even if no data
           updateRtSalesArrows();
+          renderRtSalesTable([]);
           return;
         }
 
-        rtSalesData = data.top_asins;
+        rtSalesData = data.rows;
         
         // Load saved sort state from localStorage
         loadRtSalesSortState();
@@ -2507,28 +2777,33 @@
         if (rtSalesSortState.column) {
           sortRtSalesTable(rtSalesSortState.column);
         } else {
-          // No saved sort, just render as-is
-          renderRtSalesTable(rtSalesData);
+          // No saved sort, default sort by:
+          // - ASIN view: units descending
+          // - Time view: time descending (newest first)
+          if (viewBy === "time") {
+            rtSalesSortState.column = "bucket_time";
+            rtSalesSortState.direction = "desc";
+          } else {
+            rtSalesSortState.column = "units";
+            rtSalesSortState.direction = "desc";
+          }
+          sortRtSalesTable(rtSalesSortState.column);
         }
       } catch (err) {
         console.error("Failed to load RT sales summary:", err);
-        document.getElementById("rt-sales-top-asins-rows").innerHTML =
-          `<tr><td colspan="4" class="empty">Error: ${err.message}</td></tr>`;
+        renderRtSalesTable([]);
+        const tbody = rtSalesCurrentViewBy === "asin" 
+          ? document.getElementById("rt-sales-top-asins-rows")
+          : document.getElementById("rt-sales-time-rows");
+        if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 4 : 3}" class="empty">Error: ${err.message}</td></tr>`;
       }
     }
 
     async function openRtSalesAsinDetail(asin) {
+      // This function is only for ASIN view; get the window params
       try {
-        let params = `?window=${encodeURIComponent(currentRtSalesWindow)}`;
-
-        if (currentRtSalesWindow === "custom") {
-          const start = document.getElementById("rt-sales-start").value;
-          const end = document.getElementById("rt-sales-end").value;
-          if (start && end) {
-            params += `&start_utc=${encodeURIComponent(new Date(start).toISOString())}`;
-            params += `&end_utc=${encodeURIComponent(new Date(end).toISOString())}`;
-          }
-        }
+        const lookbackHours = parseInt(document.getElementById("rt-sales-lookback").value, 10);
+        let params = `?lookback_hours=${lookbackHours}`;
 
         const resp = await fetch(`/api/vendor-realtime-sales/asin/${encodeURIComponent(asin)}` + params);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -2562,31 +2837,13 @@
       document.getElementById("rt-sales-asin-detail-rows").innerHTML = '<tr><td colspan="3" class="empty">—</td></tr>';
     }
 
-    // Window selector handler
-    document.getElementById("rt-sales-window").addEventListener("change", async (e) => {
-      const customInputs = [
-        document.getElementById("rt-sales-start"),
-        document.getElementById("rt-sales-end")
-      ];
-      const isCustom = e.target.value === "custom";
-      customInputs.forEach(inp => inp.style.display = isCustom ? "block" : "none");
-      
-      if (!isCustom) {
-        await loadVendorRtSalesSummary();
-      }
-    });
-
-    document.getElementById("rt-sales-start").addEventListener("change", () => {
-      if (document.getElementById("rt-sales-window").value === "custom") {
-        loadVendorRtSalesSummary();
-      }
-    });
-
-    document.getElementById("rt-sales-end").addEventListener("change", () => {
-      if (document.getElementById("rt-sales-window").value === "custom") {
-        loadVendorRtSalesSummary();
-      }
-    });
+    // Initialize RT Sales preferences on page load
+    function initRtSalesTab() {
+      loadRtSalesLookback();
+      loadRtSalesViewBy();
+      loadRtSalesSortState();
+      updateRtSalesWindowInfo();
+    }
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
     const rebuildBtn = document.getElementById("rebuild-btn");

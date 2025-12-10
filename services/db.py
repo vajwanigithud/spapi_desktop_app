@@ -287,3 +287,107 @@ def get_vendor_rt_sales_state_db(conn, marketplace_id: str) -> dict:
     except Exception as exc:
         logger.error(f"[DB] Failed to get vendor_rt_sales_state for {marketplace_id}: {exc}")
         raise
+
+
+def ensure_oos_export_history_table():
+    """
+    Ensure the vendor_oos_export_history table exists.
+    Tracks which ASINs have been exported from the Out-of-Stock list.
+    """
+    sql = """
+    CREATE TABLE IF NOT EXISTS vendor_oos_export_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asin TEXT NOT NULL,
+        marketplace_id TEXT NOT NULL DEFAULT 'A2VIGQ35RCS4UG',
+        exported_at TEXT NOT NULL,
+        export_batch_id TEXT NOT NULL,
+        notes TEXT,
+        UNIQUE(asin, marketplace_id)
+    )
+    """
+    try:
+        execute_write(sql)
+        execute_write("CREATE INDEX IF NOT EXISTS idx_oos_export_asin_mkt ON vendor_oos_export_history(asin, marketplace_id)")
+        logger.info("[DB] vendor_oos_export_history table ensured")
+    except Exception as exc:
+        logger.error(f"[DB] Failed to ensure vendor_oos_export_history table: {exc}", exc_info=True)
+        raise
+
+
+def mark_oos_asins_exported(asins: list[str], batch_id: str, marketplace_id: str = "A2VIGQ35RCS4UG"):
+    """
+    Mark a list of ASINs as exported.
+    
+    Args:
+        asins: List of ASIN strings to mark as exported
+        batch_id: UUID or ID to group exports from same batch
+        marketplace_id: Marketplace ID (defaults to primary US marketplace)
+    
+    Returns:
+        Count of successfully inserted records
+    """
+    if not asins:
+        return 0
+    
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc).isoformat()
+    
+    inserted = 0
+    for asin in asins:
+        try:
+            sql = """
+            INSERT OR IGNORE INTO vendor_oos_export_history
+            (asin, marketplace_id, exported_at, export_batch_id)
+            VALUES (?, ?, ?, ?)
+            """
+            execute_write(sql, (asin, marketplace_id, now_utc, batch_id))
+            inserted += 1
+        except Exception as exc:
+            logger.warning(f"[DB] Failed to mark ASIN {asin} as exported: {exc}")
+    
+    return inserted
+
+
+def get_exported_asins(marketplace_id: str = "A2VIGQ35RCS4UG") -> set[str]:
+    """
+    Get all ASINs that have been exported for a marketplace.
+    
+    Args:
+        marketplace_id: Marketplace ID
+    
+    Returns:
+        Set of ASIN strings
+    """
+    try:
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT asin FROM vendor_oos_export_history WHERE marketplace_id = ?",
+                (marketplace_id,)
+            ).fetchall()
+            return {row["asin"] for row in rows}
+    except Exception as exc:
+        logger.error(f"[DB] Failed to get exported ASINs for {marketplace_id}: {exc}")
+        return set()
+
+
+def is_asin_exported(asin: str, marketplace_id: str = "A2VIGQ35RCS4UG") -> bool:
+    """
+    Check if a single ASIN has been exported.
+    
+    Args:
+        asin: ASIN string
+        marketplace_id: Marketplace ID
+    
+    Returns:
+        True if exported, False otherwise
+    """
+    try:
+        with get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM vendor_oos_export_history WHERE asin = ? AND marketplace_id = ? LIMIT 1",
+                (asin, marketplace_id)
+            ).fetchone()
+            return row is not None
+    except Exception as exc:
+        logger.error(f"[DB] Failed to check export status for {asin}: {exc}")
+        return False
