@@ -61,6 +61,18 @@
         color: #fff;
         cursor: not-allowed;
       }
+      .btn-outline-secondary {
+        background: #fff;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .btn-outline-secondary:hover {
+        background: #f1f5f9;
+      }
+      .btn-sm {
+        padding: 6px 10px;
+        font-size: 13px;
+      }
       /* Conditional formatting for quantities */
       .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
       .qty-pending { background-color: #fef3c7; color: #92400e; font-weight: 600; }
@@ -84,6 +96,40 @@
       .export-status-pending { font-weight: 600; color: #d97706; }
       .export-status-exported { opacity: 0.6; color: #6b7280; }
       .oos-row-exported { opacity: 0.7; }
+      /* Sales Trends trend pills */
+      .trend-pill { padding: 2px 6px; border-radius: 999px; font-size: 11px; text-transform: capitalize; text-align: center; display: inline-block; }
+      .trend-rising, .trend-pill-rising { background-color: #e0f7e9; color: #1b7b33; }
+      .trend-falling, .trend-pill-falling { background-color: #fde4e4; color: #b3261e; }
+      .trend-flat, .trend-pill-flat { background-color: #eceff1; color: #455a64; }
+      .trend-new, .trend-pill-new { background-color: #e3f2fd; color: #1565c0; }
+      .trend-dead, .trend-pill-dead { background-color: #f3e5f5; color: #6a1b9a; }
+      .trend-reviving, .trend-pill-reviving { background-color: #f3e5f5; color: #7b1fa2; }
+      /* Sales Trends table and layout */
+      .sales-trends-table { width: 100%; }
+      .sales-trends-table tr { height: 100px; }
+      .sales-trends-table th,
+      .sales-trends-table td { padding: 12px 10px; vertical-align: middle; font-weight: 600; text-align: center; }
+      .sales-trends-table th:first-child,
+      .sales-trends-table td:first-child { text-align: center; }
+      .sales-trends-table th:nth-child(2),
+      .sales-trends-table td:nth-child(2) { text-align: center; font-weight: 700; }
+      .sales-trends-img { width: 80px; height: 80px; object-fit: contain; border-radius: 6px; }
+      .sales-trends-num-cell { font-size: 14px; font-weight: 700; text-align: center; }
+      /* Trend pill styling */
+      .sales-trend-cell { text-align: center; vertical-align: middle; }
+      .sales-trend-pill { display: inline-flex; align-items: center; justify-content: center; padding: 6px 14px; border-radius: 999px; font-size: 1.2rem; font-weight: 700; min-width: 80px; text-align: center; }
+      /* Battery styles for trailing week */
+      .trend-battery { width: 80px; height: 14px; border-radius: 7px; border: 1px solid #ccc; overflow: hidden; background-color: #f5f5f5; margin: 0 auto 2px auto; }
+      .trend-battery-fill { height: 100%; background: linear-gradient(to right, #4caf50, #81c784); transition: width 0.3s ease; }
+      .trend-battery-label { font-size: 11px; text-align: center; font-weight: 600; }
+      /* Week column sublabel */
+      .sales-trends-week-sublabel { display: block; font-size: 0.75rem; font-weight: 700; color: #6b7280; margin-top: 2px; }
+      /* Sales Trends controls */
+      .sales-trends-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+      .sales-trends-controls label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+      .sales-trends-controls input { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 14px; width: 120px; }
+      .sales-trends-controls select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 14px; }
+      .sales-trends-window-info { font-size: 12px; color: #666; margin-bottom: 8px; }
       /* Inventory controls and subtabs */
       .inventory-controls {
         display: flex;
@@ -270,6 +316,7 @@
         <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
         <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
         <button class="tab-btn" data-tab="vendor-rt-sales" onclick="showTab('vendor-rt-sales')">Vendor Real Time Sales</button>
+        <button class="tab-btn" data-tab="sales-trends" onclick="showTab('sales-trends')">Sales Trends</button>
         <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
         <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button>
         <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button>
@@ -548,7 +595,57 @@
       </div>
     </div>
   </div>
-  </div>
+
+  <div class="panel" id="sales-trends-tab" style="display:none; margin-top:14px;">
+    <h2>Sales Trends (Last 4 Weeks)</h2>
+    <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+      <div class="sales-trends-controls">
+        <label>
+          Min Total Units (4w):
+          <input type="number" id="sales-trends-min-units" value="1" min="1" />
+        </label>
+        <label style="margin-left:12px;">Filter:
+          <select id="sales-trends-filter">
+            <option value="all">All</option>
+            <option value="rising">Rising</option>
+            <option value="falling">Falling</option>
+            <option value="new">New</option>
+            <option value="dead">Dead</option>
+            <option value="flat">Flat</option>
+          </select>
+        </label>
+        <button id="sales-trends-refresh-btn" class="btn" style="margin-left:12px;">Refresh</button>
+        <button id="rt-sales-backfill-4w-btn"
+                class="btn btn-outline-secondary btn-sm"
+                style="margin-left: 8px;"
+                onclick="runFourWeekBackfill()">
+          4W Backfill (One-time)
+        </button>
+      </div>
+      <div id="sales-trends-window-info" class="sales-trends-window-info"></div>
+      <div style="overflow:auto; max-height:60vh; border:1px solid var(--border); border-radius:8px;">
+        <table id="sales-trends-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th style="width:90px; text-align:center;">Image</th>
+              <th style="width:100px; text-align:center;">ASIN</th>
+              <th id="st-th-w4" style="width:70px; text-align:center;">W4 Units</th>
+              <th id="st-th-w3" style="width:70px; text-align:center;">W3 Units</th>
+              <th id="st-th-w2" style="width:70px; text-align:center;">W2 Units</th>
+              <th id="st-th-w1" style="width:70px; text-align:center;">W1 Units</th>
+              <th id="st-th-trailing" style="width:100px; text-align:center;">This Week</th>
+              <th style="width:80px; text-align:center;">Total 4W</th>
+              <th style="width:80px; text-align:center;">Δ (W1−W2)</th>
+              <th style="width:70px; text-align:center;">% Chg</th>
+              <th style="width:80px; text-align:center;">Trend</th>
+            </tr>
+          </thead>
+          <tbody id="sales-trends-rows">
+            <tr><td colspan="11" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div class="panel" id="inventory-tab" style="display:none; margin-top:14px;">
@@ -589,6 +686,7 @@
         </table>
       </div>
     </div>
+  </div>
   </div>
 
   <div class="backdrop" id="modal">
@@ -1851,6 +1949,10 @@
         if (tab === "inventory") {
           loadVendorInventorySnapshotIfNeeded();
         }
+      }
+      const salesTrendsEl = document.getElementById("sales-trends-tab");
+      if (salesTrendsEl) {
+        salesTrendsEl.style.display = tab === "sales-trends" ? "block" : "none";
       }
       if (tab === "catalog" && !asinList.length) {
         loadAsinList();
@@ -3504,6 +3606,353 @@
     document.getElementById("po-filter-fc").addEventListener("change", filterPOs);
     document.getElementById("po-filter-status").addEventListener("change", filterPOs);
     document.getElementById("po-start-days").addEventListener("change", filterPOs);
+
+    // ====== SALES TRENDS FUNCTIONS ======
+    async function loadSalesTrends() {
+      try {
+        const minUnitsInput = document.getElementById('sales-trends-min-units');
+        const minUnits = parseInt(minUnitsInput?.value || '1', 10);
+        
+        const resp = await fetch(`/api/vendor-sales-trends?lookback_weeks=4&min_total_units=${minUnits}`);
+        if (!resp.ok) {
+          console.error('Failed to load sales trends', resp.status);
+          document.getElementById('sales-trends-rows').innerHTML = '<tr><td colspan="11" class="empty">Error loading data</td></tr>';
+          return;
+        }
+        
+        const data = await resp.json();
+        renderSalesTrends(data);
+      } catch (err) {
+        console.error('Error loading sales trends:', err);
+        document.getElementById('sales-trends-rows').innerHTML = '<tr><td colspan="11" class="empty">Error: ' + err.message + '</td></tr>';
+      }
+    }
+
+    function renderSalesTrends(data) {
+      const tbody = document.getElementById('sales-trends-rows');
+      const windowInfo = document.getElementById('sales-trends-window-info');
+      const filterSelect = document.getElementById('sales-trends-filter');
+      
+      tbody.innerHTML = '';
+      
+      if (!data || !data.rows) {
+        windowInfo.textContent = 'No data available.';
+        tbody.innerHTML = '<tr><td colspan="11" class="empty">No data</td></tr>';
+        return;
+      }
+      
+      // Cache for filter re-render
+      window.salesTrendsCache = data;
+      
+      windowInfo.textContent = `Window: ${data.window.start_uae.substring(0, 10)} → ${data.window.end_uae.substring(0, 10)} (UAE)`;
+      
+      // Update headers using week_ranges_uae from the API
+      if (data.week_ranges_uae) {
+        updateSalesTrendsWeekHeaders(data.week_ranges_uae);
+      }
+      
+      // Update trailing week header with date range
+      if (data.trailing_window) {
+        updateTrailingWeekHeader(data.trailing_window);
+      }
+      
+      let rows = data.rows.slice();
+      const filterValue = filterSelect?.value || 'all';
+      if (filterValue && filterValue !== 'all') {
+        rows = rows.filter(r => r.trend === filterValue);
+      }
+      
+      renderFilteredRows(rows);
+    }
+
+    function formatDateFromISO(isoStr) {
+      // Extract YYYY-MM-DD from ISO string like "2025-01-12T00:00:00+04:00"
+      return isoStr.split('T')[0];
+    }
+
+    function updateTrailingWeekHeader(trailingWindow) {
+      // Update the "This Week" header with date range from trailing window
+      const el = document.getElementById('st-th-trailing');
+      if (!el || !trailingWindow) return;
+      
+      const startDate = formatDateFromISO(trailingWindow.start_uae);
+      const endDate = formatDateFromISO(trailingWindow.end_uae);
+      const rangeText = `${startDate} – ${endDate}`;
+      
+      el.title = rangeText + " (UAE time, current partial week)";
+      el.innerHTML = `
+        This Week
+        <span class="sales-trends-week-sublabel">${rangeText}</span>
+      `;
+    }
+
+    function updateSalesTrendsWeekHeaders(weekRanges) {
+      // weekRanges is the data.week_ranges_uae array from the API
+      if (!weekRanges || weekRanges.length === 0) return;
+      
+      const labelMap = {
+        "W4": { id: "st-th-w4", label: "W4 Units" },
+        "W3": { id: "st-th-w3", label: "W3 Units" },
+        "W2": { id: "st-th-w2", label: "W2 Units" },
+        "W1": { id: "st-th-w1", label: "W1 Units" },
+      };
+      
+      weekRanges.forEach(wr => {
+        const info = labelMap[wr.label];
+        if (!info) return;
+        
+        const el = document.getElementById(info.id);
+        if (!el) return;
+        
+        const startDate = formatDateFromISO(wr.start_uae);
+        const endDate = formatDateFromISO(wr.end_uae);
+        const rangeText = `${startDate} – ${endDate}`;
+        
+        el.title = rangeText + " (UAE time)";
+        el.innerHTML = `
+          ${info.label}
+          <span class="sales-trends-week-sublabel">${rangeText}</span>
+        `;
+      });
+    }
+
+    // Hook Sales Trends controls
+    document.getElementById('sales-trends-refresh-btn').addEventListener('click', () => {
+      loadSalesTrends().catch(err => console.error(err));
+    });
+    
+    document.getElementById('sales-trends-filter').addEventListener('change', () => {
+      // Re-render with current data (don't reload from API)
+      const tbody = document.getElementById('sales-trends-rows');
+      const filterSelect = document.getElementById('sales-trends-filter');
+      const filterValue = filterSelect.value;
+      
+      // Get all current rows data
+      const allRows = tbody.querySelectorAll('tr');
+      if (allRows.length === 0) return;
+      
+      // Store original data if not already stored
+      if (!window.salesTrendsCache) {
+        return; // Need to load first
+      }
+      
+      const data = window.salesTrendsCache;
+      let rows = data.rows.slice();
+      if (filterValue && filterValue !== 'all') {
+        rows = rows.filter(r => r.trend === filterValue);
+      }
+      
+      renderFilteredRows(rows);
+    });
+    
+    function renderFilteredRows(rows) {
+      const tbody = document.getElementById('sales-trends-rows');
+      tbody.innerHTML = '';
+      
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" class="empty">No data matches filter</td></tr>';
+        return;
+      }
+      
+      rows.sort((a, b) => (b.total_units_4w || 0) - (a.total_units_4w || 0));
+      
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        
+        const tdImg = document.createElement('td');
+        tdImg.style.textAlign = 'center';
+        if (r.imageUrl) {
+          const img = document.createElement('img');
+          img.src = r.imageUrl;
+          img.alt = r.asin;
+          img.className = 'sales-trends-img';
+          tdImg.appendChild(img);
+        }
+        tr.appendChild(tdImg);
+        
+        const tdAsin = document.createElement('td');
+        tdAsin.textContent = r.asin;
+        tdAsin.style.fontWeight = '700';
+        tdAsin.style.textAlign = 'center';
+        tr.appendChild(tdAsin);
+        
+        function addNumCell(value) {
+          const td = document.createElement('td');
+          td.textContent = (value != null) ? value.toString() : '';
+          td.style.textAlign = 'center';
+          td.className = 'sales-trends-num-cell';
+          return td;
+        }
+        
+        tr.appendChild(addNumCell(r.week4_units));
+        tr.appendChild(addNumCell(r.week3_units));
+        tr.appendChild(addNumCell(r.week2_units));
+        tr.appendChild(addNumCell(r.week1_units));
+        
+        // PART 4.1: Add "This Week" battery column
+        const tdTrailing = document.createElement('td');
+        tdTrailing.style.textAlign = 'center';
+        const trailingContainer = document.createElement('div');
+        
+        // Raw units
+        const unitsLine = document.createElement('div');
+        unitsLine.style.fontSize = '12px';
+        unitsLine.style.marginBottom = '4px';
+        unitsLine.textContent = (r.trailing_units != null ? r.trailing_units : 0) + ' units';
+        trailingContainer.appendChild(unitsLine);
+        
+        // Battery bar (using trailing_vs_w1_ratio - now clamped 0-1)
+        const batteryDiv = document.createElement('div');
+        batteryDiv.className = 'trend-battery';
+        let ratio = r.trailing_vs_w1_ratio || 0;
+        let percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+        
+        const fillDiv = document.createElement('div');
+        fillDiv.className = 'trend-battery-fill';
+        fillDiv.style.width = percent + '%';
+        batteryDiv.appendChild(fillDiv);
+        trailingContainer.appendChild(batteryDiv);
+        
+        // Percentage label
+        const labelDiv = document.createElement('div');
+        labelDiv.className = 'trend-battery-label';
+        labelDiv.textContent = percent + '%';
+        trailingContainer.appendChild(labelDiv);
+        
+        tdTrailing.appendChild(trailingContainer);
+        tr.appendChild(tdTrailing);
+        
+        tr.appendChild(addNumCell(r.total_units_4w));
+        tr.appendChild(addNumCell(r.delta_units));
+        
+        // % Chg column (using new pct_change and pct_change_from_zero)
+        const tdPct = document.createElement('td');
+        let pctText;
+        if (r.pct_change_from_zero) {
+          pctText = "Up from 0";
+        } else if (r.pct_change === null || r.pct_change === undefined) {
+          pctText = "—";
+        } else {
+          const pct = Math.round(r.pct_change * 100);
+          pctText = pct.toString() + "%";
+        }
+        tdPct.textContent = pctText;
+        tdPct.style.textAlign = 'center';
+        tdPct.className = 'sales-trends-num-cell';
+        tr.appendChild(tdPct);
+        
+        // Trend badge (using backend trend string)
+        const tdTrend = document.createElement('td');
+        tdTrend.className = 'sales-trend-cell';
+        tdTrend.style.textAlign = 'center';
+        const pill = document.createElement('span');
+        const trend = (r.trend || "").toLowerCase();
+        let trendClass = "trend-pill-flat";
+        
+        if (trend === "rising") trendClass = "trend-pill-rising";
+        else if (trend === "falling") trendClass = "trend-pill-falling";
+        else if (trend === "new") trendClass = "trend-pill-new";
+        else if (trend === "dead") trendClass = "trend-pill-dead";
+        else if (trend === "reviving") trendClass = "trend-pill-reviving";
+        
+        pill.className = "trend-pill " + trendClass;
+        pill.textContent = r.trend || "";
+        tdTrend.appendChild(pill);
+        tr.appendChild(tdTrend);
+        
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function runFourWeekBackfill() {
+      const btn = document.getElementById("rt-sales-backfill-4w-btn");
+      if (!btn) return;
+
+      if (!confirm("This will call Amazon RT-Sales API for the last 4 weeks. It is a heavy, one-time backfill.\n\nAre you sure you want to run it now?")) {
+        return;
+      }
+
+      btn.disabled = true;
+      const originalText = btn.innerText;
+      btn.innerText = "Backfill running...";
+
+      try {
+        const resp = await fetch("/api/vendor-realtime-sales/backfill-4weeks", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        const data = await resp.json();
+
+        if (resp.status === 200 && data.status === "success") {
+          alert(
+            "4-week backfill completed.\n" +
+            "Rows: " + data.rows + "\n" +
+            "ASINs: " + data.asins + "\n" +
+            "Hours: " + data.hours
+          );
+          // After backfill, reload Sales Trends table
+          await loadSalesTrends();
+        } else if (resp.status === 200 && data.status === "skipped") {
+          alert(data.message || "Backfill already completed earlier.");
+        } else {
+          alert(
+            "Backfill failed: " +
+            (data.message || ("HTTP " + resp.status))
+          );
+        }
+      } catch (e) {
+        console.error("4-week backfill error", e);
+        alert("Error running 4-week backfill. Check logs for details.");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = originalText;
+      }
+    }
+
+    // Tab visibility and data loading
+    const originalShowTab = window.showTab;
+    window.showTab = function(tabName) {
+      // Show/hide tab content divs
+      const pos_tab = document.getElementById('pos-tab');
+      const catalog_tab = document.getElementById('catalog-tab');
+      const oos_tab = document.getElementById('oos-tab');
+      const vendor_rt_sales_tab = document.getElementById('vendor-rt-sales-tab');
+      const sales_trends_tab = document.getElementById('sales-trends-tab');
+      const inventory_tab = document.getElementById('inventory-tab');
+      const tester_tab = document.getElementById('tester-tab');
+      const notifications_tab = document.getElementById('notifications-tab');
+      
+      if (pos_tab) pos_tab.style.display = tabName === 'pos' ? 'block' : 'none';
+      if (catalog_tab) catalog_tab.style.display = tabName === 'catalog' ? 'block' : 'none';
+      if (oos_tab) oos_tab.style.display = tabName === 'oos' ? 'block' : 'none';
+      if (vendor_rt_sales_tab) vendor_rt_sales_tab.style.display = tabName === 'vendor-rt-sales' ? 'block' : 'none';
+      if (sales_trends_tab) sales_trends_tab.style.display = tabName === 'sales-trends' ? 'block' : 'none';
+      if (inventory_tab) inventory_tab.style.display = tabName === 'inventory' ? 'block' : 'none';
+      if (tester_tab) tester_tab.style.display = tabName === 'tester' ? 'block' : 'none';
+      if (notifications_tab) notifications_tab.style.display = tabName === 'notifications' ? 'block' : 'none';
+      
+      // Update active tab button styling
+      const tabBtns = document.querySelectorAll('.tab-btn');
+      tabBtns.forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.getAttribute('data-tab') === tabName) {
+          btn.classList.add('active');
+        }
+      });
+      
+      // Load tab-specific data
+      if (tabName === 'sales-trends') {
+        loadSalesTrends();
+      } else if (tabName === 'vendor-rt-sales') {
+        loadVendorRtSalesSummary();
+      } else if (tabName === 'inventory') {
+        loadVendorInventorySnapshotIfNeeded();
+      }
+    };
+
     loadPOs(false);
     showTab("pos");
     scheduleInitialAutoSync();

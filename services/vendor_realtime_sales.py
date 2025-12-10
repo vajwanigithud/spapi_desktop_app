@@ -11,7 +11,8 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 
 import logging
 import json
-from datetime import datetime, timezone, timedelta
+import math
+from datetime import datetime, timezone, timedelta, time
 from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal
 
@@ -54,6 +55,9 @@ QUOTA_COOLDOWN_MINUTES = 30
 # In-memory backfill lock to prevent overlapping cycles
 _rt_sales_backfill_in_progress = False
 _rt_sales_backfill_lock_acquired_at_utc = None  # type: Optional[datetime]
+
+# One-time 4-week backfill gate (stored in app_kv_store)
+SALES_TRENDS_4W_BACKFILL_KEY = "rt_sales_4week_backfill_done"
 
 
 def is_in_quota_cooldown(now_utc: datetime) -> bool:
@@ -1055,3 +1059,535 @@ def run_realtime_sales_audit_window(
             )
             return (0, 0, 0)  # Suppress other errors
 
+
+# ====================================================================
+# SALES TRENDS QUERY (4-WEEK ROLLING WINDOW)
+# ====================================================================
+
+def _compute_sales_trend_week_buckets_uae(now_uae: datetime, weeks: int = 4) -> Dict[str, Dict[str, datetime]]:
+    """
+    Compute week buckets for Sales Trends using UAE time.
+    
+    Returns a dict with keys 'w1', 'w2', 'w3', 'w4' (if weeks >= 4).
+    Each value is a dict { 'start_uae': datetime, 'end_uae': datetime }.
+    
+    Weeks are aligned Monday–Sunday in UAE time:
+    - W1 = last full week (Mon–Sun) before current week
+    - W2 = week before W1, etc.
+    """
+    today_uae = now_uae.date()
+    
+    # Compute the end date of the most recent completed week (last Sunday)
+    # weekday() returns Monday=0, ..., Sunday=6
+    weekday = today_uae.weekday()
+    days_since_sunday = (weekday + 1) % 7
+    last_sunday_date = today_uae - timedelta(days=days_since_sunday)
+    
+    # W1 = most recent completed week (Mon 00:00 - Sun 23:59:59 UAE)
+    w1_start_date = last_sunday_date - timedelta(days=6)  # Monday of W1
+    w1_start_uae = datetime.combine(w1_start_date, time(0, 0, 0), tzinfo=UAE_TZ)
+    w1_end_uae = datetime.combine(last_sunday_date, time(23, 59, 59), tzinfo=UAE_TZ)
+    
+    result = {
+        "w1": {"start_uae": w1_start_uae, "end_uae": w1_end_uae}
+    }
+    
+    if weeks < 2:
+        return result
+    
+    # W2 = week before W1
+    w2_end_date = w1_start_date - timedelta(days=1)  # Sunday before W1
+    w2_start_date = w2_end_date - timedelta(days=6)  # Monday of W2
+    w2_start_uae = datetime.combine(w2_start_date, time(0, 0, 0), tzinfo=UAE_TZ)
+    w2_end_uae = datetime.combine(w2_end_date, time(23, 59, 59), tzinfo=UAE_TZ)
+    result["w2"] = {"start_uae": w2_start_uae, "end_uae": w2_end_uae}
+    
+    if weeks < 3:
+        return result
+    
+    # W3 = week before W2
+    w3_end_date = w2_start_date - timedelta(days=1)  # Sunday before W2
+    w3_start_date = w3_end_date - timedelta(days=6)  # Monday of W3
+    w3_start_uae = datetime.combine(w3_start_date, time(0, 0, 0), tzinfo=UAE_TZ)
+    w3_end_uae = datetime.combine(w3_end_date, time(23, 59, 59), tzinfo=UAE_TZ)
+    result["w3"] = {"start_uae": w3_start_uae, "end_uae": w3_end_uae}
+    
+    if weeks < 4:
+        return result
+    
+    # W4 = week before W3 (oldest)
+    w4_end_date = w3_start_date - timedelta(days=1)  # Sunday before W3
+    w4_start_date = w4_end_date - timedelta(days=6)  # Monday of W4
+    w4_start_uae = datetime.combine(w4_start_date, time(0, 0, 0), tzinfo=UAE_TZ)
+    w4_end_uae = datetime.combine(w4_end_date, time(23, 59, 59), tzinfo=UAE_TZ)
+    result["w4"] = {"start_uae": w4_start_uae, "end_uae": w4_end_uae}
+    
+    return result
+
+
+def get_sales_trends_last_4_weeks(
+    conn,
+    marketplace_id: str,
+    min_total_units: int = 1,
+) -> dict:
+    """
+    Compute 4-week sales trends per ASIN using vendor_realtime_sales.
+    
+    Uses UAE calendar weeks (Monday–Sunday). W1 is the most recent completed week,
+    W2 the week before, etc.
+    
+    Returns a dict with:
+    {
+      "window": {
+        "start_utc": "...",
+        "end_utc": "...",
+        "start_uae": "...",
+        "end_uae": "..."
+      },
+      "bucket_size_days": 7,
+      "bucket_labels": ["W4", "W3", "W2", "W1"],
+      "week_ranges_uae": [
+        { "label": "W4", "start_uae": "...", "end_uae": "..." },
+        ...
+      ],
+      "rows": [
+        {
+          "asin": "...",
+          "title": "Optional from spapi_catalog",
+          "imageUrl": "Optional from spapi_catalog",
+          "week4_units": int,
+          "week3_units": int,
+          "week2_units": int,
+          "week1_units": int,
+          "total_units_4w": int,
+          "delta_units": int,
+          "pct_change": float or None,
+          "trend": "rising" | "falling" | "flat" | "new" | "dead"
+        },
+        ...
+      ]
+    }
+    """
+    try:
+        # Get safe now in UTC and convert to UAE
+        safe_now_utc = get_safe_now_utc()
+        safe_now_uae = safe_now_utc.astimezone(UAE_TZ)
+        
+        # Compute week boundaries (UAE, Monday–Sunday)
+        # Use helper to get the base week dates
+        helper_result = _compute_sales_trend_week_buckets_uae(safe_now_uae, weeks=4)
+        
+        # Extract UAE boundaries from helper and convert to UTC
+        # Build a canonical buckets dict with all required fields
+        buckets = {}
+        for week_key in ["w4", "w3", "w2", "w1"]:
+            if week_key not in helper_result:
+                logger.error(f"[SalesTrends] Helper missing week key: {week_key}")
+                # Fallback: return empty result
+                return {
+                    "window": {"start_utc": safe_now_utc.isoformat(), "end_utc": safe_now_utc.isoformat()},
+                    "bucket_size_days": 7,
+                    "bucket_labels": ["W4", "W3", "W2", "W1"],
+                    "week_ranges_uae": [],
+                    "rows": [],
+                }
+            
+            week_data_uae = helper_result[week_key]
+            w_start_uae = week_data_uae["start_uae"]
+            w_end_uae = week_data_uae["end_uae"]
+            
+            # Convert to UTC
+            w_start_utc = w_start_uae.astimezone(timezone.utc)
+            w_end_utc = (w_end_uae + timedelta(seconds=1)).astimezone(timezone.utc)
+            
+            # Build complete bucket entry
+            buckets[week_key] = {
+                "label": week_key.upper(),
+                "start_uae": w_start_uae,
+                "end_uae": w_end_uae,
+                "start_utc": w_start_utc,
+                "end_utc": w_end_utc,
+            }
+        
+        # At this point, buckets is guaranteed to have w4, w3, w2, w1 with all fields
+        # Log the computed week ranges for debugging (moved after buckets construction)
+        logger.info(
+            "[SalesTrends] Buckets (UAE): W4=%s–%s, W3=%s–%s, W2=%s–%s, W1=%s–%s",
+            buckets["w4"]["start_uae"].isoformat(), buckets["w4"]["end_uae"].isoformat(),
+            buckets["w3"]["start_uae"].isoformat(), buckets["w3"]["end_uae"].isoformat(),
+            buckets["w2"]["start_uae"].isoformat(), buckets["w2"]["end_uae"].isoformat(),
+            buckets["w1"]["start_uae"].isoformat(), buckets["w1"]["end_uae"].isoformat(),
+        )
+        
+        # Determine overall window boundaries (W4 start to W1 end)
+        window_start_utc = buckets["w4"]["start_utc"]
+        window_end_utc = buckets["w1"]["end_utc"]
+        
+        # Build query ranges for bucketing rows during aggregation
+        # This maps UTC timestamp ranges to week labels (W4, W3, W2, W1)
+        query_ranges_utc = [
+            ("W4", buckets["w4"]["start_utc"], buckets["w4"]["end_utc"]),
+            ("W3", buckets["w3"]["start_utc"], buckets["w3"]["end_utc"]),
+            ("W2", buckets["w2"]["start_utc"], buckets["w2"]["end_utc"]),
+            ("W1", buckets["w1"]["start_utc"], buckets["w1"]["end_utc"]),
+        ]
+        
+        # Query all data for the 28-day window
+        query = """
+        SELECT
+            asin,
+            hour_start_utc,
+            ordered_units
+        FROM vendor_realtime_sales
+        WHERE
+            marketplace_id = ?
+            AND hour_start_utc >= ?
+            AND hour_start_utc < ?
+        ORDER BY asin, hour_start_utc ASC
+        """
+        
+        rows = conn.execute(
+            query,
+            (marketplace_id, window_start_utc.isoformat(), window_end_utc.isoformat())
+        ).fetchall()
+        
+        # In-memory aggregation: stats[asin][weekX_units]
+        stats = {}
+        
+        # Initialize trailing_by_asin early to avoid UnboundLocalError
+        # This will be populated later from the trailing window query
+        trailing_by_asin: Dict[str, int] = {}
+        
+        for row in rows:
+            asin = row["asin"]
+            hour_start_utc_str = row["hour_start_utc"]
+            units = row["ordered_units"] or 0
+            
+            # Parse timestamp
+            try:
+                dt = datetime.fromisoformat(hour_start_utc_str.replace("Z", "+00:00"))
+            except Exception as e:
+                logger.warning(f"[SalesTrends] Failed to parse timestamp {hour_start_utc_str}: {e}")
+                continue
+            
+            # Determine which week bucket this row belongs to
+            bucket = None
+            for label, start_utc, end_utc in query_ranges_utc:
+                if start_utc <= dt < end_utc:
+                    bucket = label
+                    break
+            
+            if bucket is None:
+                continue  # Outside our range
+            
+            # Aggregate
+            if asin not in stats:
+                stats[asin] = {
+                    "W4": 0,
+                    "W3": 0,
+                    "W2": 0,
+                    "W1": 0,
+                }
+            
+            stats[asin][bucket] += units
+        
+        # Compute metrics and filter
+        trend_rows = []
+        
+        for asin, buckets in stats.items():
+            w4_u = buckets["W4"]
+            w3_u = buckets["W3"]
+            w2_u = buckets["W2"]
+            w1_u = buckets["W1"]
+            
+            total_4w = w4_u + w3_u + w2_u + w1_u
+            
+            # Skip if below threshold
+            if total_4w < min_total_units:
+                continue
+            
+            # Compute delta and % change (FIXED: no infinity)
+            delta_units = w1_u - w2_u
+            
+            # Calculate pct_change and pct_change_from_zero
+            pct_change_from_zero = False
+            pct_change: Optional[float] = None
+            
+            if w2_u == 0:
+                if w1_u == 0:
+                    # Nothing last week or the week before -> no change
+                    pct_change = 0.0
+                    pct_change_from_zero = False
+                else:
+                    # Went from 0 to some positive number
+                    pct_change = None
+                    pct_change_from_zero = True
+            else:
+                # Normal case: w2_u > 0
+                pct_change = (w1_u - w2_u) / float(w2_u)
+                pct_change_from_zero = False
+                # Clamp to reasonable range (-10.0 to +10.0 = -1000% to +1000%)
+                if pct_change > 10.0:
+                    pct_change = 10.0
+                elif pct_change < -10.0:
+                    pct_change = -10.0
+            
+            # Determine trend using smart rules
+            historical_sum = w4_u + w3_u + w2_u
+            last_week = w1_u
+            this_week_val = trailing_by_asin.get(asin, 0)  # Will be populated shortly
+            
+            total_all = last_week + w2_u + w3_u + w4_u + this_week_val
+            
+            if total_all == 0:
+                # No sales at all in the last 4w + this week
+                trend = "Dead"
+            elif historical_sum == 0 and last_week > 0:
+                # No sales in W4–W2, only in W1 -> new in the last 4 weeks
+                trend = "New"
+            elif last_week == 0 and historical_sum > 0 and this_week_val == 0:
+                # Sold before, but nothing last week and nothing this week
+                trend = "Dead"
+            elif last_week == 0 and historical_sum > 0 and this_week_val > 0:
+                # Had historical sales, went quiet last week, now selling again
+                trend = "Reviving"
+            else:
+                # Use pct_change / pct_change_from_zero for nuances
+                if pct_change_from_zero:
+                    # Went from 0 to positive last week
+                    trend = "Rising"
+                else:
+                    # pct_change is a finite float here
+                    pct = pct_change or 0.0
+                    if pct >= 0.25:
+                        trend = "Rising"
+                    elif pct <= -0.25:
+                        trend = "Falling"
+                    else:
+                        trend = "Flat"
+            
+            trend_rows.append({
+                "asin": asin,
+                "title": asin,  # Will be overridden if found in catalog
+                "imageUrl": None,  # Will be set if found in catalog
+                "week4_units": w4_u,
+                "week3_units": w3_u,
+                "week2_units": w2_u,
+                "week1_units": w1_u,
+                "total_units_4w": total_4w,
+                "delta_units": delta_units,
+                "pct_change": pct_change,
+                "pct_change_from_zero": pct_change_from_zero,
+                "trend": trend,
+            })
+        
+        # Enrich with catalog data
+        if trend_rows:
+            asins_to_fetch = [r["asin"] for r in trend_rows]
+            catalog_query = """
+            SELECT asin, title, image
+            FROM spapi_catalog
+            WHERE asin IN ({})
+            """.format(",".join(["?" for _ in asins_to_fetch]))
+            
+            catalog_rows = conn.execute(catalog_query, asins_to_fetch).fetchall()
+            catalog_map = {r["asin"]: {"title": r["title"], "imageUrl": r["image"]} for r in catalog_rows}
+            
+            for row in trend_rows:
+                asin = row["asin"]
+                if asin in catalog_map:
+                    row["title"] = catalog_map[asin]["title"]
+                    row["imageUrl"] = catalog_map[asin]["imageUrl"]
+                else:
+                    row["title"] = asin
+                    row["imageUrl"] = None
+        
+        # Sort by total_units_4w descending
+        trend_rows.sort(key=lambda r: r["total_units_4w"], reverse=True)
+        
+        # PART 2: Compute trailing week (current partial week) data
+        today_uae = datetime.now(UAE_TZ).date()
+        current_week_monday_date = today_uae - timedelta(days=today_uae.weekday())
+        current_week_start_uae = datetime.combine(current_week_monday_date, time(0, 0, 0), tzinfo=UAE_TZ)
+        current_week_start_utc = current_week_start_uae.astimezone(timezone.utc)
+        current_week_end_utc = safe_now_utc
+        
+        # Query trailing week data
+        trailing_query = """
+            SELECT asin, SUM(ordered_units) AS trailing_units
+            FROM vendor_realtime_sales
+            WHERE hour_start_utc >= ? AND hour_start_utc < ? AND marketplace_id = ?
+            GROUP BY asin
+        """
+        trailing_rows = conn.execute(
+            trailing_query,
+            (current_week_start_utc.isoformat(), current_week_end_utc.isoformat(), marketplace_id)
+        ).fetchall()
+        
+        # Build trailing_by_asin dict
+        trailing_by_asin = {row["asin"]: (row["trailing_units"] or 0) for row in trailing_rows}
+        
+        # Add trailing data to each trend row
+        for row in trend_rows:
+            asin = row["asin"]
+            w1_units = row["week1_units"]
+            trailing_units = trailing_by_asin.get(asin, 0)
+            
+            # Calculate ratio for battery display (0-100%)
+            if w1_units > 0:
+                trailing_vs_w1_ratio = trailing_units / float(w1_units)
+            else:
+                # If no W1 units, battery shows 0% (no baseline to compare)
+                trailing_vs_w1_ratio = 0.0
+            
+            # Clamp ratio to 0-1 for display (battery percentage)
+            trailing_vs_w1_ratio = max(0.0, min(1.0, trailing_vs_w1_ratio))
+            
+            row["trailing_units"] = trailing_units
+            row["trailing_vs_w1_ratio"] = trailing_vs_w1_ratio
+        
+        # Build week_ranges response (W4, W3, W2, W1 in order)
+        # Use buckets dict which is guaranteed to have all 4 keys
+        week_ranges_response = []
+        for week_key in ["w4", "w3", "w2", "w1"]:
+            bucket = buckets[week_key]
+            week_ranges_response.append({
+                "label": bucket["label"],
+                "start_uae": bucket["start_uae"].isoformat(),
+                "end_uae": bucket["end_uae"].isoformat(),
+            })
+        
+        # Build window info
+        window_data = {
+            "start_utc": window_start_utc.isoformat(),
+            "end_utc": window_end_utc.isoformat(),
+            "start_uae": utc_to_uae_str(window_start_utc),
+            "end_uae": utc_to_uae_str(window_end_utc - timedelta(seconds=1)),
+        }
+        
+        # Build trailing window info
+        trailing_window_data = {
+            "start_utc": current_week_start_utc.isoformat(),
+            "end_utc": current_week_end_utc.isoformat(),
+            "start_uae": current_week_start_uae.isoformat(),
+            "end_uae": current_week_end_utc.astimezone(UAE_TZ).isoformat(),
+        }
+        
+        return {
+            "window": window_data,
+            "bucket_size_days": 7,
+            "bucket_labels": ["W4", "W3", "W2", "W1"],
+            "week_ranges_uae": week_ranges_response,
+            "trailing_window": trailing_window_data,
+            "rows": trend_rows,
+        }
+    
+    except Exception as exc:
+        logger.error(f"[SalesTrends] Failed to get sales trends: {exc}", exc_info=True)
+        raise
+
+
+def run_one_time_four_week_backfill(
+    spapi_client,
+    marketplace_id: str,
+) -> Dict[str, Any]:
+    """
+    One-time heavy backfill: ingest RT-sales for the last 4 full calendar weeks
+    used by Sales Trends (W4..W1), aligned to Monday–Sunday in UAE time.
+
+    Uses app_kv_store[SALES_TRENDS_4W_BACKFILL_KEY] as a gate so this
+    cannot be accidentally run multiple times. On quota error, we DO NOT
+    set the 'done' flag.
+    
+    Returns:
+    {
+        "status": "success" | "skipped" | "error",
+        "rows": int,  # (for success)
+        "asins": int,  # (for success)
+        "hours": int,  # (for success)
+        "start_utc": str,  # (for success)
+        "end_utc": str,  # (for success)
+        "completed_utc": str,  # (for success)
+        "message": str,  # (for skipped)
+        "ran_at_utc": str,  # (for skipped)
+        "error": str,  # (for error: "QuotaExceeded" | "UnexpectedError")
+        "message": str,  # (for error)
+    }
+    """
+    from services import db as db_service
+    from services.spapi_errors import SpApiQuotaError
+    
+    with db_service.get_db_connection() as conn:
+        already = db_service.get_app_kv(conn, SALES_TRENDS_4W_BACKFILL_KEY)
+        if already:
+            # Already ran in the past; return a summary without doing anything
+            return {
+                "status": "skipped",
+                "message": "4-week RT-sales backfill already completed",
+                "ran_at_utc": already,
+            }
+
+    # Compute the exact same W4..W1 ranges the Sales Trends tab uses
+    now_uae = datetime.now(UAE_TZ)
+    buckets = _compute_sales_trend_week_buckets_uae(now_uae, weeks=4)
+
+    # Determine overall backfill window in UTC:
+    # from the START of W4 to the END of W1.
+    w4 = buckets["w4"]
+    w1 = buckets["w1"]
+    start_uae = w4["start_uae"]
+    end_uae = w1["end_uae"]
+
+    # Convert UAE datetimes to UTC for the backfill function
+    start_utc = start_uae.astimezone(timezone.utc)
+    end_utc = (end_uae + timedelta(seconds=1)).astimezone(timezone.utc)
+
+    try:
+        logger.info(
+            "[SalesTrendsBackfill] Starting 4-week backfill: %s to %s (UTC)",
+            start_utc.isoformat(),
+            end_utc.isoformat()
+        )
+        
+        rows, asins, hours = backfill_realtime_sales_for_gap(
+            spapi_client=spapi_client,
+            mkt_id=marketplace_id,
+            start_utc=start_utc,
+            end_utc=end_utc,
+        )
+        
+        logger.info(
+            "[SalesTrendsBackfill] Backfill successful: %d rows, %d asins, %d hours",
+            rows, asins, hours
+        )
+        
+    except SpApiQuotaError as e:
+        # On quota error: do NOT mark as done, so user can retry later.
+        logger.exception("[SalesTrendsBackfill] Quota hit during 4-week backfill")
+        return {
+            "status": "error",
+            "error": "QuotaExceeded",
+            "message": "Amazon Vendor real-time sales quota was exceeded during 4-week backfill. Try again later.",
+        }
+    except Exception as e:
+        logger.exception("[SalesTrendsBackfill] Unexpected error during 4-week backfill")
+        return {
+            "status": "error",
+            "error": "UnexpectedError",
+            "message": "Unexpected error during 4-week backfill; check logs for details.",
+        }
+
+    # Only here, after successful ingestion, we mark it as done.
+    completed_utc = datetime.now(timezone.utc).isoformat()
+    with db_service.get_db_connection() as conn:
+        db_service.set_app_kv(conn, SALES_TRENDS_4W_BACKFILL_KEY, completed_utc)
+
+    return {
+        "status": "success",
+        "rows": rows,
+        "asins": asins,
+        "hours": hours,
+        "start_utc": start_utc.isoformat(),
+        "end_utc": end_utc.isoformat(),
+        "completed_utc": completed_utc,
+    }

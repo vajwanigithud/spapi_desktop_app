@@ -2189,6 +2189,104 @@ def get_vendor_realtime_sales_for_asin(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/vendor-realtime-sales/backfill-4weeks")
+async def api_vendor_rt_sales_backfill_4weeks(request: Request):
+    """
+    One-time heavy 4-week RT-sales backfill for Sales Trends.
+    Uses the same weekly buckets as Sales Trends (W4..W1).
+    Gated via app_kv_store so it cannot run twice accidentally.
+    
+    Returns:
+    - status: "success" with rows, asins, hours, and timestamps
+    - status: "skipped" if already ran
+    - status: "error" with error type (QuotaExceeded or UnexpectedError)
+    """
+    marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+
+    result = vendor_realtime_sales_service.run_one_time_four_week_backfill(
+        spapi_client=None,
+        marketplace_id=marketplace_id,
+    )
+
+    status = result.get("status")
+    if status == "error":
+        # Map quota error to 429; others to 500
+        if result.get("error") == "QuotaExceeded":
+            return JSONResponse(result, status_code=429)
+        return JSONResponse(result, status_code=500)
+
+    # success or skipped
+    return JSONResponse(result, status_code=200)
+
+
+# ========================================
+# Sales Trends Endpoints
+# ========================================
+
+@app.get("/api/vendor-sales-trends")
+def api_vendor_sales_trends(
+    lookback_weeks: int = 4,
+    min_total_units: int = 1,
+):
+    """
+    Returns 4-week rolling sales trends per ASIN using vendor_realtime_sales.
+    
+    For now, only support lookback_weeks=4. If another value is passed, clamp to 4.
+    
+    Query parameters:
+    - lookback_weeks: int (default 4, clamped to 4)
+    - min_total_units: int (default 1, minimum total units across 4 weeks to include)
+    
+    Returns:
+    {
+      "window": {
+        "start_utc": "...",
+        "end_utc": "...",
+        "start_uae": "...",
+        "end_uae": "..."
+      },
+      "bucket_size_days": 7,
+      "bucket_labels": ["W4", "W3", "W2", "W1"],
+      "rows": [
+        {
+          "asin": "...",
+          "title": "...",
+          "imageUrl": "...",
+          "week4_units": int,
+          "week3_units": int,
+          "week2_units": int,
+          "week1_units": int,
+          "total_units_4w": int,
+          "delta_units": int,
+          "pct_change": float or None,
+          "trend": "rising" | "falling" | "flat" | "new" | "dead"
+        }
+      ]
+    }
+    """
+    try:
+        from services.db import get_db_connection
+        
+        # Clamp lookback_weeks to 4
+        if lookback_weeks != 4:
+            lookback_weeks = 4
+        
+        marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+        
+        with get_db_connection() as conn:
+            data = vendor_realtime_sales_service.get_sales_trends_last_4_weeks(
+                conn,
+                marketplace_id,
+                min_total_units=min_total_units,
+            )
+        
+        return data
+    
+    except Exception as e:
+        logger.error(f"[SalesTrends] Failed to get sales trends: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ========================================
 # Vendor Inventory Endpoints
 # ========================================
