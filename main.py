@@ -123,6 +123,10 @@ from services.vendor_notifications import (
 from services.perf import time_block, get_recent_timings
 import services.vendor_realtime_sales as vendor_realtime_sales_service
 from services import spapi_reports
+from services.vendor_inventory import (
+    refresh_vendor_inventory_snapshot,
+    get_vendor_inventory_snapshot_for_ui,
+)
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -334,9 +338,10 @@ except Exception as e:
 # Initialize vendor_realtime_sales table & state
 try:
     vendor_realtime_sales_service.init_vendor_realtime_sales_table()
-    from services.db import init_vendor_rt_sales_state_table, ensure_oos_export_history_table
+    from services.db import init_vendor_rt_sales_state_table, ensure_oos_export_history_table, ensure_vendor_inventory_table
     init_vendor_rt_sales_state_table()
     ensure_oos_export_history_table()
+    ensure_vendor_inventory_table()
 except Exception as e:
     logger.warning(f"[Startup] Failed to init vendor_realtime_sales tables (non-critical): {e}")
 
@@ -2192,6 +2197,123 @@ def get_vendor_realtime_sales_for_asin(
     except Exception as e:
         logger.error(f"[VendorRtSales] Failed to get ASIN detail: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================
+# Vendor Inventory Endpoints
+# ========================================
+
+@app.post("/api/vendor-inventory/refresh")
+def api_vendor_inventory_refresh():
+    """
+    Downloads GET_VENDOR_INVENTORY_REPORT (weekly),
+    extracts latest week's per-ASIN snapshot,
+    stores into vendor_inventory_asin table.
+    Returns number of ASINs ingested.
+    """
+    try:
+        from services.db import get_db_connection
+        from services.spapi_reports import SpApiQuotaError
+        
+        marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+        marketplace_id = marketplace_ids[0]
+        
+        logger.info(f"[VendorInventory] Refresh requested for {marketplace_id}")
+        
+        with get_db_connection() as conn:
+            count = refresh_vendor_inventory_snapshot(conn, marketplace_id)
+        
+        logger.info(f"[VendorInventory] Refresh complete: {count} ASINs stored")
+        
+        return {
+            "status": "ok",
+            "ingested_asins": count,
+            "marketplace_id": marketplace_id,
+        }
+    
+    except spapi_reports.SpApiQuotaError as e:
+        logger.warning(f"[VendorInventory] QuotaExceeded during refresh: {e}")
+        return {
+            "status": "quota_error",
+            "error": str(e),
+        }
+    
+    except Exception as e:
+        logger.error(f"[VendorInventory] Failed to refresh inventory: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+@app.get("/api/vendor-inventory/snapshot")
+def api_vendor_inventory_snapshot():
+    """
+    Returns stored snapshot (latest week only)
+    for UI rendering.
+    
+    Sorted by sellable_onhand_units DESC, then ASIN ASC.
+    """
+    try:
+        from services.db import get_db_connection
+        
+        marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+        marketplace_id = marketplace_ids[0]
+        
+        with get_db_connection() as conn:
+            rows = get_vendor_inventory_snapshot_for_ui(conn, marketplace_id)
+        
+        # Convert Row objects to dicts if needed
+        items = [dict(row) if hasattr(row, 'keys') else row for row in rows]
+        
+        logger.info(f"[VendorInventory] Returned snapshot with {len(items)} ASINs")
+        
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+        }
+    
+    except Exception as e:
+        logger.error(f"[VendorInventory] Failed to get snapshot: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "count": 0,
+            "items": [],
+        }
+
+
+@app.get("/api/vendor-inventory/debug")
+def api_vendor_inventory_debug():
+    """
+    Developer-only debug route:
+    Shows latest raw JSON returned from the GET_VENDOR_INVENTORY_REPORT call.
+    
+    DO NOT consume this in UI — for debugging only.
+    """
+    try:
+        from services.vendor_inventory import fetch_latest_vendor_inventory_report_json
+        
+        marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+        marketplace_id = marketplace_ids[0]
+        
+        logger.info(f"[VendorInventory] Debug: Fetching raw report for {marketplace_id}")
+        
+        data = fetch_latest_vendor_inventory_report_json(marketplace_id)
+        
+        return {
+            "status": "ok",
+            "marketplace_id": marketplace_id,
+            "report_data": data,
+        }
+    
+    except Exception as e:
+        logger.error(f"[VendorInventory] Debug request failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+        }
 
 
 @app.get("/api/spapi-tester/meta")

@@ -84,7 +84,138 @@
       .export-status-pending { font-weight: 600; color: #d97706; }
       .export-status-exported { opacity: 0.6; color: #6b7280; }
       .oos-row-exported { opacity: 0.7; }
-      /* Inventory subtabs */
+      /* Inventory controls and subtabs */
+      .inventory-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .inventory-controls .muted-text {
+        margin-left: 8px;
+        font-size: 0.9em;
+        opacity: 0.8;
+      }
+      .inventory-subtabs {
+        margin: 8px 0 12px 0;
+      }
+      .inventory-subtab-button {
+        margin-right: 6px;
+        padding: 4px 8px;
+        font-size: 0.9em;
+        cursor: pointer;
+        background: #f0f0f0;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      .inventory-subtab-button.active {
+        font-weight: bold;
+        text-decoration: underline;
+        background: #3498db;
+        color: white;
+      }
+      /* Inventory row color coding */
+      .inv-zero-sellable {
+        background-color: #fff4e6 !important;
+      }
+      .inv-aged {
+        background-color: #e8f0ff !important;
+      }
+      .inv-unhealthy {
+        background-color: #ffeaea !important;
+      }
+      .inv-row-zero {
+        /* placeholder for zero inventory rows */
+      }
+      .inv-row-aged {
+        /* placeholder for aged rows */
+      }
+      .inv-row-unhealthy {
+        /* placeholder for unhealthy rows */
+      }
+      .text-right {
+        text-align: right;
+      }
+      /* Search and filter controls */
+      .inv-search-bar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+      .inv-search-bar input {
+        padding: 6px 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 13px;
+        min-width: 200px;
+      }
+      .inv-quick-filters {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .inv-quick-filter-btn {
+        padding: 4px 8px;
+        font-size: 12px;
+        background: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .inv-quick-filter-btn.active {
+        background: #3498db;
+        color: white;
+        border-color: #3498db;
+      }
+      /* Sortable headers */
+      #inv-table thead th {
+        cursor: pointer;
+        user-select: none;
+      }
+      #inv-table thead th:hover {
+        background-color: #e8f1f8;
+      }
+      /* Sticky footer */
+      #inv-table tfoot {
+        position: sticky;
+        bottom: 0;
+        background: #fafafa;
+        font-weight: bold;
+        border-top: 2px solid #ccc;
+        z-index: 1;
+      }
+      .data-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .data-table thead th {
+        background: #f8fafc;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 8px 10px;
+        border: 1px solid #e5e7eb;
+      }
+      .data-table tbody td {
+        padding: 8px 10px;
+        border: 1px solid #e5e7eb;
+      }
+      .data-table tbody tr:hover {
+        background: #f1f5f9;
+      }
+      .data-table tfoot tr {
+        border-top: 2px solid #e5e7eb;
+        background: #f9fafb;
+        font-weight: 600;
+      }
+      .data-table tfoot td {
+        padding: 8px 10px;
+        border: 1px solid #e5e7eb;
+      }
+      /* Inventory subtabs (old style - kept for backwards compat) */
       .subtab-bar {
         margin: 15px 0;
       }
@@ -408,15 +539,42 @@
   </div>
 
   <div class="panel" id="inventory-tab" style="display:none; margin-top:14px;">
-    <h2>Inventory</h2>
+    <h2>Vendor Inventory – Latest Week</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
-      <div class="subtab-bar">
-        <button class="subtab-btn active" onclick="showInventorySubtab('overview')">Overview (Latest Week)</button>
-        <button class="subtab-btn" onclick="showInventorySubtab('asin')">ASIN Breakdown (Latest Week)</button>
+      <!-- Controls row -->
+      <div class="inventory-controls">
+        <button id="inv-refresh-btn" class="btn" onclick="refreshVendorInventorySnapshot()">Refresh Inventory Snapshot</button>
+        <button id="inv-download-btn" class="btn" style="background:#16a34a;" onclick="downloadVendorInventorySnapshotCsv()">Download CSV (current view)</button>
+        <span id="inv-week-label" class="muted-text"></span>
+        <span id="inv-status-label" class="muted-text"></span>
       </div>
 
-      <div id="inventory-overview-subtab" class="inventory-subtab"></div>
-      <div id="inventory-asin-subtab" class="inventory-subtab" style="display:none;"></div>
+      <!-- Inner subtabs -->
+      <div class="inventory-subtabs">
+        <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">Snapshot (All ASINs)</button>
+        <button id="inv-subtab-aged" class="inventory-subtab-button" onclick="setInventorySubtab('aged')">Aged 90+ Days</button>
+        <button id="inv-subtab-unhealthy" class="inventory-subtab-button" onclick="setInventorySubtab('unhealthy')">Unhealthy / Excess</button>
+      </div>
+
+      <!-- Search and Quick Filters -->
+      <div class="inv-search-bar">
+        <input type="text" id="inv-search" placeholder="Search ASIN or title…" oninput="renderVendorInventoryCurrentSubtab()" />
+        <div class="inv-quick-filters">
+          <button id="inv-qf-all" class="inv-quick-filter-btn active" onclick="setQuickFilter('all')">All</button>
+          <button id="inv-qf-zero" class="inv-quick-filter-btn" onclick="setQuickFilter('zero')">Zero Stock</button>
+          <button id="inv-qf-aged" class="inv-quick-filter-btn" onclick="setQuickFilter('aged')">Aged 90+</button>
+          <button id="inv-qf-unhealthy" class="inv-quick-filter-btn" onclick="setQuickFilter('unhealthy')">Unhealthy</button>
+        </div>
+      </div>
+
+      <!-- Table -->
+      <div id="inv-table-wrapper" style="overflow:auto; max-height: calc(100vh - 300px);">
+        <table id="inv-table" class="data-table">
+          <thead id="inv-table-head"></thead>
+          <tbody id="inv-table-body"></tbody>
+          <tfoot id="inv-table-foot"></tfoot>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -469,6 +627,11 @@
     let testerHost = "";
     let catalogImageCache = {};
     let recentNotifications = [];
+    let vendorInventorySnapshot = [];
+    let currentInventorySubtab = 'snapshot';
+    let invSortColumn = 'sellable';
+    let invSortDirection = 'desc';
+    let invQuickFilter = 'all';
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -1672,6 +1835,9 @@
       const inventoryEl = document.getElementById("inventory-tab");
       if (inventoryEl) {
         inventoryEl.style.display = tab === "inventory" ? "block" : "none";
+        if (tab === "inventory") {
+          loadVendorInventorySnapshotIfNeeded();
+        }
       }
       if (tab === "catalog" && !asinList.length) {
         loadAsinList();
@@ -2843,6 +3009,475 @@
       loadRtSalesViewBy();
       loadRtSalesSortState();
       updateRtSalesWindowInfo();
+    }
+
+    // ========================================
+    // Vendor Inventory Functions
+    // ========================================
+
+    function loadVendorInventorySnapshotIfNeeded(forceReload = false) {
+      if (!forceReload && vendorInventorySnapshot && vendorInventorySnapshot.length > 0) {
+        renderVendorInventoryCurrentSubtab();
+        return;
+      }
+
+      const statusEl = document.getElementById('inv-status-label');
+      if (statusEl) statusEl.textContent = 'Loading inventory snapshot…';
+
+      fetch('/api/vendor-inventory/snapshot')
+        .then((resp) => resp.json())
+        .then((data) => {
+          if (data.status !== 'ok') {
+            if (statusEl) statusEl.textContent = 'Error loading inventory: ' + (data.error || data.status);
+            vendorInventorySnapshot = [];
+            renderVendorInventoryCurrentSubtab();
+            return;
+          }
+
+          vendorInventorySnapshot = data.items || [];
+          if (statusEl) statusEl.textContent = `Loaded ${vendorInventorySnapshot.length} ASINs`;
+
+          updateInventoryWeekLabelFromSnapshot(vendorInventorySnapshot);
+          renderVendorInventoryCurrentSubtab();
+        })
+        .catch((err) => {
+          console.error(err);
+          if (statusEl) statusEl.textContent = 'Error loading inventory: ' + err;
+          vendorInventorySnapshot = [];
+          renderVendorInventoryCurrentSubtab();
+        });
+    }
+
+    function refreshVendorInventorySnapshot() {
+      const refreshBtn = document.getElementById('inv-refresh-btn');
+      const statusEl = document.getElementById('inv-status-label');
+
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refreshing…';
+      }
+      if (statusEl) statusEl.textContent = 'Refreshing inventory via SP-API…';
+
+      fetch('/api/vendor-inventory/refresh', {
+        method: 'POST',
+      })
+        .then((resp) => resp.json())
+        .then((data) => {
+          if (data.status === 'quota_error') {
+            if (statusEl) statusEl.textContent = 'Quota error while refreshing inventory: ' + (data.error || '');
+          } else if (data.status !== 'ok') {
+            if (statusEl) statusEl.textContent = 'Error refreshing inventory: ' + (data.error || data.status);
+          } else {
+            if (statusEl) statusEl.textContent = `Inventory refreshed. Ingested ${data.ingested_asins || 0} ASINs. Reloading…`;
+            loadVendorInventorySnapshotIfNeeded(true);
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          if (statusEl) statusEl.textContent = 'Error refreshing inventory: ' + err;
+        })
+        .finally(() => {
+          if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = 'Refresh Inventory Snapshot';
+          }
+        });
+    }
+
+    function setInventorySubtab(subtab) {
+      currentInventorySubtab = subtab;
+
+      const buttons = [
+        'inv-subtab-snapshot',
+        'inv-subtab-aged',
+        'inv-subtab-unhealthy',
+      ];
+
+      buttons.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        if (
+          (subtab === 'snapshot' && id === 'inv-subtab-snapshot') ||
+          (subtab === 'aged' && id === 'inv-subtab-aged') ||
+          (subtab === 'unhealthy' && id === 'inv-subtab-unhealthy')
+        ) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+
+      renderVendorInventoryCurrentSubtab();
+    }
+
+    function renderVendorInventoryCurrentSubtab() {
+      if (currentInventorySubtab === 'aged') {
+        renderVendorInventoryTable('aged');
+      } else if (currentInventorySubtab === 'unhealthy') {
+        renderVendorInventoryTable('unhealthy');
+      } else {
+        renderVendorInventoryTable('snapshot');
+      }
+    }
+
+    function updateInventoryWeekLabelFromSnapshot(rows) {
+      const labelEl = document.getElementById('inv-week-label');
+      if (!labelEl) return;
+      if (!rows || rows.length === 0) {
+        labelEl.textContent = '';
+        return;
+      }
+
+      const first = rows[0];
+      const start = first.start_date || first.startDate;
+      const end = first.end_date || first.endDate;
+
+      if (start && end) {
+        labelEl.textContent = `Week: ${start} → ${end} (latest week)`;
+      } else {
+        labelEl.textContent = '';
+      }
+    }
+
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function sortInventoryTableBy(col) {
+      if (invSortColumn === col) {
+        invSortDirection = invSortDirection === 'asc' ? 'desc' : 'asc';
+      } else {
+        invSortColumn = col;
+        invSortDirection = 'desc';
+      }
+      renderVendorInventoryCurrentSubtab();
+    }
+
+    function setQuickFilter(f) {
+      invQuickFilter = f;
+      const buttons = ['inv-qf-all', 'inv-qf-zero', 'inv-qf-aged', 'inv-qf-unhealthy'];
+      buttons.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        if (
+          (f === 'all' && id === 'inv-qf-all') ||
+          (f === 'zero' && id === 'inv-qf-zero') ||
+          (f === 'aged' && id === 'inv-qf-aged') ||
+          (f === 'unhealthy' && id === 'inv-qf-unhealthy')
+        ) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+      renderVendorInventoryCurrentSubtab();
+    }
+
+    function renderVendorInventoryTable(mode) {
+      const headEl = document.getElementById('inv-table-head');
+      const bodyEl = document.getElementById('inv-table-body');
+      const footEl = document.getElementById('inv-table-foot');
+
+      if (!headEl || !bodyEl || !footEl) return;
+
+      let rows = vendorInventorySnapshot || [];
+
+      // Filter per subtab
+      if (mode === 'aged') {
+        rows = rows.filter((r) => {
+          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
+          return aged > 0;
+        });
+      } else if (mode === 'unhealthy') {
+        rows = rows.filter((r) => {
+          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
+          return unhealthy > 0;
+        });
+      }
+
+      // Search filter
+      const q = (document.getElementById('inv-search')?.value || '').toLowerCase();
+      if (q) {
+        rows = rows.filter((r) =>
+          (r.asin || '').toLowerCase().includes(q) ||
+          (r.title || r.product_title || '').toLowerCase().includes(q)
+        );
+      }
+
+      // Quick filters
+      if (invQuickFilter === 'zero') {
+        rows = rows.filter((r) => {
+          const sellable = r.sellable_onhand_units ?? r.sellableOnHandInventoryUnits ?? 0;
+          const unsellable = r.unsellable_onhand_units ?? r.unsellableOnHandInventoryUnits ?? 0;
+          const total = sellable + unsellable;
+          return sellable === 0 && total > 0;
+        });
+      } else if (invQuickFilter === 'aged') {
+        rows = rows.filter((r) => {
+          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
+          return aged > 0;
+        });
+      } else if (invQuickFilter === 'unhealthy') {
+        rows = rows.filter((r) => {
+          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
+          return unhealthy > 0;
+        });
+      }
+
+      // Sort rows
+      rows.sort((a, b) => {
+        let aVal, bVal;
+
+        if (invSortColumn === 'asin') {
+          aVal = (a.asin || '').toLowerCase();
+          bVal = (b.asin || '').toLowerCase();
+        } else if (invSortColumn === 'title') {
+          aVal = (a.title || a.product_title || '').toLowerCase();
+          bVal = (b.title || b.product_title || '').toLowerCase();
+        } else if (invSortColumn === 'sellable') {
+          aVal = a.sellable_onhand_units ?? a.sellableOnHandInventoryUnits ?? 0;
+          bVal = b.sellable_onhand_units ?? b.sellableOnHandInventoryUnits ?? 0;
+        } else if (invSortColumn === 'unsellable') {
+          aVal = a.unsellable_onhand_units ?? a.unsellableOnHandInventoryUnits ?? 0;
+          bVal = b.unsellable_onhand_units ?? b.unsellableOnHandInventoryUnits ?? 0;
+        } else if (invSortColumn === 'total') {
+          const aTotal = (a.sellable_onhand_units ?? a.sellableOnHandInventoryUnits ?? 0) + (a.unsellable_onhand_units ?? a.unsellableOnHandInventoryUnits ?? 0);
+          const bTotal = (b.sellable_onhand_units ?? b.sellableOnHandInventoryUnits ?? 0) + (b.unsellable_onhand_units ?? b.unsellableOnHandInventoryUnits ?? 0);
+          aVal = aTotal;
+          bVal = bTotal;
+        } else if (invSortColumn === 'openpo') {
+          aVal = a.open_po_units ?? a.openPurchaseOrderUnits ?? 0;
+          bVal = b.open_po_units ?? b.openPurchaseOrderUnits ?? 0;
+        } else if (invSortColumn === 'aged') {
+          aVal = a.aged90plus_sellable_units ?? a.aged90PlusDaysSellableInventoryUnits ?? 0;
+          bVal = b.aged90plus_sellable_units ?? b.aged90PlusDaysSellableInventoryUnits ?? 0;
+        } else if (invSortColumn === 'unhealthy') {
+          aVal = a.unhealthy_units ?? a.unhealthyInventoryUnits ?? 0;
+          bVal = b.unhealthy_units ?? b.unhealthyInventoryUnits ?? 0;
+        } else if (invSortColumn === 'netreceived') {
+          aVal = a.net_received_units ?? a.netReceivedInventoryUnits ?? 0;
+          bVal = b.net_received_units ?? b.netReceivedInventoryUnits ?? 0;
+        } else if (invSortColumn === 'sellthrough') {
+          aVal = a.sell_through_rate ?? a.sellThroughRate ?? 0;
+          bVal = b.sell_through_rate ?? b.sellThroughRate ?? 0;
+        }
+
+        if (typeof aVal === 'string') {
+          return invSortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        } else {
+          return invSortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+        }
+      });
+
+      // Clear
+      headEl.innerHTML = '';
+      bodyEl.innerHTML = '';
+      footEl.innerHTML = '';
+
+      // Build header with sortable columns
+      const arrow = (col) => {
+        if (invSortColumn === col) {
+          return invSortDirection === 'asc' ? '▲' : '▼';
+        }
+        return '▲▼';
+      };
+
+      headEl.innerHTML = `
+        <tr>
+          <th onclick="sortInventoryTableBy('asin')">ASIN ${arrow('asin')}</th>
+          <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
+          <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
+          <th onclick="sortInventoryTableBy('unsellable')">Unsellable ${arrow('unsellable')}</th>
+          <th onclick="sortInventoryTableBy('total')">Total On-hand ${arrow('total')}</th>
+          <th onclick="sortInventoryTableBy('openpo')">Open PO ${arrow('openpo')}</th>
+          <th onclick="sortInventoryTableBy('aged')">Aged 90+ Units ${arrow('aged')}</th>
+          <th onclick="sortInventoryTableBy('unhealthy')">Unhealthy Units ${arrow('unhealthy')}</th>
+          <th onclick="sortInventoryTableBy('netreceived')">Net Received Units ${arrow('netreceived')}</th>
+          <th onclick="sortInventoryTableBy('sellthrough')">Sell-through Rate ${arrow('sellthrough')}</th>
+        </tr>
+      `;
+
+      // Accumulators for totals
+      let totalSellable = 0;
+      let totalUnsellable = 0;
+      let totalOnHand = 0;
+      let totalOpenPo = 0;
+      let totalAged = 0;
+      let totalUnhealthy = 0;
+      let totalNetReceived = 0;
+
+      // Build rows HTML
+      let bodyHtml = '';
+
+      rows.forEach((r) => {
+        const asin = r.asin || '';
+        const title = r.title || r.product_title || '';
+
+        const sellable = r.sellable_onhand_units ?? r.sellableOnHandInventoryUnits ?? 0;
+        const unsellable = r.unsellable_onhand_units ?? r.unsellableOnHandInventoryUnits ?? 0;
+        const total = sellable + unsellable;
+
+        const openPo = r.open_po_units ?? r.openPurchaseOrderUnits ?? 0;
+        const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
+        const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
+        const netReceived = r.net_received_units ?? r.netReceivedInventoryUnits ?? 0;
+        const sellThrough = r.sell_through_rate ?? r.sellThroughRate ?? null;
+
+        totalSellable += sellable;
+        totalUnsellable += unsellable;
+        totalOnHand += total;
+        totalOpenPo += openPo;
+        totalAged += aged;
+        totalUnhealthy += unhealthy;
+        totalNetReceived += netReceived;
+
+        // Color coding
+        let rowClass = '';
+        if (sellable === 0 && total > 0) {
+          rowClass = 'inv-zero-sellable';
+        } else if (aged > 0) {
+          rowClass = 'inv-aged';
+        } else if (unhealthy > 0) {
+          rowClass = 'inv-unhealthy';
+        }
+
+        const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
+
+        bodyHtml += `
+          <tr class="${rowClass}">
+            <td>${asinLink}</td>
+            <td>${escapeHtml(title)}</td>
+            <td class="text-right">${sellable}</td>
+            <td class="text-right">${unsellable}</td>
+            <td class="text-right">${total}</td>
+            <td class="text-right">${openPo}</td>
+            <td class="text-right">${aged}</td>
+            <td class="text-right">${unhealthy}</td>
+            <td class="text-right">${netReceived}</td>
+            <td class="text-right">${sellThrough !== null ? sellThrough.toFixed(2) : ''}</td>
+          </tr>
+        `;
+      });
+
+      bodyEl.innerHTML = bodyHtml;
+
+      // Footer totals
+      const footerRow = document.createElement('tr');
+      footerRow.innerHTML = `
+        <td colspan="2"><strong>Totals (${rows.length} ASINs)</strong></td>
+        <td class="text-right"><strong>${totalSellable}</strong></td>
+        <td class="text-right"><strong>${totalUnsellable}</strong></td>
+        <td class="text-right"><strong>${totalOnHand}</strong></td>
+        <td class="text-right"><strong>${totalOpenPo}</strong></td>
+        <td class="text-right"><strong>${totalAged}</strong></td>
+        <td class="text-right"><strong>${totalUnhealthy}</strong></td>
+        <td class="text-right"><strong>${totalNetReceived}</strong></td>
+        <td></td>
+      `;
+      footEl.appendChild(footerRow);
+    }
+
+    function downloadVendorInventorySnapshotCsv() {
+      if (!vendorInventorySnapshot || vendorInventorySnapshot.length === 0) {
+        alert('No inventory data to download.');
+        return;
+      }
+
+      // Reuse the same filtering logic as renderVendorInventoryTable()
+      let rows = vendorInventorySnapshot || [];
+      if (currentInventorySubtab === 'aged') {
+        rows = rows.filter((r) => {
+          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
+          return aged > 0;
+        });
+      } else if (currentInventorySubtab === 'unhealthy') {
+        rows = rows.filter((r) => {
+          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
+          return unhealthy > 0;
+        });
+      }
+
+      const header = [
+        'ASIN',
+        'Title',
+        'SellableUnits',
+        'UnsellableUnits',
+        'TotalOnHandUnits',
+        'OpenPOUnits',
+        'Aged90PlusUnits',
+        'UnhealthyUnits',
+        'NetReceivedUnits',
+        'SellThroughRate',
+      ];
+
+      const lines = [];
+      lines.push(header.join(','));
+
+      rows.forEach((r) => {
+        const asin = r.asin || '';
+        const title = (r.title || r.product_title || '').replace(/"/g, '""');
+
+        const sellable =
+          r.sellable_onhand_units ??
+          r.sellableOnHandInventoryUnits ??
+          0;
+        const unsellable =
+          r.unsellable_onhand_units ??
+          r.unsellableOnHandInventoryUnits ??
+          0;
+        const total = sellable + unsellable;
+
+        const openPo = r.open_po_units ?? r.openPurchaseOrderUnits ?? 0;
+        const aged =
+          r.aged90plus_sellable_units ??
+          r.aged90PlusDaysSellableInventoryUnits ??
+          0;
+        const unhealthy =
+          r.unhealthy_units ??
+          r.unhealthyInventoryUnits ??
+          0;
+        const netReceived =
+          r.net_received_units ??
+          r.netReceivedInventoryUnits ??
+          0;
+        const sellThrough = r.sell_through_rate ?? r.sellThroughRate ?? '';
+
+        const row = [
+          asin,
+          `"${title}"`,
+          sellable,
+          unsellable,
+          total,
+          openPo,
+          aged,
+          unhealthy,
+          netReceived,
+          sellThrough,
+        ];
+
+        lines.push(row.join(','));
+      });
+
+      const csv = lines.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      const weekLabel = document.getElementById('inv-week-label')?.textContent || '';
+      const weekPart = weekLabel.replace(/[^\d\-]/g, '');
+      a.download = weekPart ? `Inventory_${weekPart}.csv` : 'vendor_inventory_snapshot.csv';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));

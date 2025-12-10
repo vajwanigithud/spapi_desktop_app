@@ -348,6 +348,125 @@ def mark_oos_asins_exported(asins: list[str], batch_id: str, marketplace_id: str
     return inserted
 
 
+def ensure_vendor_inventory_table() -> None:
+    """
+    Create vendor_inventory_asin table if it does not exist.
+    Stores weekly inventory snapshots per ASIN per marketplace.
+    One row per ASIN per week (latest week only, per design).
+    """
+    sql = """
+    CREATE TABLE IF NOT EXISTS vendor_inventory_asin (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        marketplace_id TEXT NOT NULL,
+        asin TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        
+        -- Core "what is Amazon holding" metrics
+        sellable_onhand_units INTEGER NOT NULL,
+        sellable_onhand_cost REAL NOT NULL,
+        unsellable_onhand_units INTEGER,
+        unsellable_onhand_cost REAL,
+        
+        -- Aging + unhealthy
+        aged90plus_sellable_units INTEGER,
+        aged90plus_sellable_cost REAL,
+        unhealthy_units INTEGER,
+        unhealthy_cost REAL,
+        
+        -- Flow-related metrics (helpful later for velocity logic)
+        net_received_units INTEGER,
+        net_received_cost REAL,
+        open_po_units INTEGER,
+        unfilled_customer_ordered_units INTEGER,
+        vendor_confirmation_rate REAL,
+        sell_through_rate REAL,
+        
+        updated_at TEXT NOT NULL
+    )
+    """
+    try:
+        execute_write(sql)
+        
+        # Create unique index to prevent duplicate snapshots
+        index_sql = """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_inventory_unique
+        ON vendor_inventory_asin (marketplace_id, asin, start_date, end_date)
+        """
+        execute_write(index_sql)
+        
+        logger.info("[DB] vendor_inventory_asin table ensured")
+    except Exception as exc:
+        logger.error(f"[DB] Failed to ensure vendor_inventory_asin table: {exc}", exc_info=True)
+        raise
+
+
+def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> None:
+    """
+    For the given marketplace_id, delete existing vendor_inventory_asin rows
+    and insert the provided new snapshot rows (already filtered to latest week).
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID to refresh
+        rows: List of dicts with keys matching table columns (except id)
+    """
+    try:
+        # Delete existing records for this marketplace
+        conn.execute(
+            "DELETE FROM vendor_inventory_asin WHERE marketplace_id = ?",
+            (marketplace_id,)
+        )
+        
+        # Bulk insert new rows
+        if rows:
+            columns = [
+                "marketplace_id", "asin", "start_date", "end_date",
+                "sellable_onhand_units", "sellable_onhand_cost",
+                "unsellable_onhand_units", "unsellable_onhand_cost",
+                "aged90plus_sellable_units", "aged90plus_sellable_cost",
+                "unhealthy_units", "unhealthy_cost",
+                "net_received_units", "net_received_cost",
+                "open_po_units", "unfilled_customer_ordered_units",
+                "vendor_confirmation_rate", "sell_through_rate",
+                "updated_at"
+            ]
+            placeholders = ", ".join(["?" for _ in columns])
+            insert_sql = f"INSERT INTO vendor_inventory_asin ({', '.join(columns)}) VALUES ({placeholders})"
+            
+            for row in rows:
+                values = tuple(row.get(col) for col in columns)
+                conn.execute(insert_sql, values)
+        
+        conn.commit()
+        logger.info(f"[DB] Replaced vendor_inventory_asin snapshot for {marketplace_id}: {len(rows)} rows")
+    except Exception as exc:
+        logger.error(f"[DB] Failed to replace vendor_inventory_asin snapshot: {exc}", exc_info=True)
+        raise
+
+
+def get_vendor_inventory_snapshot(conn, marketplace_id: str) -> list[dict]:
+    """
+    Returns all rows from vendor_inventory_asin for the given marketplace_id.
+    
+    Args:
+        conn: SQLite connection object
+        marketplace_id: The marketplace ID
+    
+    Returns:
+        List of dicts representing inventory snapshot rows
+    """
+    try:
+        rows = conn.execute(
+            "SELECT * FROM vendor_inventory_asin WHERE marketplace_id = ? ORDER BY asin ASC",
+            (marketplace_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception as exc:
+        logger.error(f"[DB] Failed to get vendor_inventory_asin snapshot for {marketplace_id}: {exc}", exc_info=True)
+        raise
+
+
 def get_exported_asins(marketplace_id: str = "A2VIGQ35RCS4UG") -> set[str]:
     """
     Get all ASINs that have been exported for a marketplace.
