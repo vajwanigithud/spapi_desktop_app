@@ -3825,15 +3825,13 @@
         tr.appendChild(addNumCell(r.total_units_4w));
         tr.appendChild(addNumCell(r.delta_units));
         
-        // % Chg column (using new pct_change and pct_change_from_zero)
+        // % Chg column (using pct_change and trend rules)
         const tdPct = document.createElement('td');
         let pctText;
-        if (r.pct_change_from_zero) {
+        if (r.trend === 'new' && r.week2_units === 0) {
           pctText = "Up from 0";
-        } else if (r.pct_change === null || r.pct_change === undefined) {
-          pctText = "—";
         } else {
-          const pct = Math.round(r.pct_change * 100);
+          const pct = Math.round((r.pct_change || 0) * 100);
           pctText = pct.toString() + "%";
         }
         tdPct.textContent = pctText;

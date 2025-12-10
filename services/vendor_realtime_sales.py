@@ -1179,7 +1179,7 @@ def get_sales_trends_last_4_weeks(
         
         # Extract UAE boundaries from helper and convert to UTC
         # Build a canonical buckets dict with all required fields
-        buckets = {}
+        buckets: Dict[str, Dict[str, datetime]] = {}
         for week_key in ["w4", "w3", "w2", "w1"]:
             if week_key not in helper_result:
                 logger.error(f"[SalesTrends] Helper missing week key: {week_key}")
@@ -1288,17 +1288,40 @@ def get_sales_trends_last_4_weeks(
                     "W2": 0,
                     "W1": 0,
                 }
-            
+
             stats[asin][bucket] += units
-        
+
+        # PART 2: Compute trailing week (current partial week) data before trend classification
+        today_uae = datetime.now(UAE_TZ).date()
+        current_week_monday_date = today_uae - timedelta(days=today_uae.weekday())
+        current_week_start_uae = datetime.combine(current_week_monday_date, time(0, 0, 0), tzinfo=UAE_TZ)
+        current_week_start_utc = current_week_start_uae.astimezone(timezone.utc)
+        current_week_end_utc = safe_now_utc
+
+        if current_week_start_utc > current_week_end_utc:
+            current_week_start_utc = current_week_end_utc
+
+        trailing_query = """
+            SELECT asin, SUM(ordered_units) AS trailing_units
+            FROM vendor_realtime_sales
+            WHERE hour_start_utc >= ? AND hour_start_utc < ? AND marketplace_id = ?
+            GROUP BY asin
+        """
+        trailing_rows = conn.execute(
+            trailing_query,
+            (current_week_start_utc.isoformat(), current_week_end_utc.isoformat(), marketplace_id)
+        ).fetchall()
+
+        trailing_by_asin = {row["asin"]: (row["trailing_units"] or 0) for row in trailing_rows}
+
         # Compute metrics and filter
         trend_rows = []
         
-        for asin, buckets in stats.items():
-            w4_u = buckets["W4"]
-            w3_u = buckets["W3"]
-            w2_u = buckets["W2"]
-            w1_u = buckets["W1"]
+        for asin, asin_buckets in stats.items():
+            w4_u = asin_buckets["W4"]
+            w3_u = asin_buckets["W3"]
+            w2_u = asin_buckets["W2"]
+            w1_u = asin_buckets["W1"]
             
             total_4w = w4_u + w3_u + w2_u + w1_u
             
@@ -1306,65 +1329,33 @@ def get_sales_trends_last_4_weeks(
             if total_4w < min_total_units:
                 continue
             
-            # Compute delta and % change (FIXED: no infinity)
+            # Compute delta and % change using strict rules to avoid NaN/inf
             delta_units = w1_u - w2_u
-            
-            # Calculate pct_change and pct_change_from_zero
-            pct_change_from_zero = False
-            pct_change: Optional[float] = None
-            
+
+            pct_change: float = 0.0
+
             if w2_u == 0:
+                pct_change = 0.0
                 if w1_u == 0:
-                    # Nothing last week or the week before -> no change
-                    pct_change = 0.0
-                    pct_change_from_zero = False
+                    trend = "flat"
                 else:
-                    # Went from 0 to some positive number
-                    pct_change = None
-                    pct_change_from_zero = True
+                    trend = "new"
             else:
-                # Normal case: w2_u > 0
                 pct_change = (w1_u - w2_u) / float(w2_u)
-                pct_change_from_zero = False
-                # Clamp to reasonable range (-10.0 to +10.0 = -1000% to +1000%)
                 if pct_change > 10.0:
                     pct_change = 10.0
                 elif pct_change < -10.0:
                     pct_change = -10.0
-            
-            # Determine trend using smart rules
-            historical_sum = w4_u + w3_u + w2_u
-            last_week = w1_u
-            this_week_val = trailing_by_asin.get(asin, 0)  # Will be populated shortly
-            
-            total_all = last_week + w2_u + w3_u + w4_u + this_week_val
-            
-            if total_all == 0:
-                # No sales at all in the last 4w + this week
-                trend = "Dead"
-            elif historical_sum == 0 and last_week > 0:
-                # No sales in W4–W2, only in W1 -> new in the last 4 weeks
-                trend = "New"
-            elif last_week == 0 and historical_sum > 0 and this_week_val == 0:
-                # Sold before, but nothing last week and nothing this week
-                trend = "Dead"
-            elif last_week == 0 and historical_sum > 0 and this_week_val > 0:
-                # Had historical sales, went quiet last week, now selling again
-                trend = "Reviving"
-            else:
-                # Use pct_change / pct_change_from_zero for nuances
-                if pct_change_from_zero:
-                    # Went from 0 to positive last week
-                    trend = "Rising"
+
+                if pct_change >= 0.25:
+                    trend = "rising"
+                elif pct_change <= -0.25:
+                    trend = "falling"
                 else:
-                    # pct_change is a finite float here
-                    pct = pct_change or 0.0
-                    if pct >= 0.25:
-                        trend = "Rising"
-                    elif pct <= -0.25:
-                        trend = "Falling"
-                    else:
-                        trend = "Flat"
+                    trend = "flat"
+
+            if trend == "flat" and w1_u == 0 and w2_u == 0 and (w3_u + w4_u) > 0:
+                trend = "dead"
             
             trend_rows.append({
                 "asin": asin,
@@ -1377,7 +1368,6 @@ def get_sales_trends_last_4_weeks(
                 "total_units_4w": total_4w,
                 "delta_units": delta_units,
                 "pct_change": pct_change,
-                "pct_change_from_zero": pct_change_from_zero,
                 "trend": trend,
             })
         
@@ -1404,28 +1394,6 @@ def get_sales_trends_last_4_weeks(
         
         # Sort by total_units_4w descending
         trend_rows.sort(key=lambda r: r["total_units_4w"], reverse=True)
-        
-        # PART 2: Compute trailing week (current partial week) data
-        today_uae = datetime.now(UAE_TZ).date()
-        current_week_monday_date = today_uae - timedelta(days=today_uae.weekday())
-        current_week_start_uae = datetime.combine(current_week_monday_date, time(0, 0, 0), tzinfo=UAE_TZ)
-        current_week_start_utc = current_week_start_uae.astimezone(timezone.utc)
-        current_week_end_utc = safe_now_utc
-        
-        # Query trailing week data
-        trailing_query = """
-            SELECT asin, SUM(ordered_units) AS trailing_units
-            FROM vendor_realtime_sales
-            WHERE hour_start_utc >= ? AND hour_start_utc < ? AND marketplace_id = ?
-            GROUP BY asin
-        """
-        trailing_rows = conn.execute(
-            trailing_query,
-            (current_week_start_utc.isoformat(), current_week_end_utc.isoformat(), marketplace_id)
-        ).fetchall()
-        
-        # Build trailing_by_asin dict
-        trailing_by_asin = {row["asin"]: (row["trailing_units"] or 0) for row in trailing_rows}
         
         # Add trailing data to each trend row
         for row in trend_rows:
