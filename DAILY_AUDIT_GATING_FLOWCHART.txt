@@ -1,0 +1,271 @@
+================================================================================
+DAILY AUDIT GATING - FLOWCHART
+================================================================================
+
+STARTUP FLOW
+═══════════════════════════════════════════════════════════════════════════
+
+    App Starts
+        │
+        ▼
+    ┌─────────────────────────────────┐
+    │ Startup Initialization Block    │
+    │ (main.py lines 338-347)         │
+    └─────────────────────────────────┘
+        │
+        ├──> init_vendor_realtime_sales_table()
+        ├──> init_vendor_rt_sales_state_table()
+        ├──> ensure_oos_export_history_table()
+        ├──> ensure_vendor_inventory_table()
+        │
+        ▼
+    ┌─────────────────────────────────┐
+    │ ensure_app_kv_table()           │
+    │ (db.py lines 471-488)           │
+    │                                 │
+    │ CREATE TABLE IF NOT EXISTS      │
+    │   app_kv_store (                │
+    │     key TEXT PRIMARY KEY,       │
+    │     value TEXT NOT NULL         │
+    │   )                             │
+    └─────────────────────────────────┘
+        │
+        ▼
+    Table ready for use
+    (SQLite catalog.db)
+
+
+AUTO-SYNC LOOP FLOW
+═══════════════════════════════════════════════════════════════════════════
+
+    Every 15 minutes...
+    vendor_rt_sales_auto_sync_loop()
+        │
+        ▼
+    ┌─────────────────────────────────────────────────┐
+    │ Should Run Daily Audit? (main.py lines 553-554) │
+    └─────────────────────────────────────────────────┘
+        │
+        ▼
+    should_run, today_str = 
+    should_run_rt_sales_daily_audit(conn)
+    (vendor_realtime_sales.py lines 113-125)
+        │
+        ├─> Get current date in UAE timezone
+        │   uae_today = datetime.now(UAE_TZ).date()
+        │   today_str = "2025-12-10"
+        │
+        ├─> Query app_kv_store
+        │   SELECT value FROM app_kv_store 
+        │   WHERE key = "rt_sales_last_audit_date_uae"
+        │
+        └─> Compare dates
+            ┌──────────────────────────┐
+            │  Key not found in DB?    │
+            │  (First time)            │
+            └──────────────────────────┘
+                    │
+                    ├─ YES: Return (True, "2025-12-10")
+                    │
+                    └─ NO: Compare with stored value
+                           ┌──────────────────────┐
+                           │ Stored date matches? │
+                           └──────────────────────┘
+                                   │
+                                   ├─ YES: Return (False, "2025-12-10")
+                                   │       (Already ran today)
+                                   │
+                                   └─ NO:  Return (True, "2025-12-10")
+                                           (New day)
+
+
+CONDITIONAL EXECUTION
+═══════════════════════════════════════════════════════════════════════════
+
+    if should_run:
+    ┌───────────────────────────────────────────────────────┐
+    │ CASE 1: should_run = True (first run of day)          │
+    ├───────────────────────────────────────────────────────┤
+    │                                                       │
+    │ Log: "[RTSalesAutoSync] Running daily audit          │
+    │      [2025-12-10T09:00:00, 2025-12-10T09:00:00)     │
+    │      (uae_date=2025-12-10)"                         │
+    │                                                       │
+    │ Try:                                                  │
+    │   audit_rows, audit_asins, audit_hours =            │
+    │   run_realtime_sales_audit_window(                  │
+    │       start_utc=..., end_utc=...                    │
+    │   )                                                  │
+    │   ✓ Audit executes                                   │
+    │   ✓ Rows ingested into vendor_realtime_sales       │
+    │                                                       │
+    │   Mark audit completion:                             │
+    │   with get_db_connection() as conn:                 │
+    │     update_daily_audit_state(...)                   │
+    │     mark_rt_sales_daily_audit_ran(                  │
+    │       conn, "2025-12-10"                            │
+    │     )                                                │
+    │   ✓ Stored in app_kv_store:                          │
+    │     key = "rt_sales_last_audit_date_uae"            │
+    │     value = "2025-12-10"                             │
+    │                                                       │
+    │   Log: "[RTSalesAutoSync] Daily audit done:         │
+    │        150 rows, 45 ASINs, 24 hours"               │
+    │                                                       │
+    │ Except SpApiQuotaError:                              │
+    │   ✗ Audit NOT marked as complete                    │
+    │   ✗ will_retry in next cycle (after cooldown)      │
+    │   Log: "[RTSalesAutoSync] QuotaExceeded during      │
+    │        daily audit; aborting..."                    │
+    │                                                       │
+    │ Except other Exception:                              │
+    │   ✗ Audit NOT marked as complete                    │
+    │   ✗ will_retry in next cycle                        │
+    │   Log: "[RTSalesAutoSync] Daily audit error: ..."   │
+    │                                                       │
+    └───────────────────────────────────────────────────────┘
+                    │
+                    ▼
+            (Next cycle in 15 minutes)
+
+
+    else:
+    ┌───────────────────────────────────────────────────────┐
+    │ CASE 2: should_run = False (already ran today)        │
+    ├───────────────────────────────────────────────────────┤
+    │                                                       │
+    │ Log: "[RTSalesAutoSync] Skipping daily audit for    │
+    │      uae_date=2025-12-10 (already ran today)"      │
+    │                                                       │
+    │ ✓ Audit is skipped                                   │
+    │ ✓ No API calls                                       │
+    │ ✓ No database writes                                 │
+    │                                                       │
+    │ Continue with other tasks in auto-sync loop          │
+    │                                                       │
+    └───────────────────────────────────────────────────────┘
+                    │
+                    ▼
+            (Next cycle in 15 minutes)
+
+
+TIMELINE EXAMPLES
+═══════════════════════════════════════════════════════════════════════════
+
+SCENARIO 1: First Run of Day
+─────────────────────────────
+    09:00 (first auto-sync)
+        ├─> should_run = True (no entry in DB)
+        ├─> [LOG] Running daily audit
+        ├─> [ACTION] Execute audit
+        ├─> [DB] Store "2025-12-10"
+        └─> [LOG] Daily audit done: 150 rows
+
+    09:15 (second auto-sync)
+        ├─> should_run = False (DB has "2025-12-10", today is "2025-12-10")
+        ├─> [LOG] Skipping daily audit for uae_date=2025-12-10
+        └─> Continue
+
+    09:30 (third auto-sync)
+        ├─> should_run = False
+        ├─> [LOG] Skipping daily audit for uae_date=2025-12-10
+        └─> Continue
+
+    ... (repeats every 15 min until end of day)
+
+
+SCENARIO 2: App Restart Same Day
+─────────────────────────────────
+    09:00 (first run)
+        ├─> [ACTION] Execute audit
+        ├─> [DB] Store "2025-12-10"
+        └─> [LOG] Daily audit done
+
+    10:30 (USER RESTARTS APP)
+        ├─> [STARTUP] ensure_app_kv_table() (table already exists)
+        ├─> [ACTION] Background sync starts
+        └─> (waits for first auto-sync)
+
+    10:45 (first auto-sync after restart)
+        ├─> should_run = False (DB still has "2025-12-10" from before restart)
+        ├─> [LOG] Skipping daily audit for uae_date=2025-12-10
+        └─> Continue
+
+
+SCENARIO 3: Midnight (Next Calendar Day)
+──────────────────────────────────────────
+    23:45 (Dec 10)
+        ├─> UAE local time: 2025-12-10 23:45
+        ├─> should_run = False ("2025-12-10" matches)
+        ├─> [LOG] Skipping daily audit for uae_date=2025-12-10
+        └─> Continue
+
+    00:00 (Dec 11, exactly midnight UAE)
+        ├─> UAE local time: 2025-12-11 00:00 ✓ NEW DAY
+        ├─> [AUTOMATIC] Next auto-sync cycle
+        └─> (waits for next 15-min interval)
+
+    00:15 (first auto-sync on Dec 11)
+        ├─> should_run = True (DB has "2025-12-10", today is "2025-12-11")
+        ├─> [LOG] Running daily audit [... (uae_date=2025-12-11)
+        ├─> [ACTION] Execute audit
+        ├─> [DB] Update to "2025-12-11"
+        └─> [LOG] Daily audit done: 145 rows
+
+
+SCENARIO 4: Quota Error (Temporary Failure)
+────────────────────────────────────────────
+    09:00 (first auto-sync)
+        ├─> should_run = True
+        ├─> [LOG] Running daily audit
+        ├─> [ACTION] Execute audit
+        ├─> SpApiQuotaError raised! ✗
+        ├─> [DB] "2025-12-10" NOT stored
+        ├─> [LOG] QuotaExceeded during daily audit
+        └─> Start 30-min cooldown
+
+    09:15 (skipped - in cooldown)
+        └─> Skip all syncs due to quota cooldown
+
+    09:30 (skipped - in cooldown)
+        └─> Skip all syncs due to quota cooldown
+
+    09:45 (cooldown expires)
+        ├─> should_run = True (still no "2025-12-10" in DB)
+        ├─> [LOG] Running daily audit
+        ├─> [ACTION] Retry audit
+        ├─> ✓ Success this time
+        ├─> [DB] Store "2025-12-10"
+        └─> [LOG] Daily audit done: 150 rows
+
+
+DATABASE STATE
+═══════════════════════════════════════════════════════════════════════════
+
+Table: app_kv_store
+
+Before first audit:
+  (empty table)
+
+After first audit (Dec 10):
+  key                               | value
+  ──────────────────────────────────┼───────────
+  rt_sales_last_audit_date_uae      | 2025-12-10
+
+After second audit (Dec 11):
+  key                               | value
+  ──────────────────────────────────┼───────────
+  rt_sales_last_audit_date_uae      | 2025-12-11
+
+After third audit (Dec 12):
+  key                               | value
+  ──────────────────────────────────┼───────────
+  rt_sales_last_audit_date_uae      | 2025-12-12
+
+Note: Only one row exists (PRIMARY KEY prevents duplicates)
+      Value is updated in place using ON CONFLICT DO UPDATE
+
+
+================================================================================
+END OF FLOWCHART
+================================================================================

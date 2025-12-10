@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from threading import Lock
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 CATALOG_DB_PATH = Path(__file__).resolve().parent.parent / "catalog.db"
@@ -464,6 +465,71 @@ def get_vendor_inventory_snapshot(conn, marketplace_id: str) -> list[dict]:
         return [dict(row) for row in rows]
     except Exception as exc:
         logger.error(f"[DB] Failed to get vendor_inventory_asin snapshot for {marketplace_id}: {exc}", exc_info=True)
+        raise
+
+
+def ensure_app_kv_table() -> None:
+    """
+    Ensure the app_kv_store table exists.
+    Simple key/value store for app-wide settings like last daily audit date.
+    """
+    sql = """
+    CREATE TABLE IF NOT EXISTS app_kv_store (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """
+    try:
+        execute_write(sql)
+        logger.info("[DB] app_kv_store table ensured")
+    except Exception as exc:
+        logger.error(f"[DB] Failed to ensure app_kv_store table: {exc}", exc_info=True)
+        raise
+
+
+def get_app_kv(conn, key: str) -> Optional[str]:
+    """
+    Get a value from app_kv_store by key.
+    
+    Args:
+        conn: SQLite connection object
+        key: The key to retrieve
+    
+    Returns:
+        The value as a string, or None if key not found
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_kv_store WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.error(f"[DB] Failed to get_app_kv for key '{key}': {exc}")
+        raise
+
+
+def set_app_kv(conn, key: str, value: str) -> None:
+    """
+    Set a value in app_kv_store by key (insert or update).
+    
+    Args:
+        conn: SQLite connection object
+        key: The key to set
+        value: The value to store
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO app_kv_store (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.error(f"[DB] Failed to set_app_kv for key '{key}': {exc}")
         raise
 
 

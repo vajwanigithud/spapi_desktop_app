@@ -177,6 +177,19 @@
       #inv-table thead th:hover {
         background-color: #e8f1f8;
       }
+      /* Image column */
+      .inv-image-col {
+        width: 80px;
+        min-width: 80px;
+        max-width: 80px;
+        text-align: center;
+      }
+      /* Title column - narrower with text wrap */
+      .inv-title-col {
+        max-width: 320px;
+        white-space: normal;
+        word-break: break-word;
+      }
       /* Sticky footer */
       #inv-table tfoot {
         position: sticky;
@@ -3291,15 +3304,15 @@
       headEl.innerHTML = `
         <tr>
           <th onclick="sortInventoryTableBy('asin')">ASIN ${arrow('asin')}</th>
+          <th class="inv-image-col">Image</th>
           <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
           <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
           <th onclick="sortInventoryTableBy('unsellable')">Unsellable ${arrow('unsellable')}</th>
-          <th onclick="sortInventoryTableBy('total')">Total On-hand ${arrow('total')}</th>
           <th onclick="sortInventoryTableBy('openpo')">Open PO ${arrow('openpo')}</th>
-          <th onclick="sortInventoryTableBy('aged')">Aged 90+ Units ${arrow('aged')}</th>
-          <th onclick="sortInventoryTableBy('unhealthy')">Unhealthy Units ${arrow('unhealthy')}</th>
+          <th onclick="sortInventoryTableBy('aged')" title="Units that are at least 90 days old and still sellable in Amazon FCs. Highlighted in blue when > 0.">Aged 90+ Units ${arrow('aged')}</th>
+          <th onclick="sortInventoryTableBy('unhealthy')" title="Excess inventory versus forecasted demand on the last day of the week. Highlighted in red when > 0.">Unhealthy Units ${arrow('unhealthy')}</th>
           <th onclick="sortInventoryTableBy('netreceived')">Net Received Units ${arrow('netreceived')}</th>
-          <th onclick="sortInventoryTableBy('sellthrough')">Sell-through Rate ${arrow('sellthrough')}</th>
+          <th onclick="sortInventoryTableBy('sellthrough')" title="Net units shipped during the week (after returns) divided by starting on-hand units plus units received during the week. Example: 0.31 = 31% sell-through.">Sell-through Rate ${arrow('sellthrough')}</th>
         </tr>
       `;
 
@@ -3349,13 +3362,18 @@
 
         const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
 
+        const imgUrl = r.image_url || r.image || '';
+        const imgHtml = imgUrl
+          ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" style="max-width:50px; max-height:50px; object-fit:contain; border-radius:6px;" />`
+          : '';
+
         bodyHtml += `
           <tr class="${rowClass}">
             <td>${asinLink}</td>
-            <td>${escapeHtml(title)}</td>
+            <td class="inv-image-col">${imgHtml}</td>
+            <td class="inv-title-col">${escapeHtml(title)}</td>
             <td class="text-right">${sellable}</td>
             <td class="text-right">${unsellable}</td>
-            <td class="text-right">${total}</td>
             <td class="text-right">${openPo}</td>
             <td class="text-right">${aged}</td>
             <td class="text-right">${unhealthy}</td>
@@ -3370,10 +3388,9 @@
       // Footer totals
       const footerRow = document.createElement('tr');
       footerRow.innerHTML = `
-        <td colspan="2"><strong>Totals (${rows.length} ASINs)</strong></td>
+        <td colspan="3"><strong>Totals (${rows.length} ASINs)</strong></td>
         <td class="text-right"><strong>${totalSellable}</strong></td>
         <td class="text-right"><strong>${totalUnsellable}</strong></td>
-        <td class="text-right"><strong>${totalOnHand}</strong></td>
         <td class="text-right"><strong>${totalOpenPo}</strong></td>
         <td class="text-right"><strong>${totalAged}</strong></td>
         <td class="text-right"><strong>${totalUnhealthy}</strong></td>

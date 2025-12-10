@@ -338,10 +338,11 @@ except Exception as e:
 # Initialize vendor_realtime_sales table & state
 try:
     vendor_realtime_sales_service.init_vendor_realtime_sales_table()
-    from services.db import init_vendor_rt_sales_state_table, ensure_oos_export_history_table, ensure_vendor_inventory_table
+    from services.db import init_vendor_rt_sales_state_table, ensure_oos_export_history_table, ensure_vendor_inventory_table, ensure_app_kv_table
     init_vendor_rt_sales_state_table()
     ensure_oos_export_history_table()
     ensure_vendor_inventory_table()
+    ensure_app_kv_table()
 except Exception as e:
     logger.warning(f"[Startup] Failed to init vendor_realtime_sales tables (non-critical): {e}")
 
@@ -545,35 +546,20 @@ def vendor_rt_sales_auto_sync_loop():
                         get_vendor_rt_sales_state,
                         update_daily_audit_state,
                         run_realtime_sales_audit_window,
+                        should_run_rt_sales_daily_audit,
+                        mark_rt_sales_daily_audit_ran,
                     )
                     
                     with get_db_connection() as conn:
                         state = get_vendor_rt_sales_state(conn, marketplace_id)
+                        should_run, today_str = should_run_rt_sales_daily_audit(conn)
                     
-                    last_daily_audit = state.get("last_daily_audit_utc")
-                    
-                    # Define audit window: last 24 full hours
-                    audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
-                    audit_start = audit_end - timedelta(hours=24)
-                    
-                    # Check if we need to run daily audit
-                    should_run_daily = False
-                    if last_daily_audit is None:
-                        should_run_daily = True
-                    else:
-                        try:
-                            from datetime import datetime as dt_type
-                            last_audit_dt = dt_type.fromisoformat(last_daily_audit.replace("Z", "+00:00"))
-                            # Audit window is [audit_start, audit_end)
-                            # We want to run if the window has advanced since last audit
-                            if audit_start > last_audit_dt:
-                                should_run_daily = True
-                        except Exception as e:
-                            logger.warning(f"[RTSalesAutoSync] Failed to parse last_daily_audit_utc: {e}")
-                            should_run_daily = True
-                    
-                    if should_run_daily:
-                        logger.info(f"[RTSalesAutoSync] Running daily audit [{audit_start.isoformat()}, {audit_end.isoformat()})")
+                    if should_run:
+                        # Define audit window: last 24 full hours
+                        audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
+                        audit_start = audit_end - timedelta(hours=24)
+                        
+                        logger.info(f"[RTSalesAutoSync] Running daily audit [{audit_start.isoformat()}, {audit_end.isoformat()}) (uae_date={today_str})")
                         try:
                             audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
                                 spapi_client=None,
@@ -582,7 +568,9 @@ def vendor_rt_sales_auto_sync_loop():
                                 marketplace_id=marketplace_id,
                                 label="daily"
                             )
-                            update_daily_audit_state(marketplace_id, audit_end)
+                            with get_db_connection() as conn:
+                                update_daily_audit_state(marketplace_id, audit_end)
+                                mark_rt_sales_daily_audit_ran(conn, today_str)
                             logger.info(f"[RTSalesAutoSync] Daily audit done: {audit_rows} rows, {audit_asins} ASINs, {audit_hours} hours")
                         except SpApiQuotaError as e:
                             logger.error(f"[RTSalesAutoSync] QuotaExceeded during daily audit; aborting remaining audits this cycle: {e}")
@@ -590,6 +578,8 @@ def vendor_rt_sales_auto_sync_loop():
                             start_quota_cooldown(datetime.now(timezone.utc))
                             end_backfill()
                             break  # Stop further audits this cycle
+                    else:
+                        logger.info(f"[RTSalesAutoSync] Skipping daily audit for uae_date={today_str} (already ran today)")
                 
                 except Exception as e:
                     logger.error(f"[RTSalesAutoSync] Daily audit error: {e}", exc_info=True)

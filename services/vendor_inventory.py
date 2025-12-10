@@ -18,12 +18,31 @@ from services import spapi_reports
 logger = logging.getLogger(__name__)
 
 
+def _safe_amount_from_cost(cost_obj) -> float:
+    """
+    Safely extract the 'amount' field from a cost-like dict.
+    Handles None, missing key, wrong type, etc.
+    Returns 0.0 if anything is off.
+    
+    Example objects:
+      {"amount": 123.45, "currencyCode": "AED"}
+      None
+    """
+    if not cost_obj:
+        return 0.0
+    try:
+        # Some APIs return {"amount": "..."} as string, some as number.
+        return float(cost_obj.get("amount") or 0.0)
+    except Exception:
+        return 0.0
+
+
 def fetch_latest_vendor_inventory_report_json(marketplace_id: str) -> dict:
     """
     Fetch the latest available weekly vendor inventory report as raw JSON.
     
-    We request the latest completed week with a lag buffer so we don't hit
-    "report data not yet available" errors.
+    Requests the latest completed week (Sunday through Saturday) with a lag buffer
+    so we don't hit "report data not yet available" errors.
     
     Uses the existing spapi_reports helpers to maintain consistency
     with other vendor report patterns.
@@ -38,27 +57,34 @@ def fetch_latest_vendor_inventory_report_json(marketplace_id: str) -> dict:
         spapi_reports.SpApiQuotaError: If SP-API returns quota exceeded
         Exception: For other failures
     """
+    LAG_DAYS = 3  # Days to lag behind today (Amazon needs time to process data)
+    
     try:
         logger.info(f"[VendorInventory] Requesting GET_VENDOR_INVENTORY_REPORT for {marketplace_id}")
         
         today_utc = datetime.now(timezone.utc).date()
         
-        # Amazon needs some time to prepare the weekly inventory dataset.
-        # Use a 3-day lag buffer so we only ask for weeks that are fully processed.
-        LAG_DAYS = 3
-        
-        # Latest end date we will ask for (today - lag)
+        # Step 1: Latest candidate end date that is safely in the past
         candidate_end = today_utc - timedelta(days=LAG_DAYS)
         
-        # Our window is 7 days: [start, end]
-        start_date = candidate_end - timedelta(days=6)
-        end_date = candidate_end
+        # Step 2: Move back to the most recent SATURDAY <= candidate_end
+        # In Python: Monday=0, Tuesday=1, ..., Sunday=6
+        # We want Saturday which is weekday=5
+        offset_to_saturday = (candidate_end.weekday() - 5) % 7
+        end_date = candidate_end - timedelta(days=offset_to_saturday)
+        
+        # Step 3: Start date is the SUNDAY of that same week (6 days before Saturday)
+        start_date = end_date - timedelta(days=6)
         
         start_str = start_date.isoformat()
         end_str = end_date.isoformat()
         
+        # Verify we got Sunday-Saturday alignment
+        assert start_date.weekday() == 6, f"start_date should be Sunday (weekday=6), got {start_date.weekday()}"
+        assert end_date.weekday() == 5, f"end_date should be Saturday (weekday=5), got {end_date.weekday()}"
+        
         logger.info(
-            f"[VendorInventory] Using date range: {start_str} to {end_str} (lag={LAG_DAYS} days)"
+            f"[VendorInventory] Using weekly date range: {start_str} (Sun) → {end_str} (Sat), lag={LAG_DAYS}d"
         )
         
         # Use existing report helper with WEEK period and date range
@@ -142,36 +168,37 @@ def extract_latest_week_inventory_by_asin(report_json: dict, marketplace_id: str
             if item.get("endDate") != latest_end_date:
                 continue
             
-            # Helper to safely get nested amount
-            def get_amount(obj: Optional[Dict]) -> Optional[float]:
-                if obj is None:
-                    return None
-                amt = obj.get("amount")
-                return float(amt) if amt is not None else None
+            asin = item.get("asin", "")
+            
+            # Log debug info if cost objects are null (helps troubleshoot data issues)
+            if item.get("sellableOnHandInventoryCost") is None and asin:
+                logger.debug(
+                    f"[VendorInventory] ASIN {asin} has null sellableOnHandInventoryCost; treating as 0.0"
+                )
             
             row = {
                 "marketplace_id": marketplace_id,
-                "asin": item.get("asin", ""),
+                "asin": asin,
                 "start_date": item.get("startDate", ""),
                 "end_date": item.get("endDate", ""),
                 
                 # Core metrics
-                "sellable_onhand_units": int(item.get("sellableOnHandInventoryUnits", 0) or 0),
-                "sellable_onhand_cost": float(item.get("sellableOnHandInventoryCost", {}).get("amount", 0.0) or 0.0),
-                "unsellable_onhand_units": item.get("unsellableOnHandInventoryUnits"),
-                "unsellable_onhand_cost": get_amount(item.get("unsellableOnHandInventoryCost")),
+                "sellable_onhand_units": int(item.get("sellableOnHandInventoryUnits") or 0),
+                "sellable_onhand_cost": _safe_amount_from_cost(item.get("sellableOnHandInventoryCost")),
+                "unsellable_onhand_units": int(item.get("unsellableOnHandInventoryUnits") or 0),
+                "unsellable_onhand_cost": _safe_amount_from_cost(item.get("unsellableOnHandInventoryCost")),
                 
                 # Aging + unhealthy
-                "aged90plus_sellable_units": item.get("aged90PlusDaysSellableInventoryUnits"),
-                "aged90plus_sellable_cost": get_amount(item.get("aged90PlusDaysSellableInventoryCost")),
-                "unhealthy_units": item.get("unhealthyInventoryUnits"),
-                "unhealthy_cost": get_amount(item.get("unhealthyInventoryCost")),
+                "aged90plus_sellable_units": int(item.get("aged90PlusDaysSellableInventoryUnits") or 0),
+                "aged90plus_sellable_cost": _safe_amount_from_cost(item.get("aged90PlusDaysSellableInventoryCost")),
+                "unhealthy_units": int(item.get("unhealthyInventoryUnits") or 0),
+                "unhealthy_cost": _safe_amount_from_cost(item.get("unhealthyInventoryCost")),
                 
                 # Flow metrics
-                "net_received_units": item.get("netReceivedInventoryUnits"),
-                "net_received_cost": get_amount(item.get("netReceivedInventoryCost")),
-                "open_po_units": item.get("openPurchaseOrderUnits"),
-                "unfilled_customer_ordered_units": item.get("unfilledCustomerOrderedUnits"),
+                "net_received_units": int(item.get("netReceivedInventoryUnits") or 0),
+                "net_received_cost": _safe_amount_from_cost(item.get("netReceivedInventoryCost")),
+                "open_po_units": int(item.get("openPurchaseOrderUnits") or 0),
+                "unfilled_customer_ordered_units": int(item.get("unfilledCustomerOrderedUnits") or 0),
                 "vendor_confirmation_rate": item.get("vendorConfirmationRate"),
                 "sell_through_rate": item.get("sellThroughRate"),
                 
@@ -191,7 +218,11 @@ def refresh_vendor_inventory_snapshot(conn, marketplace_id: str) -> int:
     Downloads GET_VENDOR_INVENTORY_REPORT, extracts latest week,
     stores snapshot into vendor_inventory_asin table for given marketplace.
     
-    If report data is not yet available, leaves existing snapshot untouched.
+    Only replaces the snapshot if we have actual data. If report has errorDetails
+    or no inventoryByAsin, preserves the existing snapshot and returns 0.
+    
+    Uses caching to avoid re-downloading the same week if already cached.
+    
     Single call; no retries or loops (higher-level auto-sync decides when to call).
     
     Args:
@@ -199,35 +230,75 @@ def refresh_vendor_inventory_snapshot(conn, marketplace_id: str) -> int:
         marketplace_id: The marketplace ID
     
     Returns:
-        Number of rows stored (0 if data not available yet, but existing snapshot kept)
+        Number of rows stored (0 if data not available, cached, or empty; existing snapshot preserved)
     
     Raises:
         spapi_reports.SpApiQuotaError: Propagated from fetch step
         Exception: For other failures
     """
+    LAST_INV_WEEK_KEY = "vendor_inventory_last_week_end"
+    
     try:
         logger.info(f"[VendorInventory] Starting refresh for {marketplace_id}")
+        
+        # Compute the week we're about to request
+        today_utc = datetime.now(timezone.utc).date()
+        LAG_DAYS = 3
+        candidate_end = today_utc - timedelta(days=LAG_DAYS)
+        offset_to_saturday = (candidate_end.weekday() - 5) % 7
+        end_date = candidate_end - timedelta(days=offset_to_saturday)
+        week_end_str = end_date.isoformat()
+        
+        # Check if we already have this week cached
+        try:
+            last_week = db.get_app_kv(conn, LAST_INV_WEEK_KEY)
+            if last_week == week_end_str:
+                logger.info(
+                    f"[VendorInventory] Skipping refresh for {marketplace_id}; "
+                    f"snapshot for week_end={week_end_str} already stored (cached)"
+                )
+                # Return count of existing rows
+                existing_rows = db.get_vendor_inventory_snapshot(conn, marketplace_id)
+                return len(existing_rows)
+        except Exception as e:
+            logger.debug(f"[VendorInventory] Could not check cache: {e}; proceeding with fetch")
         
         # Fetch report JSON
         report_json = fetch_latest_vendor_inventory_report_json(marketplace_id)
         
-        # If Amazon says the data for this range isn't ready, keep existing snapshot.
+        # Check for API-level errors (errorDetails in response)
         error_details = report_json.get("errorDetails")
         if error_details:
             msg = str(error_details)
-            if "not yet available" in msg:
-                logger.warning(
-                    f"[VendorInventory] Report data not yet available for requested range; "
-                    f"keeping existing snapshot. errorDetails={msg}"
-                )
-                # Do NOT call replace_vendor_inventory_snapshot()
-                return 0
+            logger.warning(
+                f"[VendorInventory] Report returned error; preserving existing snapshot. "
+                f"errorDetails={msg}"
+            )
+            # Do NOT call replace_vendor_inventory_snapshot(); keep existing data
+            # Do NOT update cache key when there's an error
+            return 0
         
-        # Extract latest week rows
+        # Extract latest week rows (returns [] if no inventoryByAsin)
         rows = extract_latest_week_inventory_by_asin(report_json, marketplace_id)
+        
+        # Only replace snapshot if we actually have rows
+        if not rows:
+            logger.warning(
+                f"[VendorInventory] No usable inventory data for {marketplace_id}; "
+                f"keeping previous snapshot"
+            )
+            # Do NOT call replace_vendor_inventory_snapshot(); keep existing data
+            # Do NOT update cache key when there's no data
+            return 0
         
         # Store in DB (replaces all existing rows for this marketplace)
         db.replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
+        
+        # Update cache key to mark that we've successfully fetched this week
+        try:
+            db.set_app_kv(conn, LAST_INV_WEEK_KEY, week_end_str)
+        except Exception as e:
+            logger.warning(f"[VendorInventory] Could not update cache key: {e}")
         
         logger.info(f"[VendorInventory] Refresh complete for {marketplace_id}: {len(rows)} rows stored")
         return len(rows)
@@ -243,18 +314,61 @@ def get_vendor_inventory_snapshot_for_ui(conn, marketplace_id: str) -> List[Dict
     """
     Thin wrapper that returns rows from db.get_vendor_inventory_snapshot()
     sorted by sellable_onhand_units DESC then ASIN ASC.
+    Enriches each row with title and image_url from the catalog.
     
-    This will be used later by an API endpoint in Part 3.
+    This will be used by the API endpoint to return complete data to the UI.
     
     Args:
         conn: SQLite connection object
         marketplace_id: The marketplace ID
     
     Returns:
-        List of inventory snapshot dicts, sorted for UI display
+        List of inventory snapshot dicts with title and image_url, sorted for UI display
     """
     try:
         rows = db.get_vendor_inventory_snapshot(conn, marketplace_id)
+        
+        if not rows:
+            return []
+        
+        # Extract all ASINs and build enrichment map
+        asins = [r.get("asin") for r in rows if r.get("asin")]
+        
+        if asins:
+            try:
+                # Query catalog for title and image_url
+                placeholders = ", ".join(["?" for _ in asins])
+                catalog_rows = conn.execute(
+                    f"SELECT asin, title, image FROM spapi_catalog WHERE asin IN ({placeholders})",
+                    asins
+                ).fetchall()
+                
+                # Build lookup map
+                # Note: catalog_rows are sqlite3.Row objects, so we convert to dict
+                catalog_map = {}
+                for catalog_row in catalog_rows:
+                    catalog_dict = dict(catalog_row)
+                    asin = catalog_dict.get("asin")
+                    if asin:
+                        catalog_map[asin] = {
+                            "title": catalog_dict.get("title") or "",
+                            "image_url": catalog_dict.get("image") or "",
+                        }
+            except Exception as e:
+                logger.warning(f"[VendorInventory] Failed to enrich from catalog: {e}; continuing without enrichment")
+                catalog_map = {}
+        else:
+            catalog_map = {}
+        
+        # Enrich each row with catalog data
+        for row in rows:
+            asin = row.get("asin")
+            if asin and asin in catalog_map:
+                row["title"] = catalog_map[asin].get("title", "")
+                row["image_url"] = catalog_map[asin].get("image_url", "")
+            else:
+                row["title"] = row.get("title", "")
+                row["image_url"] = ""
         
         # Sort by sellable units DESC, then ASIN ASC
         rows.sort(key=lambda r: (-r.get("sellable_onhand_units", 0), r.get("asin", "")))

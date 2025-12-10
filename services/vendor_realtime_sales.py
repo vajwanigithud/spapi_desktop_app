@@ -104,6 +104,33 @@ def start_quota_cooldown(now_utc: datetime) -> None:
     )
 
 
+# ====================================================================
+# DAILY AUDIT GATING (UAE CALENDAR DATE)
+# ====================================================================
+LAST_AUDIT_KEY = "rt_sales_last_audit_date_uae"
+
+
+def should_run_rt_sales_daily_audit(conn) -> Tuple[bool, str]:
+    """
+    Check if daily audit should run based on UAE calendar date.
+    Returns (should_run, today_str) where today_str is the UAE date in ISO format.
+    """
+    from services import db as db_service
+    
+    uae_today = datetime.now(UAE_TZ).date()
+    today_str = uae_today.isoformat()
+    last = db_service.get_app_kv(conn, LAST_AUDIT_KEY)
+    if last == today_str:
+        return False, today_str
+    return True, today_str
+
+
+def mark_rt_sales_daily_audit_ran(conn, today_str: str) -> None:
+    """Mark that the daily audit ran for the given UAE date."""
+    from services import db as db_service
+    db_service.set_app_kv(conn, LAST_AUDIT_KEY, today_str)
+
+
 def get_rt_sales_status(now_utc: Optional[datetime] = None) -> dict:
     """
     Return status of the Real-Time Sales auto-sync/backfill system.
