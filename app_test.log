@@ -1,0 +1,55 @@
+C:\spapi_desktop_app\main.py:218: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+2025-12-10 19:10:38 [INFO] forecast_schema - Forecast feature disabled: init_forecast_tables() not called
+2025-12-10 19:10:38 [INFO] services.vendor_realtime_sales - [VendorRtSales] vendor_realtime_sales table ensured
+2025-12-10 19:10:38 [INFO] services.db - [DB] vendor_rt_sales_state table ensured
+2025-12-10 19:10:38 [INFO] services.db - [DB] vendor_oos_export_history table ensured
+2025-12-10 19:10:38 [INFO] services.db - [DB] vendor_inventory_asin table ensured
+2025-12-10 19:10:38 [INFO] services.db - [DB] app_kv_store table ensured
+INFO:     Will watch for changes in these directories: ['C:\\spapi_desktop_app']
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+INFO:     Started reloader process [26240] using StatReload
+2025-12-10 19:10:41 [INFO] forecast_schema - Forecast feature disabled: init_forecast_tables() not called
+2025-12-10 19:10:41 [INFO] services.vendor_realtime_sales - [VendorRtSales] vendor_realtime_sales table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_rt_sales_state table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_oos_export_history table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_inventory_asin table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] app_kv_store table ensured
+2025-12-10 19:10:41 [INFO] forecast_schema - Forecast feature disabled: init_forecast_tables() not called
+2025-12-10 19:10:41 [INFO] services.vendor_realtime_sales - [VendorRtSales] vendor_realtime_sales table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_rt_sales_state table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_oos_export_history table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] vendor_inventory_asin table ensured
+2025-12-10 19:10:41 [INFO] services.db - [DB] app_kv_store table ensured
+INFO:     Started server process [29740]
+2025-12-10 19:10:41 [INFO] uvicorn.error - Started server process [29740]
+INFO:     Waiting for application startup.
+2025-12-10 19:10:41 [INFO] uvicorn.error - Waiting for application startup.
+2025-12-10 19:10:41 [INFO] root - [RTSalesStartupBackfill] Starting startup backfill for A2VIGQ35RCS4UG
+2025-12-10 19:10:41 [INFO] root - [RTSalesAutoSync] Started, will sync every 15 minutes
+2025-12-10 19:10:41 [INFO] root - [RTSalesAutoSync] Background thread started
+2025-12-10 19:10:41 [INFO] root - [Startup] Background tasks initialized successfully
+INFO:     Application startup complete.
+2025-12-10 19:10:41 [INFO] uvicorn.error - Application startup complete.
+2025-12-10 19:10:41 [INFO] root - [RTSalesStartupBackfill] Backfilling gap from 2025-12-10 14:00:00+00:00
+2025-12-10 19:10:41 [INFO] root - [RTSalesStartupBackfill] Backfilling [2025-12-10 14:00:00+00:00, 2025-12-10 15:00:41.293449+00:00)
+2025-12-10 19:10:41 [INFO] services.vendor_realtime_sales - [VendorRtSalesBackfill] Requesting chunk [2025-12-10T14:00:00+00:00, 2025-12-10T15:00:41.293449+00:00)
+2025-12-10 19:10:41 [INFO] spapi_reports - [spapi_reports] request_vendor_report type=GET_VENDOR_REAL_TIME_SALES_REPORT, params={}
+2025-12-10 19:10:41 [INFO] spapi_reports - [spapi_reports] Final createReport payload: {'reportType': 'GET_VENDOR_REAL_TIME_SALES_REPORT', 'marketplaceIds': ['A2VIGQ35RCS4UG'], 'dataStartTime': '2025-12-10T14:00:00Z', 'dataEndTime': '2025-12-10T15:00:41Z', 'reportOptions': {'currencyCode': 'AED'}}
+2025-12-10 19:10:41 [INFO] root - [RTSalesAutoSync] Normal sync, refreshing last 3h [2025-12-10T12:00:41.295655+00:00, 2025-12-10T15:00:41.295655+00:00)
+2025-12-10 19:10:41 [INFO] services.vendor_realtime_sales - [VendorRtSalesBackfill] Requesting chunk [2025-12-10T12:00:41.295655+00:00, 2025-12-10T15:00:41.295655+00:00)
+2025-12-10 19:10:41 [INFO] spapi_reports - [spapi_reports] request_vendor_report type=GET_VENDOR_REAL_TIME_SALES_REPORT, params={}
+2025-12-10 19:10:41 [INFO] spapi_reports - [spapi_reports] Final createReport payload: {'reportType': 'GET_VENDOR_REAL_TIME_SALES_REPORT', 'marketplaceIds': ['A2VIGQ35RCS4UG'], 'dataStartTime': '2025-12-10T12:00:41Z', 'dataEndTime': '2025-12-10T15:00:41Z', 'reportOptions': {'currencyCode': 'AED'}}
+2025-12-10 19:10:42 [INFO] spapi_auth - [Auth] Successfully obtained LWA token
+2025-12-10 19:10:42 [INFO] spapi_auth - [Auth] Successfully obtained LWA token
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] Created report GET_VENDOR_REAL_TIME_SALES_REPORT reportId=51725020432
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] poll_vendor_report report_id=51725020432
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] Created report GET_VENDOR_REAL_TIME_SALES_REPORT reportId=51726020432
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] poll_vendor_report report_id=51726020432
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] report 51725020432 status=IN_QUEUE
+2025-12-10 19:10:43 [INFO] spapi_reports - [spapi_reports] report 51726020432 status=IN_QUEUE

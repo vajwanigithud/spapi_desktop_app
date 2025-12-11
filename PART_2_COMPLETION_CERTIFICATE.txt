@@ -1,0 +1,444 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║             PART 2: INVENTORY TAB BACKEND IMPLEMENTATION                      ║
+║                                                                               ║
+║                           ✅ COMPLETE ✅                                      ║
+║                                                                               ║
+║          Database Schema + Service Layer to fetch and store weekly            ║
+║          inventory snapshots from GET_VENDOR_INVENTORY_REPORT                 ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+
+═══════════════════════════════════════════════════════════════════════════════
+IMPLEMENTATION OVERVIEW
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT WAS BUILT:
+  ✅ Database table: vendor_inventory_asin (18 columns, 1 unique index)
+  ✅ Service layer: vendor_inventory.py (4 functions, 250 lines)
+  ✅ DB helpers: 3 new functions in db.py (150 lines)
+  ✅ Startup integration: Table auto-created on app launch
+
+SCOPE DELIVERED:
+  ✅ Download GET_VENDOR_INVENTORY_REPORT from SP-API
+  ✅ Extract latest week only (filter by max endDate)
+  ✅ Parse per-ASIN inventory metrics
+  ✅ Store weekly snapshots in SQLite
+  ✅ Provide read helpers for UI layer
+  ❌ No API endpoints yet (that's PART 3)
+  ❌ No UI integration yet (that's PART 4)
+  ❌ No background sync yet (higher-level orchestration)
+
+═══════════════════════════════════════════════════════════════════════════════
+FILES CHANGED
+═══════════════════════════════════════════════════════════════════════════════
+
+MODIFIED:
+  1. services/db.py (+150 lines)
+     ├─ ensure_vendor_inventory_table()
+     ├─ replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
+     └─ get_vendor_inventory_snapshot(conn, marketplace_id)
+
+  2. main.py (+1 line)
+     └─ Added import and call of ensure_vendor_inventory_table()
+
+CREATED:
+  1. services/vendor_inventory.py (250 lines, new file)
+     ├─ fetch_latest_vendor_inventory_report_json(marketplace_id)
+     ├─ extract_latest_week_inventory_by_asin(report_json, marketplace_id)
+     ├─ refresh_vendor_inventory_snapshot(conn, marketplace_id)
+     └─ get_vendor_inventory_snapshot_for_ui(conn, marketplace_id)
+
+═══════════════════════════════════════════════════════════════════════════════
+DATABASE SCHEMA
+═══════════════════════════════════════════════════════════════════════════════
+
+TABLE: vendor_inventory_asin
+
+  Column Name                      Type      Nullable  Notes
+  ─────────────────────────────────────────────────────────────────
+  id                               INTEGER   NO        Auto-increment PK
+  marketplace_id                   TEXT      NO        e.g., "A2VIGQ35RCS4UG"
+  asin                             TEXT      NO        Product ASIN
+  start_date                       TEXT      NO        Week start (YYYY-MM-DD)
+  end_date                         TEXT      NO        Week end (YYYY-MM-DD)
+  
+  -- Core "What is Amazon holding" metrics --
+  sellable_onhand_units            INTEGER   NO        Primary metric (units)
+  sellable_onhand_cost             REAL      NO        Valued inventory (AED)
+  unsellable_onhand_units          INTEGER   YES       Defective, etc.
+  unsellable_onhand_cost           REAL      YES       Cost of unsellable
+  
+  -- Aging concerns --
+  aged90plus_sellable_units        INTEGER   YES       Over 90 days old
+  aged90plus_sellable_cost         REAL      YES       Cost of aged
+  
+  -- Quality issues --
+  unhealthy_units                  INTEGER   YES       Various issues
+  unhealthy_cost                   REAL      YES       Cost of unhealthy
+  
+  -- Flow metrics (for future velocity logic) --
+  net_received_units               INTEGER   YES       Inbound stock
+  net_received_cost                REAL      YES       Inbound value
+  open_po_units                    INTEGER   YES       Committed/in-flight
+  unfilled_customer_ordered_units  INTEGER   YES       Back-orders
+  vendor_confirmation_rate         REAL      YES       0.0-1.0
+  sell_through_rate                REAL      YES       0.0-1.0
+  
+  updated_at                       TEXT      NO        ISO8601 UTC timestamp
+
+UNIQUE INDEX: idx_vendor_inventory_unique
+  ON vendor_inventory_asin (marketplace_id, asin, start_date, end_date)
+  Ensures: No duplicate rows for same week + ASIN + marketplace
+
+═══════════════════════════════════════════════════════════════════════════════
+SERVICE LAYER FUNCTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. fetch_latest_vendor_inventory_report_json(marketplace_id: str) -> dict
+   
+   Purpose: Download and parse GET_VENDOR_INVENTORY_REPORT from SP-API
+   
+   Parameters:
+     marketplace_id - e.g., "A2VIGQ35RCS4UG" (UAE)
+   
+   Returns:
+     Parsed JSON dict with structure:
+       {
+         "inventoryByAsin": [
+           {
+             "asin": "B00...",
+             "startDate": "2025-01-08",
+             "endDate": "2025-01-14",
+             "sellableOnHandInventoryUnits": 100,
+             ...
+           },
+           ...
+         ]
+       }
+   
+   Exceptions:
+     SpApiQuotaError - Quota exceeded (propagated, not caught)
+     Various - Network errors, API errors
+   
+   Process:
+     1. Calls spapi_reports.request_vendor_report() with:
+        - reportType: "GET_VENDOR_INVENTORY_REPORT"
+        - reportPeriod: "WEEK"
+        - sellingProgram: "RETAIL"
+        - distributorView: "MANUFACTURING"
+     2. Polls report status with spapi_reports.poll_vendor_report()
+     3. Downloads document with spapi_reports.download_vendor_report_document()
+     4. Returns parsed JSON
+
+
+2. extract_latest_week_inventory_by_asin(report_json: dict, marketplace_id: str) 
+   -> List[Dict]
+   
+   Purpose: Filter report data to latest week and build DB row dicts
+   
+   Parameters:
+     report_json - Full report from fetch function
+     marketplace_id - For inclusion in each row
+   
+   Returns:
+     List of dicts, each with these keys:
+       marketplace_id, asin, start_date, end_date,
+       sellable_onhand_units, sellable_onhand_cost,
+       unsellable_onhand_units, unsellable_onhand_cost,
+       aged90plus_sellable_units, aged90plus_sellable_cost,
+       unhealthy_units, unhealthy_cost,
+       net_received_units, net_received_cost,
+       open_po_units, unfilled_customer_ordered_units,
+       vendor_confirmation_rate, sell_through_rate,
+       updated_at
+   
+   Algorithm:
+     1. Read inventoryByAsin array from report_json
+     2. Find latest_end_date = max(endDate for all items)
+     3. Filter to only items where endDate == latest_end_date
+     4. For each filtered item, build row dict with safe field extraction
+        (handles null/missing cost objects gracefully)
+     5. Return list of rows
+   
+   Example:
+     If report contains weeks [Jan 1-7, Jan 8-14], only Jan 8-14 is returned.
+
+
+3. refresh_vendor_inventory_snapshot(conn, marketplace_id: str) -> int
+   
+   Purpose: High-level orchestration to refresh inventory snapshot
+   
+   Parameters:
+     conn - SQLite connection object
+     marketplace_id - e.g., "A2VIGQ35RCS4UG"
+   
+   Returns:
+     int - Number of ASIN rows stored
+   
+   Exceptions:
+     SpApiQuotaError - Propagated (caller handles)
+     Various - Other failures
+   
+   Process:
+     1. Calls fetch_latest_vendor_inventory_report_json()
+     2. Passes JSON to extract_latest_week_inventory_by_asin()
+     3. Calls db.replace_vendor_inventory_snapshot(conn, mkt_id, rows)
+        - This DELETEs all existing rows for marketplace
+        - Then INSERTs all new rows (latest week only)
+     4. Returns len(rows)
+   
+   Logging: Start/success/error with [VendorInventory] prefix
+   
+   Design: Single call, no retries. Caller (cron/auto-sync) handles retry logic.
+
+
+4. get_vendor_inventory_snapshot_for_ui(conn, marketplace_id: str) 
+   -> List[Dict]
+   
+   Purpose: Read and sort snapshot for UI/API consumption
+   
+   Parameters:
+     conn - SQLite connection
+     marketplace_id - e.g., "A2VIGQ35RCS4UG"
+   
+   Returns:
+     List of inventory dicts, sorted by:
+       1. sellable_onhand_units DESC (highest first)
+       2. ASIN ASC (alphabetical tie-breaker)
+   
+   Use Case: Feed directly to API response or UI rendering
+   
+   Example:
+     Top by inventory:
+       - B001... : 500 units
+       - B002... : 450 units
+       - B003... : 450 units (sorted by ASIN)
+
+═══════════════════════════════════════════════════════════════════════════════
+DATABASE HELPER FUNCTIONS (db.py)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. ensure_vendor_inventory_table() -> None
+   
+   Called on app startup (main.py initialization)
+   - Creates table if not exists
+   - Creates unique index
+   - Logs success/failure
+   - Raises on critical error
+
+
+2. replace_vendor_inventory_snapshot(conn, marketplace_id: str, 
+                                    rows: list[dict]) -> None
+   
+   Transaction-safe snapshot replacement:
+   - DELETE all rows for given marketplace_id
+   - INSERT all provided rows
+   - Commit in single transaction
+   - Logs count of rows inserted
+
+
+3. get_vendor_inventory_snapshot(conn, marketplace_id: str) 
+   -> list[dict]
+   
+   Simple query helper:
+   - SELECT * WHERE marketplace_id = ?
+   - Returns list of Row objects as dicts
+   - Ordered by ASIN ASC
+   - Used by service layer for further processing
+
+═══════════════════════════════════════════════════════════════════════════════
+CODE QUALITY & PATTERNS
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ REUSED EXISTING PATTERNS
+
+  Pattern: spapi_reports helpers
+    ✅ request_vendor_report() - exact same pattern
+    ✅ poll_vendor_report() - same timeout/retry logic
+    ✅ download_vendor_report_document() - same error handling
+    ✅ SpApiQuotaError - propagated unchanged
+
+  Pattern: db.py connection management
+    ✅ get_db_connection() - context manager used
+    ✅ execute_write() - batch operations
+    ✅ WAL mode, timeouts, locking - all reused
+    ✅ Logging prefix [DB] - consistent
+
+  Pattern: Service layer organization
+    ✅ Single import: from services import vendor_inventory
+    ✅ No circular dependencies
+    ✅ Proper type hints
+    ✅ Comprehensive logging
+
+
+✅ NO BREAKING CHANGES
+
+  ✅ spapi_reports.py - unchanged
+  ✅ vendor_realtime_sales.py - unchanged
+  ✅ oos_service.py - unchanged
+  ✅ All other services - unchanged
+  ✅ Backward compatible (only additions)
+
+
+✅ ERROR HANDLING
+
+  Quota Errors:
+    SpApiQuotaError caught at source, propagated to caller
+    Caller can implement cooldown/retry/alert logic
+
+  Data Validation:
+    - Null checks on nested "amount" objects
+    - Type conversions with fallback defaults
+    - Missing fields handled gracefully (None or 0)
+
+  Database Errors:
+    - All operations wrapped in try/except
+    - Detailed logging with context
+    - Unique index prevents duplicates
+
+
+✅ LOGGING
+
+  Prefixes used:
+    [VendorInventory] - Service layer
+    [DB] - Database layer
+    (inherited from existing codebase)
+
+  Log levels:
+    INFO - Normal flow (fetch, extract, store)
+    WARNING - Missing data, filtered weeks
+    ERROR - Failures with stack trace
+
+═══════════════════════════════════════════════════════════════════════════════
+TESTING & VALIDATION
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ SYNTAX VALIDATION
+  - vendor_inventory.py: Python -m py_compile OK
+  - db.py: Python -m py_compile OK
+  - main.py: Python -m py_compile OK
+
+✅ IMPORT TESTS
+  - from services.db import ensure_vendor_inventory_table → OK
+  - from services import vendor_inventory → OK
+  - All 4 functions accessible → OK
+
+✅ FUNCTION SIGNATURES
+  - fetch_latest_vendor_inventory_report_json(str) → dict ✓
+  - extract_latest_week_inventory_by_asin(dict, str) → List[dict] ✓
+  - refresh_vendor_inventory_snapshot(conn, str) → int ✓
+  - get_vendor_inventory_snapshot_for_ui(conn, str) → List[dict] ✓
+
+═══════════════════════════════════════════════════════════════════════════════
+READY FOR
+═══════════════════════════════════════════════════════════════════════════════
+
+1. MANUAL TESTING (Before PART 3)
+   
+   Test 1: Verify table creation
+     from services.db import get_db_connection, ensure_vendor_inventory_table
+     ensure_vendor_inventory_table()  # Already called on startup
+     
+     with get_db_connection() as conn:
+         cursor = conn.execute(
+             "SELECT name FROM sqlite_master WHERE type='table' 
+              AND name='vendor_inventory_asin'"
+         )
+         print("Table exists:", cursor.fetchone() is not None)
+   
+   Test 2: Refresh from API
+     from services.db import get_db_connection
+     from services.vendor_inventory import refresh_vendor_inventory_snapshot
+     
+     with get_db_connection() as conn:
+         rows = refresh_vendor_inventory_snapshot(conn, "A2VIGQ35RCS4UG")
+         print(f"Stored {rows} ASINs")
+   
+   Test 3: Query snapshot
+     from services.db import get_db_connection
+     from services.vendor_inventory import get_vendor_inventory_snapshot_for_ui
+     
+     with get_db_connection() as conn:
+         snapshot = get_vendor_inventory_snapshot_for_ui(conn, "A2VIGQ35RCS4UG")
+         for row in snapshot[:5]:
+             print(f"{row['asin']}: {row['sellable_onhand_units']} units")
+   
+   Test 4: Verify only latest week
+     with get_db_connection() as conn:
+         weeks = conn.execute(
+             "SELECT DISTINCT end_date FROM vendor_inventory_asin
+              WHERE marketplace_id = ?", ("A2VIGQ35RCS4UG",)
+         ).fetchall()
+         print(f"Weeks in DB: {[w[0] for w in weeks]}")
+         # Should be exactly 1 (latest week)
+
+
+2. PART 3: API ENDPOINTS
+
+   Endpoints to add:
+     POST /api/vendor-inventory/refresh
+       → Calls refresh_vendor_inventory_snapshot()
+       → Returns {"rows_stored": int}
+     
+     GET /api/vendor-inventory/snapshot
+       → Calls get_vendor_inventory_snapshot_for_ui()
+       → Returns {"items": [...sorted by units DESC...]}
+     
+     GET /api/vendor-inventory/summary
+       → Aggregates snapshot data
+       → Returns {"total_units": int, "total_cost": float, ...}
+
+
+3. PART 4: UI INTEGRATION
+
+   Components to build:
+     - Dashboard cards (in Overview subtab)
+     - ASIN breakdown table (in ASIN Breakdown subtab)
+     - Refresh button
+     - Filter/sort controls
+
+═══════════════════════════════════════════════════════════════════════════════
+SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT'S READY:
+  ✅ Database layer: Complete
+  ✅ Service layer: Complete
+  ✅ Startup integration: Complete
+  ✅ Error handling: Complete
+  ✅ Logging: Complete
+  ✅ No breaking changes: Confirmed
+
+WHAT'S NEXT:
+  ⏳ PART 3: Add API endpoints
+  ⏳ PART 4: Add UI components
+  ⏳ PART 5: Add background sync logic
+
+STATUS:
+  Date: 2025-12-10
+  Phase: PART 2 of 5
+  Complete: ✅ YES
+  Ready for manual testing: ✅ YES
+  Ready for PART 3: ✅ YES
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Files at a glance:
+
+  services/db.py (MODIFIED)
+    ├─ ensure_vendor_inventory_table() - Create table + index
+    ├─ replace_vendor_inventory_snapshot() - Atomic replace
+    └─ get_vendor_inventory_snapshot() - Read helper
+
+  services/vendor_inventory.py (NEW)
+    ├─ fetch_latest_vendor_inventory_report_json() - Download from API
+    ├─ extract_latest_week_inventory_by_asin() - Parse + filter
+    ├─ refresh_vendor_inventory_snapshot() - Orchestrate
+    └─ get_vendor_inventory_snapshot_for_ui() - Read for UI
+
+  main.py (MODIFIED)
+    └─ Added: ensure_vendor_inventory_table() call on startup
+
+═══════════════════════════════════════════════════════════════════════════════
