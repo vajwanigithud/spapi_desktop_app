@@ -127,6 +127,7 @@ from services.vendor_inventory import (
     refresh_vendor_inventory_snapshot,
     get_vendor_inventory_snapshot_for_ui,
 )
+from routes.nicelabel_routes import register_nicelabel_routes
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -144,10 +145,9 @@ import requests
 from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from auth.spapi_auth import SpApiAuth
-from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 # --- Logging configuration ---
@@ -206,6 +206,8 @@ if not tester_logger.handlers:
 
 app = FastAPI(title="SP-API Desktop App (Minimal)", version="1.0.0")
 
+register_nicelabel_routes(app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -235,6 +237,7 @@ UI_DIR = Path(__file__).parent / "ui"
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=TEMPLATE_DIR)
+
 
 app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -1906,6 +1909,9 @@ def get_vendor_realtime_sales_summary(
     - start_utc, end_utc: for custom window
     
     If lookback_hours is provided, it takes precedence. Otherwise falls back to window param.
+
+    The payload is built entirely from the local DB and audit tables (read-only); no SP-API
+    refresh or backfill logic runs inside this route.
     """
     try:
         now_utc = datetime.now(timezone.utc)

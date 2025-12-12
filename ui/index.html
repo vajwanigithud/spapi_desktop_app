@@ -50,7 +50,27 @@
     .modal header { padding:12px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
     .modal-body { padding:12px 14px; overflow:auto; }
     .json-block { background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:10px; white-space:pre-wrap; word-break:break-word; font-family: monospace; font-size:12px; user-select:text; }
-    </style>
+    .muted-text { color: #6b7280; }
+    .printer-settings-field { margin-bottom: 12px; text-align:left; }
+    .printer-settings-info {
+      padding: 12px;
+      border-radius: 10px;
+      background: #ecfdf5;
+      border: 1px solid #059669;
+      color: #064e3b;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    .printer-settings-info-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .printer-settings-field label { display:block; font-size:13px; font-weight:600; margin-bottom:4px; color:#111827; }
+    .printer-settings-field select,
+    .printer-settings-field input { width:100%; padding:6px 8px; border-radius:8px; border:1px solid #d1d5db; font-size:13px; background:#fff; }
+    .printer-settings-warning { font-size:12px; color:#b91c1c; min-height:18px; margin-top:4px; }
+    .printer-settings-status { font-size:12px; min-height:18px; }
+  </style>
   <style>
       .btn-fetch {
         background: #dc2626;
@@ -122,6 +142,7 @@
       .trend-battery { width: 80px; height: 14px; border-radius: 7px; border: 1px solid #ccc; overflow: hidden; background-color: #f5f5f5; margin: 0 auto 2px auto; }
       .trend-battery-fill { height: 100%; background: linear-gradient(to right, #4caf50, #81c784); transition: width 0.3s ease; }
       .trend-battery-label { font-size: 11px; text-align: center; font-weight: 600; }
+      .trend-battery-badge { font-size: 11px; text-align: center; font-weight: 600; color: #1f2937; min-height: 16px; margin-top: 2px; }
       /* Week column sublabel */
       .sales-trends-week-sublabel { display: block; font-size: 0.75rem; font-weight: 700; color: #6b7280; margin-top: 2px; }
       /* Sales Trends controls */
@@ -359,6 +380,7 @@
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
+        <button class="btn" id="printer-settings-btn" style="background:#047857;">Printer Settings</button>
       </div>
     </div>
   </header>
@@ -602,6 +624,7 @@
 
         <div style="font-weight:600; margin-top:8px;" id="rt-sales-table-title">Top ASINs</div>
         <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
+        <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
         <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
           <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
             <thead>
@@ -2342,23 +2365,25 @@
       tbody.innerHTML = filteredAsins.map(item => {
         const disabled = item.fetched ? "disabled" : "";
         const label = item.fetched ? "Fetched" : "Fetch";
-        const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />` : "";
-        const bc = item.barcode || "";
-        const bcDisplay = bc || "—";
-        return `<tr ondblclick="showCatalogDetails('${item.asin}')">
-          <td>${item.asin}</td>
-          <td>${item.sku || ""}</td>
-          <td>
-            <div style="display:flex; align-items:center; gap:6px;">
-              <span id="bc-${item.asin}">${bcDisplay}</span>
-              <button class="btn" style="padding:4px 8px; background:#0f172a;" onclick="editBarcode('${item.asin}', '${bc}')">Edit</button>
-            </div>
-          </td>
-          <td>${item.title || ""}</td>
-          <td>${img}</td>
-          <td>${item.fetched ? "Saved" : "Not fetched"}</td>
-          <td><button class="btn ${item.fetched ? "" : "btn-fetch"}" data-asin="${item.asin}" ${disabled} onclick="fetchCatalog(this.dataset.asin, this)">${label}</button></td>
-        </tr>`;
+        const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;${item.fetched ? 'opacity:0.5;' : ''}" />` : "";
+          const bc = item.barcode || "";
+          const bcDisplay = bc || "—";
+          return `<tr ondblclick="showCatalogDetails('${item.asin}')">
+            <td>${item.asin}</td>
+            <td>${item.sku || ""}</td>
+            <td>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span id="bc-${item.asin}">${bcDisplay}</span>
+                <button class="btn" style="padding:4px 8px; background:#0f172a;" onclick="editBarcode('${item.asin}', '${bc}')">Edit</button>
+              </div>
+            </td>
+            <td>${item.title || ""}</td>
+            <td>${img}</td>
+            <td>${item.fetched ? "Saved" : "Not fetched"}</td>
+            <td style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
+              <button class="btn ${item.fetched ? "" : "btn-fetch"}" data-asin="${item.asin}" ${disabled} onclick="fetchCatalog(this.dataset.asin, this)">${label}</button>
+            </td>
+          </tr>`;
       }).join("");
     }
 
@@ -2605,6 +2630,8 @@
       column: null,
       direction: "asc"  // "asc" or "desc"
     };
+    let rtSalesWindowMeta = null;
+    let rtSalesCoverageMeta = null;
     let auditCalendarCache = [];
     let auditDayCache = {};
     let auditSelectedDate = null;
@@ -2683,10 +2710,30 @@
 
     // ========== Window Info Label (UAE Time) ==========
     function updateRtSalesWindowInfo() {
-      const lookbackSelect = document.getElementById("rt-sales-lookback");
       const infoEl = document.getElementById("rt-sales-window-info");
-      if (!lookbackSelect || !infoEl) return;
+      if (!infoEl) return;
 
+      if (
+        rtSalesWindowMeta &&
+        rtSalesWindowMeta.start_uae &&
+        rtSalesWindowMeta.end_uae
+      ) {
+        const formatter = new Intl.DateTimeFormat("en-US", {
+          timeZone: "Asia/Dubai",
+          month: "short",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        });
+        const start = new Date(rtSalesWindowMeta.start_uae);
+        const end = new Date(rtSalesWindowMeta.end_uae);
+        infoEl.textContent = `Window: ${formatter.format(start)} — ${formatter.format(end)} UAE`;
+        return;
+      }
+
+      const lookbackSelect = document.getElementById("rt-sales-lookback");
+      if (!lookbackSelect) return;
       const lookbackHours = parseInt(lookbackSelect.value, 10);
       const now = new Date();
       
@@ -2705,7 +2752,36 @@
       const startStr = uaeFormatter.format(startTime);
       const endStr = uaeFormatter.format(endTime);
       
-      infoEl.textContent = `Trailing ${lookbackHours} hours (${startStr} → ${endStr} UAE)`;
+      infoEl.textContent = `Trailing ${lookbackHours} hours (${startStr} - ${endStr} UAE)`;
+    }
+
+    function updateRtSalesCoverageInfo() {
+      const coverageEl = document.getElementById("rt-sales-coverage-info");
+      if (!coverageEl) return;
+
+      const coverage = rtSalesCoverageMeta;
+      const totalHours = Number(coverage?.total_hours || 0);
+      if (!coverage || totalHours === 0) {
+        coverageEl.style.display = "none";
+        coverageEl.textContent = "";
+        return;
+      }
+
+      const okHours = Number(coverage.ok_hours || 0);
+      const percent = Number(coverage.coverage_percent || 0).toFixed(2);
+      let text = `Coverage: ${percent}% (${okHours}/${totalHours} hrs OK)`;
+      const notices = [];
+      if (coverage.missing_hours) {
+        notices.push(`${coverage.missing_hours} missing`);
+      }
+      if (coverage.pending_hours) {
+        notices.push(`${coverage.pending_hours} pending`);
+      }
+      if (notices.length) {
+        text += ` · ${notices.join(", ")}`;
+      }
+      coverageEl.textContent = text;
+      coverageEl.style.display = "block";
     }
 
     // ========== Sync Status Monitoring ==========
@@ -3004,9 +3080,11 @@
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
         const data = await resp.json();
+        rtSalesWindowMeta = data.window || null;
+        rtSalesCoverageMeta = data.coverage || null;
 
-        // Update window info label
         updateRtSalesWindowInfo();
+        updateRtSalesCoverageInfo();
 
         // Update summary cards
         document.getElementById("rt-sales-total-units").textContent = (data.total_units || 0).toLocaleString();
@@ -3049,6 +3127,10 @@
         }
       } catch (err) {
         console.error("Failed to load RT sales summary:", err);
+        rtSalesWindowMeta = null;
+        rtSalesCoverageMeta = null;
+        updateRtSalesWindowInfo();
+        updateRtSalesCoverageInfo();
         renderRtSalesTable([]);
         const tbody = rtSalesCurrentViewBy === "asin" 
           ? document.getElementById("rt-sales-top-asins-rows")
@@ -3804,34 +3886,57 @@
         tdTrailing.style.textAlign = 'center';
         const trailingContainer = document.createElement('div');
         
-        // Raw units
+        const baselineUnits = w1Units || 0;
+        const thisWeekUnits = r.this_week_units || 0;
+
+        // Raw units label
         const unitsLine = document.createElement('div');
         unitsLine.style.fontSize = '12px';
         unitsLine.style.marginBottom = '4px';
-        const thisWeekUnits = w1Units;
-        unitsLine.textContent = (thisWeekUnits != null ? thisWeekUnits : 0) + ' units';
+        unitsLine.textContent = thisWeekUnits + ' units';
         trailingContainer.appendChild(unitsLine);
-        
-        // Battery bar (using this_week_progress or fallback ratio, clamped 0-1)
+
+        // Battery bar (display based on this week vs W1)
+        let progressPercent;
+        if (baselineUnits > 0) {
+          progressPercent = (thisWeekUnits / baselineUnits) * 100;
+        } else {
+          progressPercent = thisWeekUnits > 0 ? 100 : 0;
+        }
+        progressPercent = Math.max(0, progressPercent);
+        const displayPercent = Math.min(Math.round(progressPercent), 300);
+
         const batteryDiv = document.createElement('div');
         batteryDiv.className = 'trend-battery';
-        const progressRatio = typeof r.this_week_progress === 'number'
-          ? r.this_week_progress
-          : (r.trailing_vs_w1_ratio || 0);
-        let ratio = Math.max(0, Math.min(1, progressRatio));
-        let percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
-        
         const fillDiv = document.createElement('div');
         fillDiv.className = 'trend-battery-fill';
-        fillDiv.style.width = percent + '%';
+        fillDiv.style.width = displayPercent + '%';
         batteryDiv.appendChild(fillDiv);
         trailingContainer.appendChild(batteryDiv);
-        
-        // Percentage label
+
         const labelDiv = document.createElement('div');
         labelDiv.className = 'trend-battery-label';
-        labelDiv.textContent = percent + '%';
+        labelDiv.textContent = displayPercent + '%';
         trailingContainer.appendChild(labelDiv);
+
+        const badgeDiv = document.createElement('div');
+        badgeDiv.className = 'trend-battery-badge';
+        const deltaUnits = thisWeekUnits - baselineUnits;
+        if (baselineUnits <= 0 && thisWeekUnits > 0) {
+          badgeDiv.textContent = 'New this week 🚀';
+        } else if (
+          baselineUnits > 0 &&
+          progressPercent >= 100 &&
+          progressPercent < 150 &&
+          deltaUnits > 0
+        ) {
+          badgeDiv.textContent = `🔥 +${deltaUnits} vs last week`;
+        } else if (baselineUnits > 0 && progressPercent >= 150 && deltaUnits > 0) {
+          badgeDiv.textContent = `🚀 +${deltaUnits} vs last week`;
+        } else {
+          badgeDiv.textContent = '';
+        }
+        trailingContainer.appendChild(badgeDiv);
         
         tdTrailing.appendChild(trailingContainer);
         tr.appendChild(tdTrailing);
@@ -4153,6 +4258,83 @@
     setInterval(updateSyncInfo, 60 * 1000);
     setInterval(autoSyncIfDue, 5 * 60 * 1000);
   </script>
+  <div class="backdrop" id="printer-settings-modal" style="display:none;">
+    <div class="modal" style="max-width:520px;">
+      <header>
+        <div>Printer Settings</div>
+        <button class="btn" id="printer-settings-close-btn" style="background:#6b7280;">Close</button>
+      </header>
+      <div class="modal-body">
+        <div id="printer-settings-default-field" class="printer-settings-field">
+          <label for="printer-settings-select">Default Printer</label>
+          <select id="printer-settings-select">
+            <option value="">Loading printers...</option>
+          </select>
+          <div class="printer-settings-warning" id="printer-settings-warning"></div>
+        </div>
+        <div id="printer-settings-preset-field" class="printer-settings-field">
+          <label for="printer-settings-preset">Preset</label>
+          <select id="printer-settings-preset">
+            <option value="">Custom</option>
+          </select>
+        </div>
+        <div id="printer-settings-print-method-field" class="printer-settings-field">
+          <label for="printer-settings-backend">Print Backend</label>
+          <select id="printer-settings-backend">
+            <option value="nice_label">NiceLabel (managed externally)</option>
+          </select>
+        </div>
+        <div id="printer-settings-nicelabel-info" class="printer-settings-info" style="display:none;">
+          <div class="printer-settings-info-title">Printing via NiceLabel</div>
+          <div>
+            Printers and label templates are managed inside NiceLabel. This app
+            forwards EAN/SKU data to NiceLabel over TCP/IP.
+          </div>
+        </div>
+        <div id="printer-settings-media-field" class="printer-settings-field">
+          <label for="printer-setting-label_width_mm">Label Width (mm)</label>
+          <input type="number" id="printer-setting-label_width_mm" min="1" step="1" />
+        </div>
+        <div id="printer-settings-gap-field" class="printer-settings-field">
+          <label for="printer-setting-label_height_mm">Label Height (mm)</label>
+          <input type="number" id="printer-setting-label_height_mm" min="1" step="1" />
+        </div>
+        <div id="printer-settings-dpi-field" class="printer-settings-field">
+          <label for="printer-setting-print_method">Print Method</label>
+          <input type="text" id="printer-setting-print_method" placeholder="direct_thermal" />
+        </div>
+        <div class="printer-settings-field">
+          <label for="printer-setting-media_type">Media Type</label>
+          <input type="text" id="printer-setting-media_type" placeholder="gap" />
+        </div>
+        <div class="printer-settings-field">
+          <label for="printer-setting-gap_mm">Gap (mm)</label>
+          <input type="number" id="printer-setting-gap_mm" min="0" step="0.5" />
+        </div>
+        <div class="printer-settings-field">
+          <label for="printer-setting-dpi">DPI</label>
+          <input type="number" id="printer-setting-dpi" min="50" step="1" />
+        </div>
+        <div class="printer-settings-field">
+          <label for="printer-setting-darkness">Darkness</label>
+          <input type="number" id="printer-setting-darkness" min="0" step="1" />
+        </div>
+        <div class="printer-settings-field">
+          <label for="printer-setting-speed">Speed</label>
+          <input type="number" id="printer-setting-speed" min="0" step="1" />
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:12px;">
+          <div>
+              <div id="printer-settings-status" class="printer-settings-status muted-text"></div>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn" id="printer-settings-save-btn">Save Settings</button>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/ui/js/printer_settings.js"></script>
   <div class="backdrop" id="picklist-modal">
     <div class="modal" style="max-width:1000px;">
       <header>

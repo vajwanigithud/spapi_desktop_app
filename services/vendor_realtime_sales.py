@@ -249,6 +249,7 @@ def get_rt_sales_status(now_utc: Optional[datetime] = None) -> dict:
 # TIME CONSTANTS FOR SAFE BACKFILLING
 # ====================================================================
 SAFE_MINUTES_LAG = 10       # Buffer to avoid future/not-yet-ready hours
+SAFETY_LOOKBACK_MINUTES = 30  # Extra buffer to catch late-arriving hours in lookback windows
 MAX_HISTORY_DAYS = 3        # How far back we backfill on startup
 CHUNK_HOURS = 6             # Window size per report request
 
@@ -807,8 +808,11 @@ def _utc_iso(dt: datetime) -> str:
 
 
 def _parse_iso_to_utc(value: str) -> datetime:
-    """Convert an ISO string with optional Z suffix to a timezone-aware UTC datetime."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    """Convert an ISO string (with optional Z) to a timezone-aware UTC datetime."""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def build_local_hour_window(date_str: str, hour: int) -> Tuple[datetime, datetime]:
@@ -1194,6 +1198,36 @@ def utc_to_uae_str(dt_utc: datetime) -> str:
     return dt_uae.isoformat()
 
 
+def _get_last_ingested_hour(conn, marketplace_id: Optional[str]) -> Optional[str]:
+    """
+    Return the most recent hour_start_utc visible in vendor_realtime_sales.
+    """
+    sql = "SELECT MAX(hour_start_utc) AS last_hour FROM vendor_realtime_sales"
+    params: List[str] = []
+    if marketplace_id:
+        sql += " WHERE marketplace_id = ?"
+        params.append(marketplace_id)
+    row = conn.execute(sql, params).fetchone()
+    return row["last_hour"] if row and row["last_hour"] else None
+
+
+def _get_last_audited_hour(conn, marketplace_id: Optional[str]) -> Optional[str]:
+    """
+    Return the most recent audited hour marked OK or EMPTY.
+    """
+    sql = """
+    SELECT MAX(hour_start_utc) AS last_hour
+    FROM vendor_rt_audit_hours
+    WHERE status IN ('OK', 'EMPTY')
+    """
+    params: List[str] = []
+    if marketplace_id:
+        sql += " AND marketplace_id = ?"
+        params.append(marketplace_id)
+    row = conn.execute(sql, params).fetchone()
+    return row["last_hour"] if row and row["last_hour"] else None
+
+
 def get_realtime_sales_summary(
     start_utc: str,
     end_utc: str,
@@ -1257,54 +1291,143 @@ def get_realtime_sales_summary(
     }
     """
     try:
-        # Parse input times
-        start_dt = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(end_utc.replace("Z", "+00:00"))
+        requested_start_dt = _normalize_utc_datetime(_parse_iso_to_utc(start_utc))
+        requested_end_dt = _normalize_utc_datetime(_parse_iso_to_utc(end_utc))
+        duration_secs = max(0, (requested_end_dt - requested_start_dt).total_seconds())
+        requested_hours = max(1, int(round(duration_secs / 3600)))
+        lookback_hours = requested_hours
 
-        # Calculate lookback_hours for metadata
-        lookback_hours = round((end_dt - start_dt).total_seconds() / 3600)
+        total_units = 0
+        total_revenue = 0.0
+        currency_code = "AED"
+        rows: List[dict] = []
+        coverage_summary = {
+            "total_hours": 0,
+            "ok_hours": 0,
+            "missing_hours": 0,
+            "pending_hours": 0,
+            "coverage_percent": 0.0,
+        }
 
+        window_start_dt: Optional[datetime] = None
+        window_end_dt: Optional[datetime] = None
+        window_start_iso: Optional[str] = None
+        window_end_iso: Optional[str] = None
+
+        now_utc = datetime.now(timezone.utc)
         with get_db_connection() as conn:
-            # Get total units and revenue
-            query = """
+            last_ingested_iso = _get_last_ingested_hour(conn, marketplace_id)
+            last_audited_iso = _get_last_audited_hour(conn, marketplace_id)
+
+            def _safe_parse(value: Optional[str]) -> Optional[datetime]:
+                if not value:
+                    return None
+                try:
+                    return _normalize_utc_datetime(_parse_iso_to_utc(value))
+                except Exception as exc:
+                    logger.warning(
+                        f"{LOG_PREFIX_SUMMARY} Failed to parse audit boundary [{value}]: {exc}"
+                    )
+                    return None
+
+            candidates = [
+                _normalize_utc_datetime(now_utc),
+                requested_end_dt,
+            ]
+            for candidate in (_safe_parse(last_ingested_iso), _safe_parse(last_audited_iso)):
+                if candidate:
+                    candidates.append(candidate)
+
+            candidates = [candidate for candidate in candidates if candidate]
+            window_end_dt = min(candidates) if candidates else requested_end_dt
+            window_end_dt = _normalize_utc_datetime(window_end_dt)
+            window_start_dt = _normalize_utc_datetime(
+                window_end_dt - timedelta(hours=requested_hours) - timedelta(minutes=SAFETY_LOOKBACK_MINUTES)
+            )
+            window_start_iso = _utc_iso(window_start_dt)
+            window_end_iso = _utc_iso(window_end_dt)
+
+            coverage_map = _build_hourly_coverage_map(
+                conn,
+                marketplace_id,
+                window_start_dt,
+                window_end_dt,
+            )
+
+            ok_hours = sum(
+                1
+                for info in coverage_map.values()
+                if (info.get("status") or "").upper() in {"OK", "EMPTY", "OK_INFERRED"}
+            )
+            missing_hours = sum(
+                1
+                for info in coverage_map.values()
+                if (info.get("status") or "").upper() == "MISSING"
+            )
+            pending_hours = sum(
+                1
+                for info in coverage_map.values()
+                if (info.get("status") or "").upper() in {"FUTURE_BLOCKED", "PENDING"}
+            )
+            total_hours = len(coverage_map)
+            coverage_percent = (ok_hours / total_hours) * 100 if total_hours else 0.0
+            coverage_summary = {
+                "total_hours": total_hours,
+                "ok_hours": ok_hours,
+                "missing_hours": missing_hours,
+                "pending_hours": pending_hours,
+                "coverage_percent": round(coverage_percent, 2),
+            }
+
+            logger.info(
+                f"{LOG_PREFIX_SUMMARY} Read-only summary window {window_start_iso} -> {window_end_iso} (UTC); "
+                f"coverage {coverage_summary['coverage_percent']}% | OK {ok_hours}/{total_hours} | "
+                f"missing {missing_hours} | pending {pending_hours}"
+            )
+
+            totals_query = """
             SELECT
-                SUM(ordered_units) as total_units,
-                SUM(ordered_revenue) as total_revenue,
-                MAX(currency_code) as currency_code
+                SUM(ordered_units) AS total_units,
+                SUM(ordered_revenue) AS total_revenue,
+                MAX(currency_code) AS currency_code
             FROM vendor_realtime_sales
             WHERE hour_start_utc >= ? AND hour_start_utc < ?
             """
-            params = [start_utc, end_utc]
+            totals_params = [window_start_iso, window_end_iso]
             if marketplace_id:
-                query += " AND marketplace_id = ?"
-                params.append(marketplace_id)
+                totals_query += " AND marketplace_id = ?"
+                totals_params.append(marketplace_id)
 
-            totals_row = conn.execute(query, params).fetchone()
+            totals_row = conn.execute(totals_query, totals_params).fetchone()
+            if totals_row:
+                total_units = totals_row["total_units"] or 0
+                total_revenue = totals_row["total_revenue"] or 0.0
+                currency_code = totals_row["currency_code"] or "AED"
+
             if view_by == "time":
                 rows = _get_realtime_sales_by_time(
-                    conn, start_utc, end_utc, marketplace_id
+                    conn,
+                    window_start_iso,
+                    window_end_iso,
+                    marketplace_id,
                 )
             else:
-                # Default: view_by="asin"
                 rows = _get_realtime_sales_by_asin(
-                    conn, start_utc, end_utc, marketplace_id
+                    conn,
+                    window_start_iso,
+                    window_end_iso,
+                    marketplace_id,
                 )
 
-        if not totals_row:
-            logger.info(
-                f"{LOG_PREFIX_SUMMARY} Summary query returned no rows for window [{start_utc}, {end_utc})"
-            )
-            totals_row = {"total_units": 0, "total_revenue": 0.0, "currency_code": "AED"}
-        total_units = totals_row["total_units"] or 0
-        total_revenue = totals_row["total_revenue"] or 0.0
-        currency_code = totals_row["currency_code"] or "AED"
-
-        # Build window metadata
+        final_start_dt = window_start_dt or requested_start_dt
+        final_end_dt = window_end_dt or requested_end_dt
+        final_start_iso = window_start_iso or _utc_iso(final_start_dt)
+        final_end_iso = window_end_iso or _utc_iso(final_end_dt)
         window_data = {
-            "start_utc": start_utc,
-            "end_utc": end_utc,
-            "start_uae": utc_to_uae_str(start_dt),
-            "end_uae": utc_to_uae_str(end_dt)
+            "start_utc": final_start_iso,
+            "end_utc": final_end_iso,
+            "start_uae": utc_to_uae_str(final_start_dt),
+            "end_uae": utc_to_uae_str(final_end_dt),
         }
 
         return {
@@ -1314,7 +1437,8 @@ def get_realtime_sales_summary(
             "total_units": total_units,
             "total_revenue": round(float(total_revenue), 2),
             "currency_code": currency_code,
-            "rows": rows
+            "rows": rows,
+            "coverage": coverage_summary,
         }
     except Exception as exc:
         logger.error(
@@ -1328,7 +1452,7 @@ def _get_realtime_sales_by_asin(
     conn,
     start_utc: str,
     end_utc: str,
-    marketplace_id: Optional[str] = None
+    marketplace_id: Optional[str] = None,
 ) -> List[dict]:
     """
     Aggregate real-time sales by ASIN for a time window.
@@ -1376,7 +1500,7 @@ def _get_realtime_sales_by_time(
     conn,
     start_utc: str,
     end_utc: str,
-    marketplace_id: Optional[str] = None
+    marketplace_id: Optional[str] = None,
 ) -> List[dict]:
     """
     Aggregate real-time sales by hourly time buckets for a time window.
@@ -1973,6 +2097,7 @@ def get_sales_trends_last_4_weeks(
                 "w3_units": w3_u,
                 "w2_units": w2_u,
                 "w1_units": w1_u,
+                "this_week_units": 0,
                 "total_units_4w": total_4w,
                 "delta_units": delta_units,
                 "pct_change": pct_change,

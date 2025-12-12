@@ -2,10 +2,10 @@
   "items": [
     {
       "purchaseOrderNumber": "7T78SEXW",
-      "purchaseOrderState": "New",
+      "purchaseOrderState": "Acknowledged",
       "orderDetails": {
         "purchaseOrderDate": "2025-12-10T00:30:07Z",
-        "purchaseOrderStateChangedDate": "2025-12-10T00:30:13Z",
+        "purchaseOrderStateChangedDate": "2025-12-12T05:57:39Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -272,7 +272,7 @@
         ]
       },
       "total_received_qty": 0,
-      "total_pending_qty": 0
+      "total_pending_qty": 22
     },
     {
       "purchaseOrderNumber": "6HTP1VPO",
@@ -2100,8 +2100,8 @@
           }
         ]
       },
-      "total_received_qty": 80,
-      "total_pending_qty": 16
+      "total_received_qty": 79,
+      "total_pending_qty": 17
     },
     {
       "purchaseOrderNumber": "38G9G38J",
@@ -3531,8 +3531,8 @@
           }
         ]
       },
-      "total_received_qty": 45,
-      "total_pending_qty": 23
+      "total_received_qty": 47,
+      "total_pending_qty": 21
     },
     {
       "purchaseOrderNumber": "8HP6S17U",
@@ -8124,8 +8124,8 @@
           }
         ]
       },
-      "total_received_qty": 359,
-      "total_pending_qty": 17
+      "total_received_qty": 370,
+      "total_pending_qty": 7
     },
     {
       "purchaseOrderNumber": "54JL4C4X",
@@ -10116,8 +10116,8 @@
           }
         ]
       },
-      "total_received_qty": 275,
-      "total_pending_qty": 9
+      "total_received_qty": 279,
+      "total_pending_qty": 5
     },
     {
       "purchaseOrderNumber": "1NSXJCNA",
@@ -14111,8 +14111,8 @@
           }
         ]
       },
-      "total_received_qty": 6,
-      "total_pending_qty": 579
+      "total_received_qty": 7,
+      "total_pending_qty": 578
     },
     {
       "purchaseOrderNumber": "7Y4GOALS",
@@ -16749,8 +16749,8 @@
           }
         ]
       },
-      "total_received_qty": 236,
-      "total_pending_qty": 10
+      "total_received_qty": 237,
+      "total_pending_qty": 9
     },
     {
       "purchaseOrderNumber": "241C71PZ",

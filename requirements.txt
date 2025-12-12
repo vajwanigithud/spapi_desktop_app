@@ -3,3 +3,5 @@ uvicorn
 python-dotenv
 requests
 boto3
+Pillow
+python-barcode
