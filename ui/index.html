@@ -1221,6 +1221,30 @@
       }
     }
 
+    function normalizeBarcodeValue(value) {
+      if (!value) return "";
+      return String(value).replace(/[^0-9]/g, "").trim();
+    }
+
+    function resolveLineEan(item) {
+      if (!item || typeof item !== "object") return "";
+      const fields = ["ean", "barcode", "ean13", "upc", "gtin", "externalBarcode"];
+      for (const field of fields) {
+        const candidate = normalizeBarcodeValue(item[field]);
+        if (/^\d{12,13}$/.test(candidate)) {
+          return candidate;
+        }
+      }
+      const nested = item.catalogEntry || item.catalog || item.payload;
+      if (nested && typeof nested === "object") {
+        const fallback = resolveLineEan(nested);
+        if (fallback) {
+          return fallback;
+        }
+      }
+      return "";
+    }
+
     async function openModal(po) {
       const modal = document.getElementById("modal");
       const body = document.getElementById("modal-body");
@@ -1277,6 +1301,7 @@
         const rawAsin = it.amazonProductIdentifier || it.buyerProductIdentifier || it.vendorProductIdentifier || "";
         const asin = qualifyAsin(rawAsin);
         const vendorSku = it.vendorProductIdentifier || "";
+        const lineEan = resolveLineEan(it) || "";
         const seq = it.itemSequenceNumber || "";
         const ack = it.acknowledgementStatus || {};
         const currStatus = (ack.confirmationStatus || "ACCEPTED").toUpperCase();
@@ -1302,7 +1327,7 @@
           : `<div class="img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}" style="width:60px; height:60px; background:#e5e7eb; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:11px;">No image</div>`;
         const encodedImage = encodeURIComponent(rawImageUrl || "");
 
-        return `<tr${rowClass} oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
+        return `<tr${rowClass} data-ean="${escapeAttr(lineEan)}" data-sku="${escapeAttr(vendorSku)}" data-prompt-if-missing="true" oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
           <td>${seq}</td>
           <td>${img}</td>
           <td data-col="ordered">${qtyAmount}</td>
@@ -1312,7 +1337,12 @@
           <td>${currStatus}</td>
           <td>${Number.isFinite(netNum) && netNum ? netNum.toFixed(2) : ""}</td>
           <td>${netCurrency || ""}</td>
-          <td>${Number.isFinite(acceptedLineAmount) && acceptedLineAmount > 0 ? acceptedLineAmount.toFixed(2) : "0.00"}</td>
+          <td>
+            ${Number.isFinite(acceptedLineAmount) && acceptedLineAmount > 0 ? acceptedLineAmount.toFixed(2) : "0.00"}
+            <div style="margin-top:4px;">
+              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this line via NiceLabel" onclick="nicelabelPrintFromRow(this)">Print</button>
+            </div>
+          </td>
         </tr>`;
       }).join("");
 
@@ -2366,9 +2396,11 @@
         const disabled = item.fetched ? "disabled" : "";
         const label = item.fetched ? "Fetched" : "Fetch";
         const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;${item.fetched ? 'opacity:0.5;' : ''}" />` : "";
-          const bc = item.barcode || "";
-          const bcDisplay = bc || "—";
-          return `<tr ondblclick="showCatalogDetails('${item.asin}')">
+        const bc = item.barcode || "";
+        const eanValue = item.ean || item.barcode || item.upc || item.ean13 || "";
+        const rowSku = item.sku || "";
+        const bcDisplay = bc || "-";
+        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${item.asin}')">
             <td>${item.asin}</td>
             <td>${item.sku || ""}</td>
             <td>
@@ -2382,6 +2414,7 @@
             <td>${item.fetched ? "Saved" : "Not fetched"}</td>
             <td style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
               <button class="btn ${item.fetched ? "" : "btn-fetch"}" data-asin="${item.asin}" ${disabled} onclick="fetchCatalog(this.dataset.asin, this)">${label}</button>
+              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this catalog row via NiceLabel" onclick="nicelabelPrintFromRow(this)">Print</button>
             </td>
           </tr>`;
       }).join("");
@@ -4335,6 +4368,7 @@
     </div>
   </div>
   <script src="/ui/js/printer_settings.js"></script>
+  <script src="/ui/js/nicelabel_print.js"></script>
   <div class="backdrop" id="picklist-modal">
     <div class="modal" style="max-width:1000px;">
       <header>
