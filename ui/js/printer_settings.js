@@ -1,414 +1,313 @@
-/*
-Manual Test Checklist:
-1. Open the Printer Settings panel via the new header button and confirm the modal appears.
-2. Verify printers load via GET /api/printers and the default dropdown reflects saved data.
-3. Update the settings and POST to /api/printers/default, then refresh GET to ensure values persist.
-4. Switch the Print Backend, save, and confirm the preview modal routes print requests based on the backend.
-*/
-
 (function () {
-  const LABEL_FIELD_KEYS = [
-    "label_width_mm",
-    "label_height_mm",
-    "dpi",
-    "darkness",
-    "speed",
-  ];
-
-  const TEXT_FIELD_KEYS = ["print_method", "media_type"];
-
   const DEFAULT_LABEL_VALUES = {
-    label_width_mm: 40,
-    label_height_mm: 30,
-    dpi: 203,
-    darkness: 12,
-    speed: 3,
+    label_width_mm: 38,
+    label_height_mm: 25.4,
+    gap_mm: 2,
   };
 
-  const DEFAULT_TEXT_VALUES = {
-    print_method: "direct_thermal",
-    media_type: "gap",
+  const IDS = {
+    modal: "printer-settings-modal",
+    openButton: "printer-settings-btn",
+    closeButton: "printer-settings-close-btn",
+    select: "printer-settings-select",
+    width: "printer-setting-label_width_mm",
+    height: "printer-setting-label_height_mm",
+    gap: "printer-setting-gap_mm",
+    warning: "printer-settings-warning",
+    status: "printer-settings-status",
+    save: "printer-settings-save-btn",
+    test: "printer-test-print-btn",
+    health: "printer-health-indicator",
+    recentList: "recent-prints-list",
+    recentRefresh: "recent-prints-refresh-btn",
   };
 
-  const DEFAULT_GAP = 0;
-  const DEFAULT_PRINT_BACKEND = "nice_label";
-
-  window.PRINTER_SETTINGS = window.PRINTER_SETTINGS || {
-    print_backend: DEFAULT_PRINT_BACKEND,
-  };
-
-  const modal = document.getElementById("printer-settings-modal");
-  const openButton = document.getElementById("printer-settings-btn");
-  const selectEl = document.getElementById("printer-settings-select");
-  const presetSelect = document.getElementById("printer-settings-preset");
-  const backendSelect = document.getElementById("printer-settings-backend");
-  const defaultPrinterField = document.getElementById("printer-settings-default-field");
-  const presetField = document.getElementById("printer-settings-preset-field");
-  const printMethodField = document.getElementById("printer-settings-print-method-field");
-  const mediaField = document.getElementById("printer-settings-media-field");
-  const gapField = document.getElementById("printer-settings-gap-field");
-  const dpiField = document.getElementById("printer-settings-dpi-field");
-  const niceLabelInfo = document.getElementById("printer-settings-nicelabel-info");
-  const warningEl = document.getElementById("printer-settings-warning");
-  const statusEl = document.getElementById("printer-settings-status");
-  const saveButton = document.getElementById("printer-settings-save-btn");
-  const closeButton = document.getElementById("printer-settings-close-btn");
-
-  if (
-    !modal ||
-    !openButton ||
-    !selectEl ||
-    !saveButton ||
-    !closeButton ||
-    !backendSelect
-  ) {
-    return;
-  }
-
-  const labelInputs = LABEL_FIELD_KEYS.reduce((acc, key) => {
-    const el = document.getElementById(`printer-setting-${key}`);
-    if (el) {
-      el.value = DEFAULT_LABEL_VALUES[key] ?? "";
+  function getElement(id) {
+    const el = document.getElementById(id);
+    if (!el) {
+      console.error(`[printer_settings] missing element: #${id}`);
     }
-    acc[key] = el;
-    return acc;
-  }, {});
-  const textInputs = TEXT_FIELD_KEYS.reduce((acc, key) => {
-    const el = document.getElementById(`printer-setting-${key}`);
-    if (el) {
-      el.value = DEFAULT_TEXT_VALUES[key] || "";
-    }
-    acc[key] = el;
-    return acc;
-  }, {});
-  const gapInput = document.getElementById("printer-setting-gap_mm");
-
-  let isOpen = false;
-  let printerPresets = {};
-  let selectedPreset = "";
-  let suppressPresetClear = false;
-  setBackendSelection(window.PRINTER_SETTINGS.print_backend);
-
-  function setElementVisible(element, visible) {
-    if (!element) return;
-    element.style.display = visible ? "" : "none";
+    return el;
   }
 
-  function refreshNiceLabelFields() {
-    const isNice = getBackendSelection() === "nice_label";
-    const targets = [
-      defaultPrinterField,
-      presetField,
-      printMethodField,
-      mediaField,
-      gapField,
-      dpiField,
-    ];
-    targets.forEach((element) => setElementVisible(element, !isNice));
-    setElementVisible(warningEl, !isNice);
-    setElementVisible(niceLabelInfo, isNice);
-  }
-
-  function setBackendSelection(value) {
-    const normalized = value || DEFAULT_PRINT_BACKEND;
-    window.PRINTER_SETTINGS = window.PRINTER_SETTINGS || {};
-    window.PRINTER_SETTINGS.print_backend = normalized;
-    if (backendSelect) {
-      backendSelect.value = normalized;
-    }
-    refreshNiceLabelFields();
-    return normalized;
-  }
-
-  function getBackendSelection() {
-    if (backendSelect && backendSelect.value) {
-      return backendSelect.value;
-    }
-    return (
-      window.PRINTER_SETTINGS?.print_backend || DEFAULT_PRINT_BACKEND
-    );
-  }
-
-  function setStatus(message, tone = "info") {
-    if (!statusEl) return;
-    statusEl.textContent = message || "";
-    if (tone === "error") {
-      statusEl.style.color = "#b91c1c";
-    } else if (tone === "success") {
-      statusEl.style.color = "#059669";
-    } else {
-      statusEl.style.color = "#374151";
+  function setStatusText(el, text, tone = "info") {
+    if (!el) return;
+    el.textContent = text || "";
+    switch (tone) {
+      case "success":
+        el.style.color = "#059669";
+        break;
+      case "error":
+        el.style.color = "#b91c1c";
+        break;
+      default:
+        el.style.color = "#374151";
     }
   }
 
-  function setWarning(message) {
-    if (!warningEl) return;
-    warningEl.textContent = message || "";
+  async function fetchJson(path) {
+    const response = await fetch(path);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.json();
   }
 
-  function toggleModal(show) {
-    isOpen = show;
-    modal.style.display = show ? "flex" : "none";
-    if (show) {
-      refreshPrinters();
-      setStatus("Loading printer list...", "info");
-    } else {
-      setStatus("", "info");
-      setWarning("");
+  async function loadPrinterDefaults(selectEl, widthEl, heightEl, gapEl, statusEl) {
+    try {
+      const defaults = await fetchJson("/api/printers/default");
+      widthEl.value = defaults.label_width_mm ?? DEFAULT_LABEL_VALUES.label_width_mm;
+      heightEl.value = defaults.label_height_mm ?? DEFAULT_LABEL_VALUES.label_height_mm;
+      gapEl.value = defaults.gap_mm ?? DEFAULT_LABEL_VALUES.gap_mm;
+      setStatusText(statusEl, "Printer settings loaded.", "success");
+      const savedPrinter = (
+        defaults.default_printer_name ||
+        defaults.selected_printer ||
+        ""
+      ).trim();
+      return savedPrinter;
+    } catch (err) {
+      console.error("[printer_settings] load defaults failed", err);
+      setStatusText(statusEl, "Unable to load printer defaults.", "error");
+      return "";
     }
   }
 
-  async function refreshPrinters() {
-    if (!selectEl) return;
+  async function loadPrinters(selectEl, preferred) {
+    if (!selectEl) return "";
     selectEl.disabled = true;
-    selectEl.innerHTML = '<option value="">Loading printers...</option>';
-    setWarning("");
-
+    selectEl.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "-- Select printer --";
+    selectEl.appendChild(placeholder);
     try {
-      const resp = await fetch("/api/printers");
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
+      const payload = await fetchJson("/api/printers");
+      const printers = Array.isArray(payload.printers) ? payload.printers : [];
+      const virtualPattern = /(OneNote|PDF|XPS|Fax)/i;
+      const physical = printers.filter((n) => !virtualPattern.test(n));
+      const virtual = printers.filter((n) => virtualPattern.test(n));
+      const ordered = physical.concat(virtual);
+      ordered.forEach((printer) => {
+        if (!printer) return;
+        const option = document.createElement("option");
+        option.value = printer;
+        option.textContent = printer;
+        selectEl.appendChild(option);
+      });
+      if (preferred && preferred.length && !ordered.includes(preferred)) {
+        const missing = document.createElement("option");
+        missing.value = preferred;
+        missing.textContent = `${preferred} (saved)`;
+        selectEl.appendChild(missing);
       }
-      const data = await resp.json();
-      const printers = Array.isArray(data?.printers) ? data.printers : [];
-
-      selectEl.innerHTML = "";
-      if (printers.length > 0) {
-        printers.forEach((name) => {
-          const option = document.createElement("option");
-          option.value = name;
-          option.textContent = name;
-          selectEl.appendChild(option);
-        });
-        selectEl.disabled = false;
-        setWarning(data?.warning || "");
-      } else {
-        const emptyOption = document.createElement("option");
-        emptyOption.value = "";
-        emptyOption.textContent = "No printers detected";
-        selectEl.appendChild(emptyOption);
-        selectEl.disabled = true;
-        setWarning(data?.warning || "No printers available.");
-      }
-
-      await loadDefaultSettings();
-      setStatus("Printer list refreshed.", "info");
+      selectEl.value = preferred || "";
+      selectEl.disabled = false;
+      return selectEl.value;
     } catch (err) {
-      selectEl.innerHTML = "";
-      const fallbackOption = document.createElement("option");
-      fallbackOption.value = "";
-      fallbackOption.textContent = "Printer list unavailable";
-      selectEl.appendChild(fallbackOption);
+      console.error("[printer_settings] load printers failed", err);
       selectEl.disabled = true;
-      setWarning("Unable to fetch printers.");
-      setStatus("Failed to load printers.", "error");
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Printers unavailable";
+      selectEl.appendChild(option);
+      return "";
     }
   }
 
-  async function loadDefaultSettings() {
+  async function refreshHealth(healthEl) {
+    if (!healthEl) return;
+    healthEl.textContent = "Checking printer health...";
     try {
-      const resp = await fetch("/api/printers/default");
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
+      const payload = await fetchJson("/api/printers/health");
+      const printerName = (payload.printer || "").trim();
+      if (!printerName) {
+        healthEl.textContent = "❌ No default printer selected";
+        return;
       }
-      const payload = await resp.json();
-      const defaultName = (payload?.default_printer_name || "").trim();
-
-      if (defaultName) {
-        const optionExists = Array.from(selectEl.options).some((opt) => opt.value === defaultName);
-        if (!optionExists) {
-          const extra = document.createElement("option");
-          extra.value = defaultName;
-          extra.textContent = `${defaultName} (saved)`;
-          selectEl.appendChild(extra);
-        }
-        selectEl.value = defaultName;
+      if (payload.ready) {
+        healthEl.textContent = `✅ Printer Ready — ${printerName}`;
+      } else {
+        healthEl.textContent = `⚠️ Printer Not Ready — ${payload.reason || "Unknown"}`;
       }
-
-      const labelValues = payload?.label_settings || {};
-      LABEL_FIELD_KEYS.forEach((key) => {
-        const input = labelInputs[key];
-        if (!input) return;
-        const value = labelValues[key];
-        input.value = value != null ? value : DEFAULT_LABEL_VALUES[key] ?? "";
-      });
-
-      TEXT_FIELD_KEYS.forEach((key) => {
-        const input = textInputs[key];
-        if (!input) return;
-        const value = labelValues[key];
-        input.value = value != null ? value : DEFAULT_TEXT_VALUES[key] || "";
-      });
-
-      if (gapInput) {
-        const gapValue = labelValues.gap_mm;
-        gapInput.value = gapValue != null ? gapValue : DEFAULT_GAP;
-      }
-
-      const backendValue = payload?.print_backend || DEFAULT_PRINT_BACKEND;
-      setBackendSelection(backendValue);
-
-      printerPresets = payload?.presets || {};
-      populatePresetOptions();
-      selectedPreset = payload?.selected_preset || "";
-      if (selectedPreset && presetSelect) {
-        presetSelect.value = selectedPreset;
-      }
-
-      if (selectedPreset && printerPresets[selectedPreset]) {
-        applyPresetValues(printerPresets[selectedPreset]);
-      }
-
-      setStatus("Loaded saved printer settings.", "info");
     } catch (err) {
-      setStatus("Unable to load saved settings.", "error");
+      console.error("[printer_settings] health fetch failed", err);
+      healthEl.textContent = "⚠️ Printer health unavailable";
     }
   }
 
-  async function saveSettings() {
-    if (!selectEl || !saveButton) return;
-    setStatus("Saving printer settings...", "info");
-    saveButton.disabled = true;
-
-    const labelPayload = LABEL_FIELD_KEYS.reduce((acc, key) => {
-      const input = labelInputs[key];
-      const parsed = input ? parseFloat(input.value) : NaN;
-      acc[key] = Number.isFinite(parsed) ? parsed : DEFAULT_LABEL_VALUES[key];
-      return acc;
-    }, {});
-
-    TEXT_FIELD_KEYS.forEach((key) => {
-      const input = textInputs[key];
-      if (input) {
-        labelPayload[key] = input.value || DEFAULT_TEXT_VALUES[key] || "";
+  async function loadRecentPrints(listEl) {
+    if (!listEl) return;
+    listEl.textContent = "Loading recent prints...";
+    try {
+      const payload = await fetchJson("/api/prints/recent?limit=5");
+      const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+      if (!jobs.length) {
+        listEl.textContent = "No recent prints";
+        return;
       }
-    });
-
-    if (gapInput) {
-      const parsedGap = parseFloat(gapInput.value);
-      labelPayload.gap_mm = Number.isFinite(parsedGap) ? parsedGap : DEFAULT_GAP;
+      listEl.innerHTML = "";
+      jobs.forEach((job) => {
+        const line = document.createElement("div");
+        line.style.marginBottom = "4px";
+        line.textContent = `${job.ok ? "✅" : "⚠️"} ${job.created_at || ""} x${job.copies} SKU:${job.sku || ""}`;
+        listEl.appendChild(line);
+        if (job.error) {
+          const errLine = document.createElement("div");
+          errLine.style.fontSize = "11px";
+          errLine.style.color = "#b91c1c";
+          errLine.style.marginLeft = "10px";
+          errLine.textContent = job.error;
+          listEl.appendChild(errLine);
+        }
+      });
+    } catch (err) {
+      console.error("[printer_settings] recent prints failed", err);
+      listEl.textContent = "Unable to load recent prints";
     }
+  }
 
-    const backendSelection = getBackendSelection();
-    setBackendSelection(backendSelection);
+  async function saveSettings(selectEl, widthEl, heightEl, gapEl, statusEl, warningEl) {
+    const printerName = (selectEl?.value || "").trim();
+    if (!selectEl) return;
+    setStatusText(statusEl, "Saving printer settings...", "info");
+    if (warningEl) warningEl.textContent = "";
     const payload = {
-      default_printer_name: selectEl.value || "",
-      label_settings: labelPayload,
-      selected_preset: selectedPreset,
-      print_backend: backendSelection,
+      default_printer_name: printerName,
+      label_settings: {
+        label_width_mm: Number.parseFloat(widthEl?.value) || DEFAULT_LABEL_VALUES.label_width_mm,
+        label_height_mm: Number.parseFloat(heightEl?.value) || DEFAULT_LABEL_VALUES.label_height_mm,
+        gap_mm: Number.parseFloat(gapEl?.value) || DEFAULT_LABEL_VALUES.gap_mm,
+      },
     };
-
     try {
       const resp = await fetch("/api/printers/default", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       if (!resp.ok) {
-        const msg = await resp.text();
-        throw new Error(msg || `HTTP ${resp.status}`);
+        throw new Error(`HTTP ${resp.status}`);
       }
-      const data = await resp.json();
-      setStatus("Printer settings saved.", "success");
-      const savedPreset = data?.settings?.selected_preset || "";
-      selectedPreset = savedPreset;
-      if (presetSelect) {
-        presetSelect.value = savedPreset || "";
-      }
-      const savedBackend = data?.settings?.print_backend || backendSelection;
-      setBackendSelection(savedBackend);
+      setStatusText(statusEl, "Printer settings saved.", "success");
+      await loadPrinterDefaults(selectEl, widthEl, heightEl, gapEl, statusEl);
+      await loadPrinters(selectEl, selectEl.value);
+      await refreshHealth(getElement(IDS.health));
     } catch (err) {
-      setStatus("Failed to save printer settings.", "error");
+      console.error("[printer_settings] save failed", err);
+      setStatusText(statusEl, "Saving failed.", "error");
+      if (warningEl) {
+        warningEl.textContent = err.message || "Unable to save settings.";
+      }
+    }
+  }
+
+  async function runTestPrint(buttonEl, recentListEl) {
+    if (!buttonEl) return;
+    const payload = { ean: "6292526066910", sku: "TEST-PRINT", copies: 1 };
+    const originalText = buttonEl.textContent;
+    buttonEl.disabled = true;
+    buttonEl.textContent = "Printing…";
+    try {
+      const resp = await fetch("/api/barcode/print", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      alert("✅ Test print sent");
+      await loadRecentPrints(recentListEl);
+    } catch (err) {
+      console.error("[printer_settings] test print failed", err);
+      alert(`❌ Test print failed: ${err.message}`);
     } finally {
-      saveButton.disabled = false;
+      buttonEl.disabled = false;
+      buttonEl.textContent = originalText;
     }
   }
 
-  function populatePresetOptions() {
-    if (!presetSelect) return;
-    const customOption = document.createElement("option");
-    customOption.value = "";
-    customOption.textContent = "Custom";
-    presetSelect.innerHTML = "";
-    presetSelect.appendChild(customOption);
-    Object.keys(printerPresets || {}).forEach((name) => {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name;
-      presetSelect.appendChild(option);
+  function openModal(modal, statusEl, healthEl, selectEl, widthEl, heightEl, gapEl, recentListEl) {
+    if (!modal) return;
+    if (modal.dataset.open === "1") return;
+    modal.dataset.open = "1";
+    modal.style.display = "flex";
+    setStatusText(statusEl, "Loading printer settings...", "info");
+    refreshHealth(healthEl);
+    loadPrinterDefaults(selectEl, widthEl, heightEl, gapEl, statusEl).then((preferred) => {
+      loadPrinters(selectEl, preferred);
     });
+    loadRecentPrints(recentListEl);
   }
 
-  function applyPresetValues(preset) {
-    suppressPresetClear = true;
-    const values = preset?.label_settings || {};
-    LABEL_FIELD_KEYS.forEach((key) => {
-      if (!labelInputs[key]) return;
-      const value = values[key];
-      labelInputs[key].value =
-        value != null ? value : DEFAULT_LABEL_VALUES[key] ?? "";
-    });
-    TEXT_FIELD_KEYS.forEach((key) => {
-      const input = textInputs[key];
-      if (!input) return;
-      const value = values[key];
-      input.value = value != null ? value : DEFAULT_TEXT_VALUES[key] || "";
-    });
-    if (gapInput) {
-      const gapValue = values.gap_mm;
-      gapInput.value = gapValue != null ? gapValue : DEFAULT_GAP;
-    }
-    const backendValue = preset?.print_backend || DEFAULT_PRINT_BACKEND;
-    setBackendSelection(backendValue);
-    suppressPresetClear = false;
+  function closeModal(modal) {
+    if (!modal || modal.dataset.open !== "1") return;
+    modal.dataset.open = "0";
+    modal.style.display = "none";
   }
 
-  function markCustomState() {
-    if (suppressPresetClear) return;
-    selectedPreset = "";
-    if (presetSelect) {
-      presetSelect.value = "";
-    }
-  }
+  function init() {
+    const modal = getElement(IDS.modal);
+    const openButton = getElement(IDS.openButton);
+    const closeButton = getElement(IDS.closeButton);
+    const selectEl = getElement(IDS.select);
+    const widthEl = getElement(IDS.width);
+    const heightEl = getElement(IDS.height);
+    const gapEl = getElement(IDS.gap);
+    const warningEl = getElement(IDS.warning);
+    const statusEl = getElement(IDS.status);
+    const saveButton = getElement(IDS.save);
+    const testButton = getElement(IDS.test);
+    const healthEl = getElement(IDS.health);
+    const recentListEl = getElement(IDS.recentList);
+    const recentRefresh = getElement(IDS.recentRefresh);
 
+    if (!modal || !openButton) return;
 
-  openButton.addEventListener("click", () => toggleModal(true));
-  closeButton.addEventListener("click", () => toggleModal(false));
-  saveButton.addEventListener("click", saveSettings);
-  if (presetSelect) {
-    presetSelect.addEventListener("change", (event) => {
-      const value = event.target.value;
-      selectedPreset = value || "";
-      if (selectedPreset && printerPresets[selectedPreset]) {
-        applyPresetValues(printerPresets[selectedPreset]);
+    openButton.addEventListener("click", () => {
+      openModal(modal, statusEl, healthEl, selectEl, widthEl, heightEl, gapEl, recentListEl);
+    });
+
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (event.target.closest("#" + IDS.openButton)) {
+          event.preventDefault();
+          openModal(modal, statusEl, healthEl, selectEl, widthEl, heightEl, gapEl, recentListEl);
+        }
+      },
+      true
+    );
+
+    closeButton && closeButton.addEventListener("click", () => closeModal(modal));
+    modal && modal.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        closeModal(modal);
       }
     });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeModal(modal);
+      }
+    });
+
+    saveButton && saveButton.addEventListener("click", () => {
+      saveSettings(selectEl, widthEl, heightEl, gapEl, statusEl, warningEl);
+    });
+
+    testButton && testButton.addEventListener("click", () => {
+      runTestPrint(testButton, recentListEl);
+    });
+
+    recentRefresh && recentRefresh.addEventListener("click", () => {
+      loadRecentPrints(recentListEl);
+    });
   }
 
-  Object.values(labelInputs).forEach((input) => {
-    input?.addEventListener("input", markCustomState);
-  });
-  Object.values(textInputs).forEach((input) => {
-    input?.addEventListener("input", markCustomState);
-  });
-  gapInput?.addEventListener("input", markCustomState);
-  backendSelect?.addEventListener("change", (event) => {
-    markCustomState();
-    const value = event.target.value;
-    setBackendSelection(value);
-  });
-
-  modal.addEventListener("click", (event) => {
-    if (event.target === modal) {
-      toggleModal(false);
-    }
-  });
-
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && isOpen) {
-      toggleModal(false);
-    }
-  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();

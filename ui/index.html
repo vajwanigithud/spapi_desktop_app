@@ -93,6 +93,48 @@
         padding: 6px 10px;
         font-size: 13px;
       }
+      #catalog-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      #catalog-table thead th {
+        position: sticky;
+        top: 0;
+        background: #fff;
+        z-index: 2;
+      }
+      #catalog-table th,
+      #catalog-table td {
+        border: 1px solid var(--border);
+        vertical-align: top;
+      }
+      #catalog-table th {
+        position: relative;
+      }
+      #catalog-table td:last-child {
+        vertical-align: middle;
+        text-align: center;
+      }
+      #catalog-barcode-filter {
+        margin-left: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        height: 36px;
+        background: #fff;
+        font-size: 13px;
+      }
+      .catalog-col-resize-handle {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 6px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 2;
+        user-select: none;
+      }
       /* Conditional formatting for quantities */
       .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
       .qty-pending { background-color: #fef3c7; color: #92400e; font-weight: 600; }
@@ -458,10 +500,15 @@
         <button class="btn" onclick="loadAsinList(true)">Refresh</button>
         <button class="btn" style="background:#16a34a" onclick="fetchAllMissing()">Fetch All Missing</button>
         <input id="asin-search" type="text" placeholder="Search ASIN / SKU / Title" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--border);" oninput="filterAsins()" />
+        <select id="catalog-barcode-filter" style="margin-left:8px;" onchange="filterAsins()">
+          <option value="all">All</option>
+          <option value="missing">Missing barcode</option>
+          <option value="has">Has barcode</option>
+        </select>
       </div>
       <div style="padding:0 12px 12px 12px;">
         <div style="overflow:auto; max-height: calc(100vh - 240px);">
-          <table>
+          <table id="catalog-table">
             <thead>
               <tr>
                 <th style="width:22%;">ASIN</th>
@@ -469,12 +516,11 @@
                 <th style="width:18%;">Barcode</th>
                 <th style="width:26%;">Title</th>
                 <th style="width:12%;">Image</th>
-                <th style="width:10%;">Status</th>
                 <th>Action</th>
               </tr>
             </thead>
             <tbody id="asin-rows">
-              <tr><td colspan="7" class="empty">Loading...</td></tr>
+              <tr><td colspan="6" class="empty">Loading...</td></tr>
             </tbody>
           </table>
         </div>
@@ -828,6 +874,9 @@
     let filteredPOs = [];
     let asinList = [];
     let filteredAsins = [];
+    const CATALOG_COL_WIDTH_KEY = "catalog_table_col_widths_v1";
+    let catalogColWidths = [];
+    let catalogResizeState = null;
     let activeTab = "pos";
     let oosItems = [];
     let selectedPoNumbers = [];
@@ -1340,7 +1389,7 @@
           <td>
             ${Number.isFinite(acceptedLineAmount) && acceptedLineAmount > 0 ? acceptedLineAmount.toFixed(2) : "0.00"}
             <div style="margin-top:4px;">
-              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this line via NiceLabel" onclick="nicelabelPrintFromRow(this)">Print</button>
+              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this line" onclick="barcodePrintFromRow(this)">Print</button>
             </div>
           </td>
         </tr>`;
@@ -2249,26 +2298,160 @@
         }
         const data = await resp.json();
         asinList = data.items || [];
-        filteredAsins = asinList;
-        renderAsinList();
+        filterAsins();
       } catch (err) {
         tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load ASINs: ${err}</td></tr>`;
       }
     }
 
     function filterAsins() {
-      const q = (document.getElementById("asin-search").value || "").toLowerCase();
-      if (!q) {
-        filteredAsins = asinList;
-      } else {
-        filteredAsins = asinList.filter(item => {
-          return (item.asin || "").toLowerCase().includes(q) ||
-                 (item.sku || "").toLowerCase().includes(q) ||
-                 (item.model || "").toLowerCase().includes(q) ||
-                 (item.title || "").toLowerCase().includes(q);
-        });
-      }
+      const searchEl = document.getElementById("asin-search");
+      const filterEl = document.getElementById("catalog-barcode-filter");
+
+      const query = (searchEl ? searchEl.value : "").toLowerCase();
+      const barcodeFilter = filterEl ? filterEl.value : "all";
+      const barcodeRegex = /^\d{12,13}$/;
+
+      filteredAsins = asinList.filter(item => {
+        const asinVal = (item.asin || "").toLowerCase();
+        const skuVal = (item.sku || "").toLowerCase();
+        const modelVal = (item.model || "").toLowerCase();
+        const titleVal = (item.title || "").toLowerCase();
+
+        const matchesText =
+          !query ||
+          asinVal.includes(query) ||
+          skuVal.includes(query) ||
+          modelVal.includes(query) ||
+          titleVal.includes(query);
+
+        const bcValue = (item.barcode || "").toString().trim();
+        const hasValidBarcode = barcodeRegex.test(bcValue);
+
+        let matchesBarcode = true;
+        if (barcodeFilter === "missing") matchesBarcode = !hasValidBarcode;
+        if (barcodeFilter === "has") matchesBarcode = hasValidBarcode;
+
+        return matchesText && matchesBarcode;
+      });
+
       renderAsinList();
+    }
+
+    function initCatalogColumnResizing() {
+      const table = document.getElementById("catalog-table");
+      if (!table) return;
+      const headers = table.querySelectorAll("th");
+      headers.forEach((th, index) => {
+        th.dataset.colIndex = index;
+        if (!th.querySelector(".catalog-col-resize-handle")) {
+          const handle = document.createElement("span");
+          handle.className = "catalog-col-resize-handle";
+          handle.dataset.colIndex = index;
+          handle.addEventListener("mousedown", onCatalogResizeMouseDown);
+          th.appendChild(handle);
+        }
+      });
+      try {
+        const saved = localStorage.getItem(CATALOG_COL_WIDTH_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            catalogColWidths = parsed;
+          }
+        }
+      } catch (err) {
+        catalogColWidths = [];
+      }
+      applyCatalogColumnWidths();
+    }
+
+    function onCatalogResizeMouseDown(event) {
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const index = Number(handle.dataset.colIndex);
+      const table = document.getElementById("catalog-table");
+      if (!table) return;
+      const header = table.querySelectorAll("th")[index];
+      if (!header) return;
+      catalogResizeState = {
+        columnIndex: index,
+        startX: event.pageX,
+        startWidth: header.offsetWidth,
+      };
+      document.body.style.cursor = "col-resize";
+      document.addEventListener("mousemove", onCatalogResizeMouseMove);
+      document.addEventListener("mouseup", onCatalogResizeMouseUp);
+    }
+
+    function onCatalogResizeMouseMove(event) {
+      if (!catalogResizeState) return;
+      const delta = event.pageX - catalogResizeState.startX;
+      const newWidth = Math.max(60, catalogResizeState.startWidth + delta);
+      setCatalogColumnWidth(catalogResizeState.columnIndex, newWidth);
+    }
+
+    function onCatalogResizeMouseUp() {
+      if (!catalogResizeState) return;
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", onCatalogResizeMouseMove);
+      document.removeEventListener("mouseup", onCatalogResizeMouseUp);
+      try {
+        localStorage.setItem(CATALOG_COL_WIDTH_KEY, JSON.stringify(catalogColWidths));
+      } catch (err) {
+        console.warn("Failed to persist catalog widths", err);
+      }
+      catalogResizeState = null;
+    }
+
+    function setCatalogColumnWidth(index, width) {
+      if (typeof index !== "number" || index < 0) return;
+      const table = document.getElementById("catalog-table");
+      if (!table) return;
+      catalogColWidths[index] = width;
+      const headers = table.querySelectorAll("th");
+      const header = headers[index];
+      if (header) {
+        header.style.width = `${width}px`;
+        header.style.minWidth = `${width}px`;
+        header.style.maxWidth = `${width}px`;
+      }
+      const rows = table.querySelectorAll("tbody tr");
+      rows.forEach(row => {
+        const cell = row.children[index];
+        if (cell) {
+          cell.style.width = `${width}px`;
+          cell.style.minWidth = `${width}px`;
+          cell.style.maxWidth = `${width}px`;
+        }
+      });
+    }
+
+    function applyCatalogColumnWidths() {
+      const table = document.getElementById("catalog-table");
+      if (!table || !catalogColWidths || !catalogColWidths.length) return;
+      const headers = table.querySelectorAll("th");
+      headers.forEach((th, index) => {
+        const width = catalogColWidths[index];
+        if (width) {
+          th.style.width = `${width}px`;
+          th.style.minWidth = `${width}px`;
+          th.style.maxWidth = `${width}px`;
+        }
+      });
+      const rows = table.querySelectorAll("tbody tr");
+      rows.forEach(row => {
+        const cells = row.children;
+        catalogColWidths.forEach((width, idx) => {
+          if (!width) return;
+          const cell = cells[idx];
+          if (cell) {
+            cell.style.width = `${width}px`;
+            cell.style.minWidth = `${width}px`;
+            cell.style.maxWidth = `${width}px`;
+          }
+        });
+      });
     }
 
     async function fetchAllMissing() {
@@ -2388,36 +2571,53 @@
 
     function renderAsinList() {
       const tbody = document.getElementById("asin-rows");
+      if (!tbody) return;
+
       if (!filteredAsins.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty">No ASINs found in Vendor POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No ASINs found in Vendor POs</td></tr>';
         return;
       }
+
       tbody.innerHTML = filteredAsins.map(item => {
-        const disabled = item.fetched ? "disabled" : "";
-        const label = item.fetched ? "Fetched" : "Fetch";
-        const img = item.image ? `<img src="${item.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;${item.fetched ? 'opacity:0.5;' : ''}" />` : "";
-        const bc = item.barcode || "";
-        const eanValue = item.ean || item.barcode || item.upc || item.ean13 || "";
-        const rowSku = item.sku || "";
-        const bcDisplay = bc || "-";
-        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${item.asin}')">
-            <td>${item.asin}</td>
-            <td>${item.sku || ""}</td>
-            <td>
-              <div style="display:flex; align-items:center; gap:6px;">
-                <span id="bc-${item.asin}">${bcDisplay}</span>
-                <button class="btn" style="padding:4px 8px; background:#0f172a;" onclick="editBarcode('${item.asin}', '${bc}')">Edit</button>
-              </div>
-            </td>
-            <td>${item.title || ""}</td>
-            <td>${img}</td>
-            <td>${item.fetched ? "Saved" : "Not fetched"}</td>
-            <td style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
-              <button class="btn ${item.fetched ? "" : "btn-fetch"}" data-asin="${item.asin}" ${disabled} onclick="fetchCatalog(this.dataset.asin, this)">${label}</button>
-              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this catalog row via NiceLabel" onclick="nicelabelPrintFromRow(this)">Print</button>
-            </td>
-          </tr>`;
+        const asin = (item.asin || "").trim();
+        const sku = (item.sku || "").trim();
+        const bc = (item.barcode || "").toString().trim();
+        const isValidBarcode = /^\d{12,13}$/.test(bc);
+
+        const eanValue = (item.ean || item.barcode || item.upc || item.ean13 || "").toString().trim();
+        const rowSku = sku;
+
+        const imageCell = item.image
+          ? `<img src="${item.image}" alt="" style="width:80px;height:80px;object-fit:contain;border-radius:6px;" />`
+          : "";
+
+        const barcodeCell = isValidBarcode
+          ? `<span id="bc-${asin}">${bc}</span>`
+          : `<div style="display:flex; align-items:center; gap:6px;">
+               <span id="bc-${asin}">${bc || "-"}</span>
+               <button class="btn" style="padding:4px 8px; background:#0f172a;"
+                 onclick="editBarcode('${asin}', '${bc}')">Edit</button>
+             </div>`;
+
+        const fetchButton = item.fetched
+          ? ""
+          : `<button class="btn btn-fetch" data-asin="${asin}" onclick="fetchCatalog(this.dataset.asin, this)">Fetch</button>`;
+
+        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')">
+          <td>${asin}</td>
+          <td>${sku}</td>
+          <td>${barcodeCell}</td>
+          <td>${item.title || ""}</td>
+          <td>${imageCell}</td>
+          <td style="text-align:center;">
+            <div style="display:inline-flex; gap:8px; align-items:center; justify-content:center;">
+              ${fetchButton}
+              <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this catalog row" onclick="barcodePrintFromRow(this)">Print</button>
+            </div>
+          </td>
+        </tr>`;
       }).join("");
+      applyCatalogColumnWidths();
     }
 
     async function fetchCatalog(asin, btnEl) {
@@ -4285,6 +4485,7 @@
       }
     }
 
+    initCatalogColumnResizing();
     showTab("pos");
     loadPOs(false);
     scheduleInitialAutoSync();
@@ -4292,83 +4493,57 @@
     setInterval(autoSyncIfDue, 5 * 60 * 1000);
   </script>
   <div class="backdrop" id="printer-settings-modal" style="display:none;">
-    <div class="modal" style="max-width:520px;">
+    <div class="modal" style="max-width:720px;">
       <header>
         <div>Printer Settings</div>
-        <button class="btn" id="printer-settings-close-btn" style="background:#6b7280;">Close</button>
+        <button class="btn" id="printer-settings-close-btn" type="button">Close</button>
       </header>
+
       <div class="modal-body">
-        <div id="printer-settings-default-field" class="printer-settings-field">
-          <label for="printer-settings-select">Default Printer</label>
-          <select id="printer-settings-select">
-            <option value="">Loading printers...</option>
-          </select>
-          <div class="printer-settings-warning" id="printer-settings-warning"></div>
-        </div>
-        <div id="printer-settings-preset-field" class="printer-settings-field">
-          <label for="printer-settings-preset">Preset</label>
-          <select id="printer-settings-preset">
-            <option value="">Custom</option>
-          </select>
-        </div>
-        <div id="printer-settings-print-method-field" class="printer-settings-field">
-          <label for="printer-settings-backend">Print Backend</label>
-          <select id="printer-settings-backend">
-            <option value="nice_label">NiceLabel (managed externally)</option>
-          </select>
-        </div>
-        <div id="printer-settings-nicelabel-info" class="printer-settings-info" style="display:none;">
-          <div class="printer-settings-info-title">Printing via NiceLabel</div>
-          <div>
-            Printers and label templates are managed inside NiceLabel. This app
-            forwards EAN/SKU data to NiceLabel over TCP/IP.
-          </div>
-        </div>
-        <div id="printer-settings-media-field" class="printer-settings-field">
-          <label for="printer-setting-label_width_mm">Label Width (mm)</label>
-          <input type="number" id="printer-setting-label_width_mm" min="1" step="1" />
-        </div>
-        <div id="printer-settings-gap-field" class="printer-settings-field">
-          <label for="printer-setting-label_height_mm">Label Height (mm)</label>
-          <input type="number" id="printer-setting-label_height_mm" min="1" step="1" />
-        </div>
-        <div id="printer-settings-dpi-field" class="printer-settings-field">
-          <label for="printer-setting-print_method">Print Method</label>
-          <input type="text" id="printer-setting-print_method" placeholder="direct_thermal" />
-        </div>
+
+        <div id="printer-health-indicator" style="margin-bottom:12px;"></div>
+
         <div class="printer-settings-field">
-          <label for="printer-setting-media_type">Media Type</label>
-          <input type="text" id="printer-setting-media_type" placeholder="gap" />
+          <label for="printer-settings-select">Default Printer</label>
+          <select id="printer-settings-select"></select>
         </div>
+
+        <div class="printer-settings-field">
+          <label for="printer-setting-label_width_mm">Label Width (mm)</label>
+          <input id="printer-setting-label_width_mm" type="number" step="0.1" />
+        </div>
+
+        <div class="printer-settings-field">
+          <label for="printer-setting-label_height_mm">Label Height (mm)</label>
+          <input id="printer-setting-label_height_mm" type="number" step="0.1" />
+        </div>
+
         <div class="printer-settings-field">
           <label for="printer-setting-gap_mm">Gap (mm)</label>
-          <input type="number" id="printer-setting-gap_mm" min="0" step="0.5" />
+          <input id="printer-setting-gap_mm" type="number" step="0.1" />
         </div>
-        <div class="printer-settings-field">
-          <label for="printer-setting-dpi">DPI</label>
-          <input type="number" id="printer-setting-dpi" min="50" step="1" />
+
+        <div id="printer-settings-warning"></div>
+        <div id="printer-settings-status"></div>
+
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button class="btn" id="printer-settings-save-btn" type="button">Save</button>
+          <button class="btn" id="printer-test-print-btn" type="button">Test Print</button>
         </div>
-        <div class="printer-settings-field">
-          <label for="printer-setting-darkness">Darkness</label>
-          <input type="number" id="printer-setting-darkness" min="0" step="1" />
+
+        <div style="margin-top:16px;">
+          <div style="font-weight:600; margin-bottom:6px;">Recent Prints</div>
+          <div id="recent-prints-list"></div>
+          <button class="btn" id="recent-prints-refresh-btn" type="button" style="margin-top:6px;">
+            Refresh
+          </button>
         </div>
-        <div class="printer-settings-field">
-          <label for="printer-setting-speed">Speed</label>
-          <input type="number" id="printer-setting-speed" min="0" step="1" />
-        </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:12px;">
-          <div>
-              <div id="printer-settings-status" class="printer-settings-status muted-text"></div>
-            </div>
-            <div style="display:flex; gap:8px;">
-              <button class="btn" id="printer-settings-save-btn">Save Settings</button>
-            </div>
-        </div>
+
       </div>
     </div>
   </div>
   <script src="/ui/js/printer_settings.js"></script>
-  <script src="/ui/js/nicelabel_print.js"></script>
+  <script src="/ui/js/barcode_print.js"></script>
   <div class="backdrop" id="picklist-modal">
     <div class="modal" style="max-width:1000px;">
       <header>

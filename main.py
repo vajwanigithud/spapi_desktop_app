@@ -127,7 +127,10 @@ from services.vendor_inventory import (
     refresh_vendor_inventory_snapshot,
     get_vendor_inventory_snapshot_for_ui,
 )
-from routes.nicelabel_routes import register_nicelabel_routes
+from routes.printer_routes import register_printer_routes
+from routes.barcode_print_routes import register_barcode_print_routes
+from routes.printer_health_routes import register_printer_health_routes
+from routes.print_log_routes import register_print_log_routes
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -206,7 +209,19 @@ if not tester_logger.handlers:
 
 app = FastAPI(title="SP-API Desktop App (Minimal)", version="1.0.0")
 
-register_nicelabel_routes(app)
+
+@app.middleware("http")
+async def log_static_requests(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/ui/"):
+        content_type = response.headers.get("content-type", "")
+        logger.info("[STATIC] %s %s -> %s (%s)", request.method, path, response.status_code, content_type)
+    return response
+register_printer_routes(app)
+register_barcode_print_routes(app)
+register_printer_health_routes(app)
+register_print_log_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -241,17 +256,42 @@ templates = Jinja2Templates(directory=TEMPLATE_DIR)
 
 app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+INDEX_HTML_PATH = UI_DIR / "index.html"
+
+
 @app.get("/")
-def home():  # simple root
-    return {"status": "running", "message": "Fresh start - add your endpoints here"}
-
-
-@app.get("/ui/index.html")
-def ui_index():
-    index_path = UI_DIR / "index.html"
-    if not index_path.exists():
+def home() -> FileResponse:
+    if not INDEX_HTML_PATH.exists():
         raise HTTPException(status_code=404, detail="UI not found")
-    return FileResponse(index_path)
+    return FileResponse(INDEX_HTML_PATH)
+
+
+@app.get("/index.html")
+def web_index() -> FileResponse:
+    return FileResponse(INDEX_HTML_PATH)
+
+
+@app.get("/api/debug/ui")
+def ui_debug() -> JSONResponse:
+    exists = INDEX_HTML_PATH.exists()
+    stat = INDEX_HTML_PATH.stat() if exists else None
+    return JSONResponse(
+        {
+            "cwd": str(Path.cwd()),
+            "index_path": str(INDEX_HTML_PATH.resolve()),
+            "exists": exists,
+            "size": stat.st_size if stat else None,
+            "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat() if stat else None,
+        }
+    )
+
+
+@app.get("/api/ping")
+def ping() -> JSONResponse:
+    ts = datetime.now(timezone.utc).isoformat()
+    logger.info("[PING] ping called")
+    return JSONResponse({"ok": True, "ts": ts})
 
 # -------------------------------
 # ====================================================================
