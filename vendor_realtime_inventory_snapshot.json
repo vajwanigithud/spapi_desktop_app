@@ -1,0 +1,577 @@
+{
+  "generated_at": "2025-12-14T07:54:28Z",
+  "marketplace_id": "A2VIGQ35RCS4UG",
+  "report_start_time": "2025-12-13T06:00:00Z",
+  "report_end_time": "2025-12-14T06:00:00Z",
+  "items": [
+    {
+      "asin": "B001G7HDEM",
+      "sellable": 1,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0BFF3YWBF",
+      "sellable": 6,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0C43KD84H",
+      "sellable": 55,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": 62
+    },
+    {
+      "asin": "B0C43LV5FC",
+      "sellable": 15,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": 18
+    },
+    {
+      "asin": "B0CG911Q37",
+      "sellable": 9,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0CJM3FG27",
+      "sellable": 84,
+      "startTime": "2025-12-13T20:00:00Z",
+      "endTime": "2025-12-13T21:00:00Z",
+      "sales_30d": 18
+    },
+    {
+      "asin": "B0CX8B1B3M",
+      "sellable": 1,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0CX8ZNJ6T",
+      "sellable": 7,
+      "startTime": "2025-12-13T07:00:00Z",
+      "endTime": "2025-12-13T08:00:00Z",
+      "sales_30d": 3
+    },
+    {
+      "asin": "B0D2DFDT1B",
+      "sellable": 4,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0F8R245FF",
+      "sellable": 0,
+      "startTime": "2025-12-13T06:00:00Z",
+      "endTime": "2025-12-13T07:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0DCZL53PP",
+      "sellable": 82,
+      "startTime": "2025-12-14T01:00:00Z",
+      "endTime": "2025-12-14T02:00:00Z",
+      "sales_30d": 71
+    },
+    {
+      "asin": "B0DPCDNRRM",
+      "sellable": 112,
+      "startTime": "2025-12-13T18:00:00Z",
+      "endTime": "2025-12-13T19:00:00Z",
+      "sales_30d": 72
+    },
+    {
+      "asin": "B0F1T69CMX",
+      "sellable": 0,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 28
+    },
+    {
+      "asin": "B07CZ6N2JJ",
+      "sellable": 15,
+      "startTime": "2025-12-13T08:00:00Z",
+      "endTime": "2025-12-13T09:00:00Z",
+      "sales_30d": 15
+    },
+    {
+      "asin": "B0CJM47PYL",
+      "sellable": 21,
+      "startTime": "2025-12-13T09:00:00Z",
+      "endTime": "2025-12-13T10:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0CSPPJG6R",
+      "sellable": 20,
+      "startTime": "2025-12-13T08:00:00Z",
+      "endTime": "2025-12-13T09:00:00Z",
+      "sales_30d": 7
+    },
+    {
+      "asin": "B0F8NY6CJM",
+      "sellable": 45,
+      "startTime": "2025-12-13T16:00:00Z",
+      "endTime": "2025-12-13T17:00:00Z",
+      "sales_30d": 30
+    },
+    {
+      "asin": "B0G1Y9STNX",
+      "sellable": 0,
+      "startTime": "2025-12-13T08:00:00Z",
+      "endTime": "2025-12-13T09:00:00Z",
+      "sales_30d": 18
+    },
+    {
+      "asin": "B0C2PV4HGD",
+      "sellable": 10,
+      "startTime": "2025-12-13T09:00:00Z",
+      "endTime": "2025-12-13T10:00:00Z",
+      "sales_30d": 2
+    },
+    {
+      "asin": "B0D5M7JKG9",
+      "sellable": 0,
+      "startTime": "2025-12-13T09:00:00Z",
+      "endTime": "2025-12-13T10:00:00Z",
+      "sales_30d": 4
+    },
+    {
+      "asin": "B0C412175D",
+      "sellable": 61,
+      "startTime": "2025-12-13T10:00:00Z",
+      "endTime": "2025-12-13T11:00:00Z",
+      "sales_30d": 26
+    },
+    {
+      "asin": "B0C43JBYBF",
+      "sellable": 2,
+      "startTime": "2025-12-13T16:00:00Z",
+      "endTime": "2025-12-13T17:00:00Z",
+      "sales_30d": 44
+    },
+    {
+      "asin": "B0C812SSFB",
+      "sellable": 0,
+      "startTime": "2025-12-13T10:00:00Z",
+      "endTime": "2025-12-13T11:00:00Z",
+      "sales_30d": 6
+    },
+    {
+      "asin": "B0CNLSBDVV",
+      "sellable": 42,
+      "startTime": "2025-12-13T18:00:00Z",
+      "endTime": "2025-12-13T19:00:00Z",
+      "sales_30d": 27
+    },
+    {
+      "asin": "B0D7QBJVC3",
+      "sellable": 51,
+      "startTime": "2025-12-13T10:00:00Z",
+      "endTime": "2025-12-13T11:00:00Z",
+      "sales_30d": 16
+    },
+    {
+      "asin": "B0C43LY13T",
+      "sellable": 1,
+      "startTime": "2025-12-13T14:00:00Z",
+      "endTime": "2025-12-13T15:00:00Z",
+      "sales_30d": 13
+    },
+    {
+      "asin": "B0CJM2RZRV",
+      "sellable": 93,
+      "startTime": "2025-12-13T19:00:00Z",
+      "endTime": "2025-12-13T20:00:00Z",
+      "sales_30d": 27
+    },
+    {
+      "asin": "B0CNCPVYCQ",
+      "sellable": 1,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0CX8CLJSK",
+      "sellable": 105,
+      "startTime": "2025-12-13T20:00:00Z",
+      "endTime": "2025-12-13T21:00:00Z",
+      "sales_30d": 14
+    },
+    {
+      "asin": "B0F9Z1HFF3",
+      "sellable": 6,
+      "startTime": "2025-12-13T19:00:00Z",
+      "endTime": "2025-12-13T20:00:00Z",
+      "sales_30d": 14
+    },
+    {
+      "asin": "B0C43LHP13",
+      "sellable": 0,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 20
+    },
+    {
+      "asin": "B0C59JBNY3",
+      "sellable": 8,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 5
+    },
+    {
+      "asin": "B0CC2JMLGM",
+      "sellable": 2,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 4
+    },
+    {
+      "asin": "B0CC2K6DZJ",
+      "sellable": 11,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 51
+    },
+    {
+      "asin": "B0CJLQX64X",
+      "sellable": 34,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 31
+    },
+    {
+      "asin": "B0CMTYD3F4",
+      "sellable": 52,
+      "startTime": "2025-12-14T05:00:00Z",
+      "endTime": "2025-12-14T06:00:00Z",
+      "sales_30d": 7
+    },
+    {
+      "asin": "B0CX8PCRVH",
+      "sellable": 165,
+      "startTime": "2025-12-14T05:00:00Z",
+      "endTime": "2025-12-14T06:00:00Z",
+      "sales_30d": 32
+    },
+    {
+      "asin": "B0CX8S9LB6",
+      "sellable": 77,
+      "startTime": "2025-12-14T03:00:00Z",
+      "endTime": "2025-12-14T04:00:00Z",
+      "sales_30d": 6
+    },
+    {
+      "asin": "B0DDXZDX4K",
+      "sellable": 0,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 2
+    },
+    {
+      "asin": "B0F9YZVKT2",
+      "sellable": 10,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 5
+    },
+    {
+      "asin": "B0FS78TM1P",
+      "sellable": 0,
+      "startTime": "2025-12-13T12:00:00Z",
+      "endTime": "2025-12-13T13:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0150ENOPS",
+      "sellable": 24,
+      "startTime": "2025-12-13T22:00:00Z",
+      "endTime": "2025-12-13T23:00:00Z",
+      "sales_30d": 87
+    },
+    {
+      "asin": "B0C3CLLJQL",
+      "sellable": 20,
+      "startTime": "2025-12-13T16:00:00Z",
+      "endTime": "2025-12-13T17:00:00Z",
+      "sales_30d": 69
+    },
+    {
+      "asin": "B0CJLQY4T2",
+      "sellable": 48,
+      "startTime": "2025-12-13T13:00:00Z",
+      "endTime": "2025-12-13T14:00:00Z",
+      "sales_30d": 15
+    },
+    {
+      "asin": "B0CVQ8GML1",
+      "sellable": 1,
+      "startTime": "2025-12-13T13:00:00Z",
+      "endTime": "2025-12-13T14:00:00Z",
+      "sales_30d": 3
+    },
+    {
+      "asin": "B0F9YY4JP1",
+      "sellable": 19,
+      "startTime": "2025-12-13T13:00:00Z",
+      "endTime": "2025-12-13T14:00:00Z",
+      "sales_30d": 12
+    },
+    {
+      "asin": "B09SF7F1DR",
+      "sellable": 8,
+      "startTime": "2025-12-13T14:00:00Z",
+      "endTime": "2025-12-13T15:00:00Z",
+      "sales_30d": 2
+    },
+    {
+      "asin": "B0CC2H36TZ",
+      "sellable": 3,
+      "startTime": "2025-12-13T14:00:00Z",
+      "endTime": "2025-12-13T15:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0CC2HBQN8",
+      "sellable": 25,
+      "startTime": "2025-12-13T14:00:00Z",
+      "endTime": "2025-12-13T15:00:00Z",
+      "sales_30d": 2
+    },
+    {
+      "asin": "B0CX89MYGP",
+      "sellable": 96,
+      "startTime": "2025-12-13T16:00:00Z",
+      "endTime": "2025-12-13T17:00:00Z",
+      "sales_30d": 34
+    },
+    {
+      "asin": "B0F9YZ5BB8",
+      "sellable": 12,
+      "startTime": "2025-12-13T14:00:00Z",
+      "endTime": "2025-12-13T15:00:00Z",
+      "sales_30d": 9
+    },
+    {
+      "asin": "B0CJM27WSF",
+      "sellable": 60,
+      "startTime": "2025-12-13T15:00:00Z",
+      "endTime": "2025-12-13T16:00:00Z",
+      "sales_30d": 15
+    },
+    {
+      "asin": "B0C43HBZ4Y",
+      "sellable": 0,
+      "startTime": "2025-12-13T16:00:00Z",
+      "endTime": "2025-12-13T17:00:00Z",
+      "sales_30d": 6
+    },
+    {
+      "asin": "B0CH4TG7BG",
+      "sellable": 128,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 5
+    },
+    {
+      "asin": "B0D7HYQGF2",
+      "sellable": 1,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0F1T2N6H5",
+      "sellable": 26,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 32
+    },
+    {
+      "asin": "B0F1T4S3NC",
+      "sellable": 12,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 14
+    },
+    {
+      "asin": "B0F1T4ZC4C",
+      "sellable": 2,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 5
+    },
+    {
+      "asin": "B0F1T641GV",
+      "sellable": 0,
+      "startTime": "2025-12-13T21:00:00Z",
+      "endTime": "2025-12-13T22:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0F1T7V7GD",
+      "sellable": 11,
+      "startTime": "2025-12-13T17:00:00Z",
+      "endTime": "2025-12-13T18:00:00Z",
+      "sales_30d": 20
+    },
+    {
+      "asin": "B0DTDFVKK6",
+      "sellable": 36,
+      "startTime": "2025-12-13T19:00:00Z",
+      "endTime": "2025-12-13T20:00:00Z",
+      "sales_30d": 45
+    },
+    {
+      "asin": "B0C3CNNW64",
+      "sellable": 3,
+      "startTime": "2025-12-13T20:00:00Z",
+      "endTime": "2025-12-13T21:00:00Z",
+      "sales_30d": 11
+    },
+    {
+      "asin": "B0C59K2HD5",
+      "sellable": 0,
+      "startTime": "2025-12-13T20:00:00Z",
+      "endTime": "2025-12-13T21:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0CJM3BBNK",
+      "sellable": 24,
+      "startTime": "2025-12-13T20:00:00Z",
+      "endTime": "2025-12-13T21:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0C3CKJQQC",
+      "sellable": 0,
+      "startTime": "2025-12-13T23:00:00Z",
+      "endTime": "2025-12-14T00:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0C59GTQQG",
+      "sellable": 2,
+      "startTime": "2025-12-14T00:00:00Z",
+      "endTime": "2025-12-14T01:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0CJNTHK6P",
+      "sellable": 3,
+      "startTime": "2025-12-14T00:00:00Z",
+      "endTime": "2025-12-14T01:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B09QHXVX3J",
+      "sellable": 7,
+      "startTime": "2025-12-14T01:00:00Z",
+      "endTime": "2025-12-14T02:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0DLB8QKM9",
+      "sellable": 2,
+      "startTime": "2025-12-14T01:00:00Z",
+      "endTime": "2025-12-14T02:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0DYV1YKQG",
+      "sellable": 5,
+      "startTime": "2025-12-14T02:00:00Z",
+      "endTime": "2025-12-14T03:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0CNLTJ8WK",
+      "sellable": 0,
+      "startTime": "2025-12-14T03:00:00Z",
+      "endTime": "2025-12-14T04:00:00Z",
+      "sales_30d": 1
+    },
+    {
+      "asin": "B0CPSVF6Q9",
+      "sellable": 0,
+      "startTime": "2025-12-14T04:00:00Z",
+      "endTime": "2025-12-14T05:00:00Z",
+      "sales_30d": 8
+    },
+    {
+      "asin": "B0CX93DL1Y",
+      "sellable": 64,
+      "startTime": "2025-12-14T03:00:00Z",
+      "endTime": "2025-12-14T04:00:00Z",
+      "sales_30d": 4
+    },
+    {
+      "asin": "B0CQFTLY7F",
+      "sellable": 21,
+      "startTime": "2025-12-14T04:00:00Z",
+      "endTime": "2025-12-14T05:00:00Z",
+      "sales_30d": 23
+    },
+    {
+      "asin": "B0CQFV6YFM",
+      "sellable": 22,
+      "startTime": "2025-12-14T04:00:00Z",
+      "endTime": "2025-12-14T05:00:00Z",
+      "sales_30d": 34
+    },
+    {
+      "asin": "B0C43HJPFD",
+      "sellable": 3,
+      "startTime": "2025-12-14T05:00:00Z",
+      "endTime": "2025-12-14T06:00:00Z",
+      "sales_30d": null
+    },
+    {
+      "asin": "B0C43K639C",
+      "sellable": 133,
+      "startTime": "2025-12-14T05:00:00Z",
+      "endTime": "2025-12-14T06:00:00Z",
+      "sales_30d": 28
+    },
+    {
+      "asin": "B0C7MPDZWZ",
+      "sellable": 1,
+      "startTime": "2025-12-14T05:00:00Z",
+      "endTime": "2025-12-14T06:00:00Z",
+      "sales_30d": null
+    }
+  ],
+  "report_id": "52557020436",
+  "document_id": "amzn1.spdoc.1.4.eu.9c9a9f82-731a-48db-89b6-a8f11be9c2c4.T7H2LXNT9MNVT.39200",
+  "expires_at": null,
+  "count": 78,
+  "unique_count": 78,
+  "collapsed_unique_asin_count": 78,
+  "duplicates_dropped": 39,
+  "raw_row_count": 117,
+  "raw_nonempty_asin_count": 117,
+  "raw_unique_asin_count": 78,
+  "raw_sellable_sum_raw": 3857,
+  "normalized_sellable_sum": 2030,
+  "realtime_sellable_asins": 78,
+  "realtime_sellable_units": 2030,
+  "catalog_asin_count": 1050,
+  "coverage_ratio": 0.074,
+  "is_stale": false,
+  "inventory_scope": "realtime_inventory_snapshot",
+  "coverage_label": "Realtime coverage: 78/1050 ASINs (7.4%)",
+  "inventory_scope_explanation": "Realtime snapshot is derived from GET_VENDOR_REAL_TIME_INVENTORY_REPORT and reflects the ASINs present in that report window. Vendor Central exports may include additional ASINs not present in this realtime report. Coverage compares 78 snapshot ASINs against 1050 catalog ASINs.",
+  "age_seconds": 26,
+  "age_hours": 0.01,
+  "refresh_skipped": false
+}

@@ -20193,10 +20193,11 @@
     },
     {
       "purchaseOrderNumber": "2SEDG7KB",
-      "purchaseOrderState": "Acknowledged",
+      "purchaseOrderState": "Closed",
       "orderDetails": {
         "purchaseOrderDate": "2025-10-29T00:50:03Z",
-        "purchaseOrderStateChangedDate": "2025-11-01T09:40:22Z",
+        "purchaseOrderChangedDate": "2025-12-13T17:49:56Z",
+        "purchaseOrderStateChangedDate": "2025-12-13T17:49:56Z",
         "purchaseOrderType": "RegularOrder",
         "paymentMethod": "Invoice",
         "buyingParty": {
@@ -20275,7 +20276,7 @@
             "amazonProductIdentifier": "B0D97NCZMP",
             "vendorProductIdentifier": "6976154509505",
             "orderedQuantity": {
-              "amount": 2,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20389,7 +20390,7 @@
             "amazonProductIdentifier": "B0D97M3KGD",
             "vendorProductIdentifier": "6976154509604",
             "orderedQuantity": {
-              "amount": 8,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20408,7 +20409,7 @@
             "amazonProductIdentifier": "B0CT5MVYHZ",
             "vendorProductIdentifier": "6976154506801",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20427,7 +20428,7 @@
             "amazonProductIdentifier": "B0D97N6F7L",
             "vendorProductIdentifier": "6976154509581",
             "orderedQuantity": {
-              "amount": 9,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20446,7 +20447,7 @@
             "amazonProductIdentifier": "B0DSJD16NZ",
             "vendorProductIdentifier": "6976154502087",
             "orderedQuantity": {
-              "amount": 13,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20484,7 +20485,7 @@
             "amazonProductIdentifier": "B0FP9GK55H",
             "vendorProductIdentifier": "6937517603148",
             "orderedQuantity": {
-              "amount": 5,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20750,7 +20751,7 @@
             "amazonProductIdentifier": "B0CX8Y3GVM",
             "vendorProductIdentifier": "B0CX8Y3GVM",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20845,7 +20846,7 @@
             "amazonProductIdentifier": "B0FP9GZ5KM",
             "vendorProductIdentifier": "6937517603131",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -20883,7 +20884,7 @@
             "amazonProductIdentifier": "B092D6VSTH",
             "vendorProductIdentifier": "0726667955803",
             "orderedQuantity": {
-              "amount": 3,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21016,7 +21017,7 @@
             "amazonProductIdentifier": "B0DDXSKLBM",
             "vendorProductIdentifier": "B0DDXSKLBM",
             "orderedQuantity": {
-              "amount": 4,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },
@@ -21130,7 +21131,7 @@
             "amazonProductIdentifier": "B0CJNQMZ4X",
             "vendorProductIdentifier": "B0CJNQMZ4X",
             "orderedQuantity": {
-              "amount": 1,
+              "amount": 0,
               "unitOfMeasure": "Eaches",
               "unitSize": 1
             },

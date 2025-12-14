@@ -27,6 +27,10 @@ except Exception:
         pass
 
 from services.db import execute_write, get_db_connection, execute_many_write
+from services.catalog_service import (
+    seed_catalog_universe,
+    record_catalog_asin_sources,
+)
 from services.perf import time_block
 from services.spapi_reports import (
     SpApiQuotaError,
@@ -779,6 +783,10 @@ def ingest_realtime_sales_report(
                 len(seen_asins),
                 len(seen_hours)
             )
+            seeded = seed_catalog_universe(seen_asins)
+            if seeded:
+                logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor_realtime_sales")
+            record_catalog_asin_sources(seen_asins, "realtime_sales")
         except Exception as exc:
             logger.error(
                 f"{LOG_PREFIX_INGEST} Failed to insert rows: {exc}",

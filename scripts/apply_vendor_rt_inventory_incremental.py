@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from zoneinfo import ZoneInfo
 
 # Ensure repo root is on PYTHONPATH so `import services.*` works when running from /scripts
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +31,9 @@ from services.vendor_rt_inventory_state import (
 )
 
 LOGGER = logging.getLogger("apply_vendor_rt_inventory_incremental")
-PST = timezone(timedelta(hours=-8), name="PST")
+
+# US Pacific time with DST handling
+PST = ZoneInfo("America/Los_Angeles")
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--marketplace",
         default="A2VIGQ35RCS4UG",
-        help="Marketplace ID (default: A2VIGQ35RCS4RUG)",
+        help="Marketplace ID (default: A2VIGQ35RCS4UG)",
     )
     parser.add_argument(
         "--db",
@@ -75,6 +78,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def compute_window(hours: int) -> Tuple[datetime, datetime]:
+    """
+    Returns (start, end) in Pacific time (America/Los_Angeles),
+    where end is the previous full hour boundary (minute=0).
+    """
     if hours < 1:
         raise ValueError("hours must be >= 1")
     if hours > 24:
@@ -85,7 +92,13 @@ def compute_window(hours: int) -> Tuple[datetime, datetime]:
     return start, end
 
 
-def request_report(start: datetime, end: datetime, marketplace: str, timeout: int, poll_interval: int) -> List[Dict[str, Any]]:
+def request_report(
+    start: datetime,
+    end: datetime,
+    marketplace: str,
+    timeout: int,
+    poll_interval: int,
+) -> List[Dict[str, Any]]:
     report_id = request_vendor_report(
         report_type="GET_VENDOR_REAL_TIME_INVENTORY_REPORT",
         params={"marketplaceIds": [marketplace]},
@@ -121,14 +134,17 @@ def download_report_document(document_id: str) -> Any:
     if not download_url:
         raise RuntimeError(f"Missing download URL for document {document_id}")
     compression = (meta.get("compressionAlgorithm") or "").upper()
+
     doc_resp = requests.get(download_url, timeout=60)
     doc_resp.raise_for_status()
     content = doc_resp.content
+
     if compression == "GZIP":
         try:
             content = gzip.decompress(content)
         except Exception as exc:
             LOGGER.warning("Failed to decompress GZIP payload: %s", exc)
+
     try:
         return json.loads(content.decode("utf-8-sig"))
     except Exception:
@@ -153,19 +169,22 @@ def extract_rows(payload: Any) -> List[Dict[str, Any]]:
     raise ValueError("Could not extract items from payload")
 
 
+def sqlite_connection(db_path: Path):
+    # Reuse private helper in vendor_rt_inventory_state
+    from services.vendor_rt_inventory_state import _connection
+
+    return _connection(db_path)
+
+
 def fetch_state_totals(db_path: Path) -> Tuple[int, int]:
     ensure_vendor_rt_inventory_state_table(db_path)
     with sqlite_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS asin_count, COALESCE(SUM(sellable), 0) AS total_sellable FROM vendor_rt_inventory_state"
+            "SELECT COUNT(*) AS asin_count, "
+            "COALESCE(SUM(sellable), 0) AS total_sellable "
+            "FROM vendor_rt_inventory_state"
         ).fetchone()
         return int(row["asin_count"]), int(row["total_sellable"])
-
-
-def sqlite_connection(db_path: Path):
-    from services.vendor_rt_inventory_state import _connection
-
-    return _connection(db_path)
 
 
 def _iso_to_datetime(value: str) -> datetime:
@@ -188,12 +207,14 @@ def main() -> int:
         level=logging.WARNING if args.quiet else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
+
     db_path = Path(args.db)
     checkpoint_iso = get_checkpoint(args.marketplace, db_path=db_path)
 
     use_checkpoint = False
     _prev_hour_start, prev_hour_end = compute_window(1)
 
+    # Decide request window
     if checkpoint_iso:
         try:
             checkpoint_dt_utc = _iso_to_datetime(checkpoint_iso)
@@ -203,11 +224,13 @@ def main() -> int:
                 end_pst = prev_hour_end
                 use_checkpoint = True
             else:
-                LOGGER.warning(
-                    "Checkpoint %s is newer than prev hour %s; falling back to --hours",
+                LOGGER.info(
+                    "Checkpoint %s is up to date with prev hour %s; no new window needed",
                     checkpoint_iso,
                     prev_hour_end.isoformat(),
                 )
+                print("Checkpoint up-to-date; skipping report request.")
+                return 0
         except Exception as exc:
             LOGGER.warning(
                 "Invalid checkpoint %s (%s); falling back to --hours",
@@ -215,14 +238,20 @@ def main() -> int:
                 exc,
             )
 
-    if not use_checkpoint:
+    if use_checkpoint:
+        # Avoid refetching boundary rows at exactly the checkpoint time
+        start_pst = start_pst + timedelta(seconds=1)
+    else:
         start_pst, end_pst = compute_window(args.hours)
 
     LOGGER.info("Requesting window %s to %s (PST)", start_pst.isoformat(), end_pst.isoformat())
+
     rows = request_report(start_pst, end_pst, args.marketplace, args.timeout, args.poll_interval)
     LOGGER.info("Fetched %s rows from report", len(rows))
+
+    # Diagnostics from report content
     asin_set = set()
-    end_times = []
+    end_times: List[str] = []
     for row in rows:
         asin = (row.get("asin") or "").strip().upper()
         if asin:
@@ -230,24 +259,25 @@ def main() -> int:
         end_iso = parse_end_time(row.get("endTime") or row.get("end_time"))
         if end_iso:
             end_times.append(end_iso)
-    if end_times:
-        min_end = min(end_times)
-        max_end = max(end_times)
-    else:
-        min_end = max_end = None
+
+    min_end = min(end_times) if end_times else None
+    max_end_rows = max(end_times) if end_times else None
     print(
         f"Fetched rows: {len(rows)} | DISTINCT ASINs: {len(asin_set)} | "
-        f"endTime range: {min_end} -> {max_end}"
+        f"endTime range: {min_end} -> {max_end_rows}"
     )
+
     stats = apply_incremental_rows(
         rows,
         marketplace_id=args.marketplace,
         db_path=db_path,
     )
     LOGGER.info("Incremental apply stats: %s", stats)
-    max_end = stats.get("max_end_time") if isinstance(stats, dict) else None
-    if not max_end and end_times:
-        max_end = max(end_times)
+
+    max_end_stats = stats.get("max_end_time") if isinstance(stats, dict) else None
+    max_end = max_end_stats or max_end_rows
+
+    # Update checkpoint monotonically
     if max_end:
         try:
             new_checkpoint_dt = _iso_to_datetime(max_end)
@@ -257,6 +287,7 @@ def main() -> int:
                 LOGGER.info("Updated checkpoint for %s to %s", args.marketplace, max_end)
         except Exception as exc:
             LOGGER.warning("Failed to update checkpoint for %s: %s", args.marketplace, exc)
+
     asin_count, sellable_total = fetch_state_totals(db_path)
     print(f"Incremental apply stats: {stats}")
     print(f"State ASINs: {asin_count}, State Sellable: {sellable_total}")

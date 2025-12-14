@@ -1,0 +1,72 @@
+2025-12-13 18:44:55 [INFO] forecast_schema - Forecast feature disabled: init_forecast_tables() not called
+2025-12-13 18:44:55 [INFO] services.vendor_realtime_sales - [VendorRtSales] vendor_realtime_sales table ensured
+2025-12-13 18:44:55 [INFO] services.vendor_realtime_sales - [VendorRtAudit] vendor_rt_audit_hours table ensured
+2025-12-13 18:44:55 [INFO] services.db - [DB] vendor_rt_sales_state table ensured
+2025-12-13 18:44:55 [INFO] services.db - [DB] vendor_oos_export_history table ensured
+2025-12-13 18:44:55 [INFO] services.db - [DB] vendor_inventory_asin table ensured
+2025-12-13 18:44:55 [INFO] services.db - [DB] app_kv_store table ensured
+INFO:     Started server process [41676]
+2025-12-13 18:44:55 [INFO] uvicorn.error - Started server process [41676]
+INFO:     Waiting for application startup.
+2025-12-13 18:44:55 [INFO] uvicorn.error - Waiting for application startup.
+2025-12-13 18:44:55 [INFO] root - [RTSalesStartupBackfill] Starting startup backfill for A2VIGQ35RCS4UG
+2025-12-13 18:44:55 [INFO] root - [RTSalesAutoSync] Started, will sync every 15 minutes
+2025-12-13 18:44:55 [INFO] root - [RTSalesAutoSync] Background thread started
+2025-12-13 18:44:55 [INFO] root - [Startup] Background tasks initialized successfully
+INFO:     Application startup complete.
+2025-12-13 18:44:55 [INFO] uvicorn.error - Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+2025-12-13 18:44:55 [INFO] uvicorn.error - Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+2025-12-13 18:44:55 [INFO] root - [RTSalesAutoSync] Normal sync, refreshing last 3h [2025-12-13T11:34:55.563780+00:00, 2025-12-13T14:34:55.563780+00:00)
+2025-12-13 18:44:55 [INFO] services.vendor_realtime_sales - [VendorRtSales] Requesting chunk [2025-12-13T11:34:55.563780+00:00, 2025-12-13T14:34:55.563780+00:00)
+2025-12-13 18:44:55 [INFO] spapi_reports - [spapi_reports] request_vendor_report type=GET_VENDOR_REAL_TIME_SALES_REPORT, params={}
+2025-12-13 18:44:55 [INFO] spapi_reports - [spapi_reports] Final createReport payload: {'reportType': 'GET_VENDOR_REAL_TIME_SALES_REPORT', 'marketplaceIds': ['A2VIGQ35RCS4UG'], 'dataStartTime': '2025-12-13T11:34:55Z', 'dataEndTime': '2025-12-13T14:34:55Z', 'reportOptions': {'currencyCode': 'AED'}}
+2025-12-13 18:44:55 [INFO] root - [RTSalesStartupBackfill] Backfilling gap from 2025-12-13 14:00:00+00:00
+2025-12-13 18:44:55 [INFO] root - [RTSalesStartupBackfill] Backfilling [2025-12-13 14:00:00+00:00, 2025-12-13 14:34:55.563058+00:00)
+2025-12-13 18:44:55 [INFO] services.vendor_realtime_sales - [VendorRtSales] Requesting chunk [2025-12-13T14:00:00+00:00, 2025-12-13T14:34:55.563058+00:00)
+2025-12-13 18:44:55 [INFO] spapi_reports - [spapi_reports] request_vendor_report type=GET_VENDOR_REAL_TIME_SALES_REPORT, params={}
+2025-12-13 18:44:55 [INFO] spapi_reports - [spapi_reports] Final createReport payload: {'reportType': 'GET_VENDOR_REAL_TIME_SALES_REPORT', 'marketplaceIds': ['A2VIGQ35RCS4UG'], 'dataStartTime': '2025-12-13T14:00:00Z', 'dataEndTime': '2025-12-13T14:34:55Z', 'reportOptions': {'currencyCode': 'AED'}}
+2025-12-13 18:44:56 [INFO] spapi_auth - [Auth] Successfully obtained LWA token
+2025-12-13 18:44:56 [INFO] spapi_auth - [Auth] Successfully obtained LWA token
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] Created report GET_VENDOR_REAL_TIME_SALES_REPORT reportId=52460020435
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] poll_vendor_report report_id=52460020435
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] Created report GET_VENDOR_REAL_TIME_SALES_REPORT reportId=52461020435
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] poll_vendor_report report_id=52461020435
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] report 52460020435 status=IN_QUEUE
+2025-12-13 18:44:57 [INFO] spapi_reports - [spapi_reports] report 52461020435 status=IN_QUEUE
+[Migration] Schema is already up to date with accepted_qty
+INFO:     127.0.0.1:56510 - "GET /api/vendor-inventory/realtime/refresh HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:56510 - "GET /api/vendor-inventory/realtime/refresh HTTP/1.1" 405
+2025-12-13 18:45:07 [INFO] uvicorn.access - 127.0.0.1:56510 - "GET /api/vendor-inventory/realtime/refresh HTTP/1.1" 405
+2025-12-13 18:45:16 [INFO] services.vendor_inventory_realtime - [VendorRtInventory] Requesting report A2VIGQ35RCS4UG from 2025-12-12T13:00:00+00:00 to 2025-12-13T13:00:00+00:00
+2025-12-13 18:45:16 [INFO] spapi_reports - [spapi_reports] request_vendor_report type=GET_VENDOR_REAL_TIME_INVENTORY_REPORT, params={'marketplaceIds': ['A2VIGQ35RCS4UG']}
+2025-12-13 18:45:16 [INFO] spapi_reports - [spapi_reports] Final createReport payload: {'reportType': 'GET_VENDOR_REAL_TIME_INVENTORY_REPORT', 'marketplaceIds': ['A2VIGQ35RCS4UG'], 'dataStartTime': '2025-12-12T13:00:00Z', 'dataEndTime': '2025-12-13T13:00:00Z', 'reportOptions': {'sellingProgram': 'RETAIL'}}
+2025-12-13 18:45:16 [INFO] spapi_reports - [spapi_reports] Created report GET_VENDOR_REAL_TIME_INVENTORY_REPORT reportId=52462020435
+2025-12-13 18:45:16 [INFO] spapi_reports - [spapi_reports] poll_vendor_report report_id=52462020435
+2025-12-13 18:45:17 [INFO] spapi_reports - [spapi_reports] report 52462020435 status=IN_QUEUE
+2025-12-13 18:45:18 [INFO] spapi_reports - [spapi_reports] report 52460020435 status=DONE
+2025-12-13 18:45:18 [INFO] spapi_reports - [spapi_reports] download_vendor_report_document document_id=amzn1.spdoc.1.4.eu.46898f26-3dab-4372-a097-08f4b2d4d3bf.T2LYOLPLZ63ID5.52000
+2025-12-13 18:45:19 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.46898f26-3dab-4372-a097-08f4b2d4d3bf.T2LYOLPLZ63ID5.52000 raw size=241 bytes
+2025-12-13 18:45:19 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.46898f26-3dab-4372-a097-08f4b2d4d3bf.T2LYOLPLZ63ID5.52000 JSON top-level dict keys=['reportSpecification', 'reportData']
+2025-12-13 18:45:19 [INFO] services.vendor_realtime_sales - [VendorRtSales] Empty report data; returning empty summary
+2025-12-13 18:45:19 [INFO] services.vendor_realtime_sales - [VendorRtAudit] Empty RT data for window [2025-12-13T14:00:00Z, 2025-12-13T14:34:55.563058Z); marking hours as EMPTY
+2025-12-13 18:45:19 [INFO] services.vendor_realtime_sales - [VendorRtSales] Chunk done: 0 rows, cumulative total: 0 rows
+2025-12-13 18:45:20 [INFO] services.vendor_realtime_sales - [VendorRtSales] Backfill complete: 0 total rows, 0 unique hours
+2025-12-13 18:45:20 [INFO] root - [RTSalesStartupBackfill] Completed: 0 rows, 0 ASINs, 0 hours
+2025-12-13 18:45:37 [INFO] spapi_reports - [spapi_reports] report 52462020435 status=DONE
+2025-12-13 18:45:37 [INFO] spapi_reports - [spapi_reports] download_vendor_report_document document_id=amzn1.spdoc.1.4.eu.77c79f3f-527e-41fe-816e-5b580f527732.T4GRDGTSLWCZ0.39200
+2025-12-13 18:45:38 [INFO] spapi_reports - [spapi_reports] report 52461020435 status=DONE
+2025-12-13 18:45:38 [INFO] spapi_reports - [spapi_reports] download_vendor_report_document document_id=amzn1.spdoc.1.4.eu.2b339d88-ed4d-4995-88e2-316fd9fb80ef.T3SI3201QZF0WA.52000
+2025-12-13 18:45:39 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.77c79f3f-527e-41fe-816e-5b580f527732.T4GRDGTSLWCZ0.39200 raw size=19787 bytes
+2025-12-13 18:45:39 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.77c79f3f-527e-41fe-816e-5b580f527732.T4GRDGTSLWCZ0.39200 JSON top-level dict keys=['reportSpecification', 'reportData']
+2025-12-13 18:45:39 [INFO] services.vendor_inventory_realtime - [VendorRtInventory] raw_rows=164 nonempty_asin=164 unique_asin=122
+INFO:     127.0.0.1:60333 - "POST /api/vendor-inventory/realtime/refresh HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60333 - "POST /api/vendor-inventory/realtime/refresh HTTP/1.1" 200
+2025-12-13 18:45:39 [INFO] uvicorn.access - 127.0.0.1:60333 - "POST /api/vendor-inventory/realtime/refresh HTTP/1.1" 200
+2025-12-13 18:45:40 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.2b339d88-ed4d-4995-88e2-316fd9fb80ef.T3SI3201QZF0WA.52000 raw size=1928 bytes
+2025-12-13 18:45:40 [INFO] spapi_reports - [spapi_reports] document amzn1.spdoc.1.4.eu.2b339d88-ed4d-4995-88e2-316fd9fb80ef.T3SI3201QZF0WA.52000 JSON top-level dict keys=['reportSpecification', 'reportData']
+2025-12-13 18:45:40 [INFO] services.vendor_realtime_sales - [VendorRtSales] Ingested 13 rows, 13 ASINs, 2 hours
+2025-12-13 18:45:40 [INFO] services.vendor_realtime_sales - [VendorRtSales] Chunk done: 13 rows, cumulative total: 13 rows
+2025-12-13 18:45:41 [INFO] services.vendor_realtime_sales - [VendorRtSales] Backfill complete: 13 total rows, 1 unique hours
+2025-12-13 18:45:41 [INFO] root - [RTSalesAutoSync] Cycle complete: 13 rows, 0 unique ASINs, 1 hours processed
+2025-12-13 18:45:41 [INFO] root - [RTSalesAutoSync] Skipping daily audit for uae_date=2025-12-13 (already ran today)

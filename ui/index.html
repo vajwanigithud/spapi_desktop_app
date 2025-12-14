@@ -86,13 +86,67 @@
         border: 1px solid var(--border);
         color: var(--text);
       }
-      .btn-outline-secondary:hover {
-        background: #f1f5f9;
-      }
-      .btn-sm {
-        padding: 6px 10px;
-        font-size: 13px;
-      }
+    .btn-outline-secondary:hover {
+      background: #f1f5f9;
+    }
+    .btn-sm {
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .catalog-source-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-radius: 4px;
+      background: #e2e8f0;
+      margin-right: 4px;
+      margin-top: 4px;
+    }
+    .catalog-health-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .catalog-health-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 10px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .catalog-health-badge.health-catalog {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .catalog-health-badge.health-barcode {
+      background: #e0f2fe;
+      color: #075985;
+    }
+    .catalog-health-badge.health-operational {
+      background: #fef9c3;
+      color: #92400e;
+    }
+    .catalog-health-badge.health-dormant {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+    .catalog-bucket-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-radius: 4px;
+      background: #e5e7eb;
+      color: #1f2937;
+      margin-top: 4px;
+    }
+    #catalog-coverage-summary {
+      padding: 0 12px 8px 12px;
+      font-size: 13px;
+      color: #111827;
+      min-height: 18px;
+    }
       #catalog-table {
         width: 100%;
         border-collapse: collapse;
@@ -505,7 +559,36 @@
           <option value="missing">Missing barcode</option>
           <option value="has">Has barcode</option>
         </select>
+        <select id="catalog-bucket-filter" style="margin-left:8px;" onchange="filterAsins()">
+          <option value="all">All Buckets</option>
+          <option value="Terminal (Not Found/Invalid)">Terminal (Not Found/Invalid)</option>
+          <option value="Ready (Commercial + Active)">Ready (Commercial + Active)</option>
+          <option value="Ready (Commercial, No Activity)">Ready (Commercial, No Activity)</option>
+          <option value="Needs Barcode">Needs Barcode</option>
+          <option value="Needs Catalog (Active)">Needs Catalog (Active)</option>
+          <option value="Blocked (Retries Exhausted)">Blocked (Retries Exhausted)</option>
+          <option value="Needs Catalog (Inactive)">Needs Catalog (Inactive)</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#111827;">
+          <input type="checkbox" id="catalog-actionable-only" onchange="toggleActionableOnly(this.checked)" />
+          Actionable only
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#111827;">
+          Sort
+          <select id="catalog-sort-mode" onchange="setCatalogSortMode(this.value)">
+            <option value="bucket">Bucket (rank)</option>
+            <option value="attempts">Attempts (desc)</option>
+            <option value="operational">Operational first</option>
+            <option value="barcode">Missing barcode first</option>
+            <option value="catalog">Missing catalog first</option>
+            <option value="asin">ASIN (A→Z)</option>
+          </select>
+        </label>
+        <button class="btn btn-outline-secondary btn-sm" onclick="exportCatalogCsv()">Export CSV</button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="resetAllCatalogFetchAttempts()">Reset All Fetch Attempts</button>
       </div>
+      <div id="catalog-reset-status" style="padding:0 12px 8px 12px; font-size:12px; color:#6b7280; min-height:16px;"></div>
+      <div id="catalog-coverage-summary" class="muted-text">Catalog: loading…</div>
       <div style="padding:0 12px 12px 12px;">
         <div style="overflow:auto; max-height: calc(100vh - 240px);">
           <table id="catalog-table">
@@ -808,10 +891,10 @@
       </div>
 
       <!-- Inner subtabs -->
-      <div class="inventory-subtabs">
+      <div class="inventory-subtabs" style="display:none;">
         <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">Snapshot (All ASINs)</button>
-        <button id="inv-subtab-aged" class="inventory-subtab-button" onclick="setInventorySubtab('aged')">Aged 90+ Days</button>
-        <button id="inv-subtab-unhealthy" class="inventory-subtab-button" onclick="setInventorySubtab('unhealthy')">Unhealthy / Excess</button>
+        <button id="inv-subtab-aged" class="inventory-subtab-button" onclick="setInventorySubtab('aged')">Legacy 90+ Days</button>
+        <button id="inv-subtab-unhealthy" class="inventory-subtab-button" onclick="setInventorySubtab('unhealthy')">Legacy Excess</button>
       </div>
 
       <!-- Search and Quick Filters -->
@@ -820,8 +903,8 @@
         <div class="inv-quick-filters">
           <button id="inv-qf-all" class="inv-quick-filter-btn active" onclick="setQuickFilter('all')">All</button>
           <button id="inv-qf-zero" class="inv-quick-filter-btn" onclick="setQuickFilter('zero')">Zero Stock</button>
-          <button id="inv-qf-aged" class="inv-quick-filter-btn" onclick="setQuickFilter('aged')">Aged 90+</button>
-          <button id="inv-qf-unhealthy" class="inv-quick-filter-btn" onclick="setQuickFilter('unhealthy')">Unhealthy</button>
+          <button id="inv-qf-aged" class="inv-quick-filter-btn" style="display:none;" onclick="setQuickFilter('aged')">Legacy 90 Days</button>
+          <button id="inv-qf-unhealthy" class="inv-quick-filter-btn" style="display:none;" onclick="setQuickFilter('unhealthy')">Legacy Excess</button>
         </div>
       </div>
 
@@ -874,6 +957,27 @@
     let filteredPOs = [];
     let asinList = [];
     let filteredAsins = [];
+    const CATALOG_SOURCE_LABELS = {
+      "vendor_po": { label: "PO", title: "Vendor POs" },
+      "realtime_inventory": { label: "RT-Inv", title: "Realtime Inventory" },
+      "realtime_sales": { label: "RT-Sales", title: "Realtime Sales" },
+      "manual": { label: "Manual", title: "Manual Add" },
+      "other": { label: "Other", title: "Other" },
+    };
+    const CATALOG_BUCKET_DEFS = [
+      { value: "Terminal (Not Found/Invalid)", short: "Terminal" },
+      { value: "Ready (Commercial + Active)", short: "Ready Active" },
+      { value: "Ready (Commercial, No Activity)", short: "Ready Quiet" },
+      { value: "Needs Barcode", short: "Needs Barcode" },
+      { value: "Needs Catalog (Active)", short: "Needs Catalog (Active)" },
+      { value: "Blocked (Retries Exhausted)", short: "Blocked" },
+      { value: "Needs Catalog (Inactive)", short: "Needs Catalog" },
+    ];
+    const CATALOG_ACTIONABLE_BUCKETS = new Set([
+      "Needs Barcode",
+      "Needs Catalog (Active)",
+      "Blocked (Retries Exhausted)",
+    ]);
     const CATALOG_COL_WIDTH_KEY = "catalog_table_col_widths_v1";
     let catalogColWidths = [];
     let catalogResizeState = null;
@@ -890,10 +994,19 @@
     let catalogImageCache = {};
     let recentNotifications = [];
     let vendorInventorySnapshot = [];
+    let vendorInventoryMeta = null;
     let currentInventorySubtab = 'snapshot';
     let invSortColumn = 'sellable';
     let invSortDirection = 'desc';
     let invQuickFilter = 'all';
+    let invRealtimeRefreshInFlight = false;
+    let catalogAsinMapCache = null;
+    let catalogAsinMapKey = null;
+    let catalogBucketSummary = null;
+    let catalogCoverageSummary = null;
+    let catalogHealthSummary = null;
+    let catalogActionableOnly = false;
+    let catalogSortMode = "bucket";
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -2298,21 +2411,41 @@
         }
         const data = await resp.json();
         asinList = data.items || [];
+        catalogCoverageSummary = data.coverage_summary || null;
+        catalogHealthSummary = data.coverage_health_summary || null;
+        catalogBucketSummary = data.bucket_summary || null;
+        updateCatalogSummaryStrip();
         filterAsins();
       } catch (err) {
         tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load ASINs: ${err}</td></tr>`;
+        catalogCoverageSummary = null;
+        catalogHealthSummary = null;
+        catalogBucketSummary = null;
+        updateCatalogSummaryStrip();
       }
+    }
+
+    function toggleActionableOnly(isChecked) {
+      catalogActionableOnly = !!isChecked;
+      filterAsins();
+    }
+
+    function setCatalogSortMode(mode) {
+      catalogSortMode = mode || "bucket";
+      filterAsins();
     }
 
     function filterAsins() {
       const searchEl = document.getElementById("asin-search");
       const filterEl = document.getElementById("catalog-barcode-filter");
+      const bucketFilterEl = document.getElementById("catalog-bucket-filter");
 
       const query = (searchEl ? searchEl.value : "").toLowerCase();
       const barcodeFilter = filterEl ? filterEl.value : "all";
+      const bucketFilter = bucketFilterEl ? bucketFilterEl.value : "all";
       const barcodeRegex = /^\d{12,13}$/;
 
-      filteredAsins = asinList.filter(item => {
+      let rows = asinList.filter(item => {
         const asinVal = (item.asin || "").toLowerCase();
         const skuVal = (item.sku || "").toLowerCase();
         const modelVal = (item.model || "").toLowerCase();
@@ -2331,11 +2464,137 @@
         let matchesBarcode = true;
         if (barcodeFilter === "missing") matchesBarcode = !hasValidBarcode;
         if (barcodeFilter === "has") matchesBarcode = hasValidBarcode;
+        let matchesBucket = true;
+        if (bucketFilter !== "all") {
+          matchesBucket = (item.bucket || "") === bucketFilter;
+        }
+        let matchesActionable = true;
+        if (catalogActionableOnly) {
+          matchesActionable = CATALOG_ACTIONABLE_BUCKETS.has(item.bucket || "");
+        }
 
-        return matchesText && matchesBarcode;
+        return matchesText && matchesBarcode && matchesBucket && matchesActionable;
       });
 
+      rows = applyCatalogSort(rows);
+      filteredAsins = rows;
       renderAsinList();
+    }
+
+    function applyCatalogSort(rows) {
+      const compareAsin = (a, b) => (a.asin || "").localeCompare(b.asin || "");
+      const list = rows.slice();
+      list.sort((a, b) => {
+        switch (catalogSortMode) {
+          case "attempts": {
+            const aAttempts = Number(a.fetch_attempts || 0);
+            const bAttempts = Number(b.fetch_attempts || 0);
+            if (bAttempts !== aAttempts) return bAttempts - aAttempts;
+            return compareAsin(a, b);
+          }
+          case "operational": {
+            const aOp = a.operationally_active ? 1 : 0;
+            const bOp = b.operationally_active ? 1 : 0;
+            if (bOp !== aOp) return bOp - aOp;
+            return compareAsin(a, b);
+          }
+          case "barcode": {
+            const aMissing = a.barcode_ready ? 0 : 1;
+            const bMissing = b.barcode_ready ? 0 : 1;
+            if (bMissing !== aMissing) return bMissing - aMissing;
+            return compareAsin(a, b);
+          }
+          case "catalog": {
+            const aMissing = a.catalog_ready ? 0 : 1;
+            const bMissing = b.catalog_ready ? 0 : 1;
+            if (bMissing !== aMissing) return bMissing - aMissing;
+            return compareAsin(a, b);
+          }
+          case "asin": {
+            return compareAsin(a, b);
+          }
+          case "bucket":
+          default: {
+            const aRank = Number(a.bucket_rank || 999);
+            const bRank = Number(b.bucket_rank || 999);
+            if (aRank !== bRank) return aRank - bRank;
+            return compareAsin(a, b);
+          }
+        }
+      });
+      return list;
+    }
+
+    function exportCatalogCsv() {
+      const rows = Array.isArray(filteredAsins) ? filteredAsins : [];
+      if (!rows.length) {
+        alert("No catalog rows to export.");
+        return;
+      }
+      const headers = [
+        "asin",
+        "sku",
+        "barcode",
+        "title",
+        "bucket",
+        "bucket_rank",
+        "catalog_ready",
+        "barcode_ready",
+        "commercial_ready",
+        "operationally_active",
+        "has_inventory",
+        "has_sales",
+        "fetch_attempts",
+        "fetch_blocked",
+        "fetch_terminal_code",
+      ];
+      const csvLines = [headers.join(",")];
+      rows.forEach(item => {
+        const line = [
+          item.asin || "",
+          item.sku || "",
+          item.barcode || "",
+          item.title || "",
+          item.bucket || "",
+          item.bucket_rank ?? "",
+          item.catalog_ready ? "true" : "false",
+          item.barcode_ready ? "true" : "false",
+          item.commercial_ready ? "true" : "false",
+          item.operationally_active ? "true" : "false",
+          item.has_inventory ? "true" : "false",
+          item.has_sales ? "true" : "false",
+          item.fetch_attempts ?? 0,
+          item.fetch_blocked ? "true" : "false",
+          item.fetch_terminal_code || "",
+        ].map(catalogCsvEscape);
+        csvLines.push(line.join(","));
+      });
+      const csvContent = csvLines.join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = buildCatalogExportFilename();
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    function catalogCsvEscape(value) {
+      if (value === null || value === undefined) return "";
+      const str = String(value).replace(/\r?\n/g, " ").replace(/\r/g, " ");
+      if (str.includes('"') || str.includes(",") ) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    }
+
+    function buildCatalogExportFilename() {
+      const now = new Date();
+      const pad = (num) => String(num).padStart(2, "0");
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+      return `catalog_audit_${stamp}.csv`;
     }
 
     function initCatalogColumnResizing() {
@@ -2603,8 +2862,68 @@
           ? ""
           : `<button class="btn btn-fetch" data-asin="${asin}" onclick="fetchCatalog(this.dataset.asin, this)">Fetch</button>`;
 
+        const fetchAttempts = Number(item.fetch_attempts || 0);
+        const fetchBlocked = Boolean(item.fetch_blocked);
+        const fetchTerminalCode = item.fetch_terminal_code || "";
+        const fetchTerminalMessage = item.fetch_terminal_message || "";
+        const maxAttempts = 5;
+        let statusText = "";
+        if (fetchTerminalCode === "NOT_FOUND") {
+          const match = fetchTerminalMessage.match(/marketplace\s+([A-Z0-9]+)/i);
+          const marketplaceLabel = match && match[1] ? match[1] : "";
+          statusText = marketplaceLabel ? `Not found (${marketplaceLabel})` : "Not found";
+        } else if (fetchBlocked) {
+          statusText = `Blocked (${fetchAttempts}x)`;
+        } else if (fetchAttempts > 0) {
+          const capped = Math.min(fetchAttempts, maxAttempts);
+          statusText = `Retrying (${capped}/${maxAttempts})`;
+        }
+        const tooltipSource = fetchTerminalMessage || item.fetch_last_error || "";
+        const errorPreview = tooltipSource.slice(0, 120);
+        const statusTitle = errorPreview ? ` title="${escapeAttr(errorPreview)}"` : "";
+        const statusHtml = statusText
+          ? `<div class="catalog-fetch-status"${statusTitle} style="font-size:12px;color:#b45309;">${statusText}</div>`
+          : "";
+        const resetLabel = fetchTerminalCode === "NOT_FOUND" ? "Force Retry" : "Reset";
+        const resetButton = fetchBlocked || fetchTerminalCode
+          ? `<button class="btn btn-sm btn-outline-secondary" style="margin-top:6px;" onclick="resetCatalogFetchAttempts('${asin}')">${resetLabel}</button>`
+          : "";
+
+        const asinSources = Array.isArray(item.asin_sources) ? item.asin_sources : [];
+        const sourceBadges = asinSources
+          .map(src => {
+            const meta = CATALOG_SOURCE_LABELS[src] || null;
+            if (!meta) return "";
+            return `<span class="catalog-source-badge" title="${meta.title}">${meta.label}</span>`;
+          })
+          .filter(Boolean)
+          .join("");
+        const healthBadges = [];
+        if (item.catalog_ready) {
+          healthBadges.push('<span class="catalog-health-badge health-catalog" title="Title and image present">Catalog</span>');
+        }
+        if (item.barcode_ready) {
+          healthBadges.push('<span class="catalog-health-badge health-barcode" title="Barcode present">Barcode</span>');
+        }
+        if (item.operationally_active) {
+          healthBadges.push('<span class="catalog-health-badge health-operational" title="Active in realtime inventory or sales">Operational</span>');
+        }
+        if (item.dormant) {
+          healthBadges.push('<span class="catalog-health-badge health-dormant" title="Terminal + no catalog or activity">Dormant</span>');
+        }
+        const sourceBadgesHtml = sourceBadges ? `<div>${sourceBadges}</div>` : "";
+        const healthBadgesHtml = healthBadges.length ? `<div class="catalog-health-badges">${healthBadges.join("")}</div>` : "";
+        const bucketBadgeHtml = item.bucket
+          ? `<div class="catalog-bucket-badge" title="Catalog readiness bucket">${escapeHtml(item.bucket)}</div>`
+          : "";
+        const asinCellParts = [`<div>${asin}</div>`];
+        if (sourceBadgesHtml) asinCellParts.push(sourceBadgesHtml);
+        if (healthBadgesHtml) asinCellParts.push(healthBadgesHtml);
+        if (bucketBadgeHtml) asinCellParts.push(bucketBadgeHtml);
+        const asinCellHtml = asinCellParts.join("");
+
         return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')">
-          <td>${asin}</td>
+          <td>${asinCellHtml}</td>
           <td>${sku}</td>
           <td>${barcodeCell}</td>
           <td>${item.title || ""}</td>
@@ -2614,6 +2933,8 @@
               ${fetchButton}
               <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this catalog row" onclick="barcodePrintFromRow(this)">Print</button>
             </div>
+            ${statusHtml}
+            ${resetButton}
           </td>
         </tr>`;
       }).join("");
@@ -2642,6 +2963,94 @@
         }
         alert(`Failed to fetch catalog for ${asin}: ${err}`);
       }
+    }
+
+    async function resetCatalogFetchAttempts(asin) {
+      try {
+        const resp = await fetch(`/api/catalog/reset-fetch-attempts/${asin}`, { method: "POST" });
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        await loadAsinList(true);
+        setCatalogResetStatus(`Reset attempts for ${asin}.`);
+      } catch (err) {
+        setCatalogResetStatus(`Reset failed for ${asin}.`);
+      }
+    }
+
+    async function resetAllCatalogFetchAttempts() {
+      if (!confirm("Reset fetch attempts for all ASINs?")) return;
+      try {
+        const resp = await fetch("/api/catalog/reset-fetch-attempts", { method: "POST" });
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        await loadAsinList(true);
+        setCatalogResetStatus("All fetch attempts reset.");
+      } catch (err) {
+        setCatalogResetStatus("Reset all failed.");
+      }
+    }
+
+    function setCatalogResetStatus(message) {
+      const el = document.getElementById("catalog-reset-status");
+      if (el) {
+        el.textContent = message || "";
+      }
+    }
+
+    function updateCatalogSummaryStrip() {
+      const el = document.getElementById("catalog-coverage-summary");
+      if (!el) return;
+      const healthSummary = catalogHealthSummary;
+      if (!healthSummary || !healthSummary.total_asins) {
+        el.textContent = "Catalog: no ASINs loaded.";
+        el.classList.add("muted-text");
+        return;
+      }
+      el.classList.remove("muted-text");
+      const total = Number(healthSummary.total_asins) || 0;
+      const formatNumber = (val) => Number(val || 0).toLocaleString();
+      const formatPercent = (count) => {
+        if (!total) return "0%";
+        const pct = (Number(count || 0) / total) * 100;
+        return `${Math.round(pct)}%`;
+      };
+      const parts = [
+        `Catalog: ${formatNumber(total)} ASINs`,
+        `Catalog Ready ${formatPercent(healthSummary.catalog_ready_count || 0)}`,
+        `Barcode Ready ${formatPercent(healthSummary.barcode_ready_count || 0)}`,
+        `Commercial ${formatPercent(healthSummary.commercial_ready_count || 0)}`,
+        `Operational ${formatPercent(healthSummary.operationally_active_count || 0)}`,
+        `Dormant ${Number(healthSummary.dormant_count || 0)}`
+      ];
+      const bucketSummary = catalogBucketSummary;
+      if (bucketSummary && bucketSummary.by_bucket) {
+        const ordered = [];
+        const seenValues = new Set();
+        CATALOG_BUCKET_DEFS.forEach(def => {
+          const count = bucketSummary.by_bucket?.[def.value] || 0;
+          if (count) {
+            ordered.push({ label: def.short, count });
+            seenValues.add(def.value);
+          }
+        });
+        Object.entries(bucketSummary.by_bucket || {}).forEach(([name, count]) => {
+          if (!count || seenValues.has(name)) return;
+          ordered.push({ label: name, count });
+        });
+        if (ordered.length) {
+          const maxDisplay = 5;
+          const shown = ordered.slice(0, maxDisplay);
+          const hidden = ordered.length - shown.length;
+          const bucketParts = shown.map(item => `${item.label} ${formatNumber(item.count)}`);
+          if (hidden > 0) {
+            bucketParts.push(`+${hidden} more`);
+          }
+          parts.push(`Buckets: ${bucketParts.join(" | ")}`);
+        }
+      }
+      el.textContent = parts.join(" | ");
     }
 
     async function editBarcode(asin, current) {
@@ -2682,7 +3091,7 @@
       updateSyncInfo();
     }
 
-    function addManualAsin() {
+    async function addManualAsin() {
       const input = document.getElementById("manual-asin-input");
       const msg = document.getElementById("manual-asin-msg");
       const asin = (input?.value || "").trim().toUpperCase();
@@ -2690,16 +3099,47 @@
         if (msg) msg.textContent = "Please enter an ASIN.";
         return;
       }
-      if (asinList.find(a => a.asin === asin)) {
-        if (msg) msg.textContent = "ASIN already listed.";
+      if (!/^[A-Z0-9]{10}$/.test(asin)) {
+        if (msg) msg.textContent = "ASIN must be 10 letters/numbers.";
         return;
       }
-      const newEntry = { asin, fetched: false };
-      asinList = [newEntry, ...asinList];
-      filteredAsins = asinList;
-      renderAsinList();
+      if (msg) msg.textContent = "Saving...";
+      try {
+        const resp = await fetch("/api/catalog/add-asin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ asin }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const detail = data?.detail || data?.error || `HTTP ${resp.status}`;
+          throw new Error(detail);
+        }
+      } catch (err) {
+        if (msg) msg.textContent = "Could not save ASIN.";
+        return;
+      }
+
       if (input) input.value = "";
-      if (msg) msg.textContent = "Added. Click Fetch to pull catalog data.";
+      if (msg) msg.textContent = "Added. Fetching catalog...";
+
+      let fetchError = null;
+      try {
+        const resp = await fetch(`/api/catalog/fetch/${asin}`, { method: "POST" });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || `HTTP ${resp.status}`);
+        }
+      } catch (err) {
+        fetchError = err;
+      }
+
+      await loadAsinList(true);
+      if (msg) {
+        msg.textContent = fetchError
+          ? "ASIN saved; fetch queued (check logs)."
+          : "ASIN saved. Fetch queued.";
+      }
     }
 
     async function autoSyncIfDue() {
@@ -3422,69 +3862,132 @@
     // Vendor Inventory Functions
     // ========================================
 
+    function setInventoryStatus(text, color = '') {
+      const statusEl = document.getElementById('inv-status-label');
+      if (!statusEl) return;
+      statusEl.textContent = text || '';
+      statusEl.style.color = color || '';
+    }
+
+    function updateInventoryFreshnessLabel(meta) {
+      const labelEl = document.getElementById('inv-week-label');
+      if (!labelEl) return;
+      if (!meta || !meta.generated_at) {
+        labelEl.textContent = 'As of: —';
+        return;
+      }
+      const formatted = formatTs(meta.generated_at);
+      const ageHours = typeof meta.age_hours === 'number' ? meta.age_hours : null;
+      const ageText = ageHours !== null ? ` (≈ ${ageHours} hours ago)` : '';
+      labelEl.textContent = `As of: ${formatted}${ageText}`;
+    }
+
+    function updateInventoryFreshnessUi(meta, { clearStatusWhenFresh = false } = {}) {
+      updateInventoryFreshnessLabel(meta);
+      if (meta && meta.is_stale) {
+        setInventoryStatus('⚠️ Snapshot older than 24 hours — refreshing in background', '#b45309');
+      } else if (clearStatusWhenFresh) {
+        setInventoryStatus('');
+      }
+    }
+
     function loadVendorInventorySnapshotIfNeeded(forceReload = false) {
       if (!forceReload && vendorInventorySnapshot && vendorInventorySnapshot.length > 0) {
+        updateInventoryFreshnessUi(vendorInventoryMeta);
         renderVendorInventoryCurrentSubtab();
         return;
       }
 
-      const statusEl = document.getElementById('inv-status-label');
-      if (statusEl) statusEl.textContent = 'Loading inventory snapshot…';
+      setInventoryStatus('Loading real-time inventory…');
 
-      fetch('/api/vendor-inventory/snapshot')
+      fetch('/api/vendor-inventory/realtime/snapshot')
         .then((resp) => resp.json())
         .then((data) => {
           if (data.status !== 'ok') {
-            if (statusEl) statusEl.textContent = 'Error loading inventory: ' + (data.error || data.status);
+            setInventoryStatus('Error loading inventory: ' + (data.error || data.status), '#b91c1c');
             vendorInventorySnapshot = [];
+            vendorInventoryMeta = null;
             renderVendorInventoryCurrentSubtab();
             return;
           }
 
-          vendorInventorySnapshot = data.items || [];
-          if (statusEl) statusEl.textContent = `Loaded ${vendorInventorySnapshot.length} ASINs`;
-
-          updateInventoryWeekLabelFromSnapshot(vendorInventorySnapshot);
+          vendorInventorySnapshot = dedupeInventoryRowsByAsin(data.items || []);
+          vendorInventoryMeta = {
+            generated_at: data.generated_at,
+            age_hours: data.age_hours,
+            is_stale: !!data.is_stale,
+          };
+          setInventoryStatus(`Loaded ${vendorInventorySnapshot.length} ASINs`);
+          updateInventoryFreshnessUi(vendorInventoryMeta);
           renderVendorInventoryCurrentSubtab();
-        })
-        .catch((err) => {
-          console.error(err);
-          if (statusEl) statusEl.textContent = 'Error loading inventory: ' + err;
-          vendorInventorySnapshot = [];
-          renderVendorInventoryCurrentSubtab();
-        });
-    }
-
-    function refreshVendorInventorySnapshot() {
-      const refreshBtn = document.getElementById('inv-refresh-btn');
-      const statusEl = document.getElementById('inv-status-label');
-
-      if (refreshBtn) {
-        refreshBtn.disabled = true;
-        refreshBtn.textContent = 'Refreshing…';
-      }
-      if (statusEl) statusEl.textContent = 'Refreshing inventory via SP-API…';
-
-      fetch('/api/vendor-inventory/refresh', {
-        method: 'POST',
-      })
-        .then((resp) => resp.json())
-        .then((data) => {
-          if (data.status === 'quota_error') {
-            if (statusEl) statusEl.textContent = 'Quota error while refreshing inventory: ' + (data.error || '');
-          } else if (data.status !== 'ok') {
-            if (statusEl) statusEl.textContent = 'Error refreshing inventory: ' + (data.error || data.status);
-          } else {
-            if (statusEl) statusEl.textContent = `Inventory refreshed. Ingested ${data.ingested_asins || 0} ASINs. Reloading…`;
-            loadVendorInventorySnapshotIfNeeded(true);
+          if (vendorInventoryMeta.is_stale) {
+            refreshVendorInventorySnapshot({ silent: true });
           }
         })
         .catch((err) => {
           console.error(err);
-          if (statusEl) statusEl.textContent = 'Error refreshing inventory: ' + err;
+          setInventoryStatus('Error loading inventory: ' + err, '#b91c1c');
+          vendorInventorySnapshot = [];
+          vendorInventoryMeta = null;
+          renderVendorInventoryCurrentSubtab();
+        });
+    }
+
+    function refreshVendorInventorySnapshot(options = {}) {
+      const { silent = false } = options;
+      if (silent && invRealtimeRefreshInFlight) {
+        return;
+      }
+      if (invRealtimeRefreshInFlight) {
+        return;
+      }
+      invRealtimeRefreshInFlight = true;
+
+      const refreshBtn = document.getElementById('inv-refresh-btn');
+      if (!silent && refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refreshing…';
+      }
+      if (!silent) {
+        setInventoryStatus('Refreshing inventory via SP-API…');
+      }
+
+      fetch('/api/vendor-inventory/realtime/refresh', { method: 'POST' })
+        .then((resp) => resp.json())
+        .then((data) => {
+          if (data.status !== 'ok') {
+            if (!silent) {
+              setInventoryStatus('Error refreshing inventory: ' + (data.error || data.status), '#b91c1c');
+            }
+            return;
+          }
+          vendorInventorySnapshot = dedupeInventoryRowsByAsin(data.items || []);
+          vendorInventoryMeta = {
+            generated_at: data.generated_at,
+            age_hours: data.age_hours,
+            is_stale: !!data.is_stale,
+          };
+
+          if (!silent) {
+            setInventoryStatus(`Inventory refreshed. Loaded ${vendorInventorySnapshot.length} ASINs.`);
+          }
+
+          updateInventoryFreshnessUi(vendorInventoryMeta, { clearStatusWhenFresh: silent });
+          renderVendorInventoryCurrentSubtab();
+
+          if (vendorInventoryMeta.is_stale && !silent) {
+            refreshVendorInventorySnapshot({ silent: true });
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          if (!silent) {
+            setInventoryStatus('Error refreshing inventory: ' + err, '#b91c1c');
+          }
         })
         .finally(() => {
-          if (refreshBtn) {
+          invRealtimeRefreshInFlight = false;
+          if (!silent && refreshBtn) {
             refreshBtn.disabled = false;
             refreshBtn.textContent = 'Refresh Inventory Snapshot';
           }
@@ -3527,25 +4030,6 @@
       }
     }
 
-    function updateInventoryWeekLabelFromSnapshot(rows) {
-      const labelEl = document.getElementById('inv-week-label');
-      if (!labelEl) return;
-      if (!rows || rows.length === 0) {
-        labelEl.textContent = '';
-        return;
-      }
-
-      const first = rows[0];
-      const start = first.start_date || first.startDate;
-      const end = first.end_date || first.endDate;
-
-      if (start && end) {
-        labelEl.textContent = `Week: ${start} → ${end} (latest week)`;
-      } else {
-        labelEl.textContent = '';
-      }
-    }
-
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
       return String(str)
@@ -3554,6 +4038,174 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+    }
+
+    function getCatalogRowsArray() {
+      if (Array.isArray(filteredAsins) && filteredAsins.length) {
+        return filteredAsins;
+      }
+      return Array.isArray(filteredAsins) ? filteredAsins : [];
+    }
+
+    function getCatalogAsinMap() {
+      const rows = getCatalogRowsArray();
+      if (catalogAsinMapCache && catalogAsinMapKey === rows) {
+        return catalogAsinMapCache;
+      }
+      const map = new Map();
+      if (Array.isArray(rows)) {
+        rows.forEach((item) => {
+          const key = (item?.asin || '').trim().toUpperCase();
+          if (key) {
+            map.set(key, item);
+          }
+        });
+      }
+      catalogAsinMapCache = map;
+      catalogAsinMapKey = rows;
+      return map;
+    }
+
+    function getCatalogItemForAsin(asin) {
+      if (!asin) return null;
+      const map = getCatalogAsinMap();
+      return map.get(asin.trim().toUpperCase()) || null;
+    }
+
+    function getInventoryDisplayTitle(row) {
+      const asin = row?.asin || '';
+      const catalogItem = getCatalogItemForAsin(asin);
+      return (
+        catalogItem?.title ||
+        catalogItem?.product_title ||
+        catalogItem?.name ||
+        catalogItem?.productTitle ||
+        row?.title ||
+        row?.product_title ||
+        ''
+      );
+    }
+
+    function getInventoryImageUrl(row) {
+      const asin = row?.asin || '';
+      const catalogItem = getCatalogItemForAsin(asin);
+      const candidates = [
+        catalogItem?.image,
+        catalogItem?.image_url,
+        catalogItem?.imageUrl,
+        catalogItem?.img,
+        catalogItem?.main_image,
+        catalogItem?.mainImage,
+        row?.image_url,
+        row?.image,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === 'string') {
+          const trimmed = candidate.trim();
+          if (trimmed && /^https?:/i.test(trimmed)) {
+            return trimmed;
+          }
+        }
+      }
+      return '';
+    }
+
+    function getSales30dValue(row) {
+      const value = row?.sales_30d;
+      if (value === null || value === undefined) return null;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function parseInventoryTimestamp(row) {
+      if (!row) return null;
+      const fields = [
+        'endTime',
+        'endDateTime',
+        'endDate',
+        'intervalEndTime',
+        'startTime',
+        'startDateTime',
+        'startDate',
+        'intervalStartTime',
+      ];
+      for (const field of fields) {
+        const value = row[field];
+        if (typeof value === 'string' && value.trim()) {
+          const ts = Date.parse(value);
+          if (!Number.isNaN(ts)) {
+            return ts;
+          }
+        }
+      }
+      return null;
+    }
+
+    function dedupeInventoryRowsByAsin(rows) {
+      if (!Array.isArray(rows) || rows.length <= 1) return rows;
+      const map = new Map();
+      rows.forEach((row) => {
+        const asin = (row?.asin || '').trim();
+        if (!asin) return;
+        const existing = map.get(asin);
+        const currentTs = parseInventoryTimestamp(row);
+        if (!existing) {
+          map.set(asin, { row, ts: currentTs });
+          return;
+        }
+        if (currentTs === null && existing.ts === null) {
+          return;
+        }
+        if (currentTs !== null && (existing.ts === null || currentTs >= existing.ts)) {
+          map.set(asin, { row, ts: currentTs });
+        }
+      });
+      return Array.from(map.values()).map((entry) => entry.row);
+    }
+
+    function buildInventoryRowsUnionWithCatalog(inventoryRows) {
+      const rows = Array.isArray(inventoryRows) ? inventoryRows : [];
+      const inventoryMap = new Map();
+      rows.forEach((row) => {
+        const asin = (row?.asin || '').trim();
+        if (!asin) return;
+        inventoryMap.set(asin.toUpperCase(), row);
+      });
+
+      const finalRows = [];
+      const catalogRows = getCatalogRowsArray();
+      if (Array.isArray(catalogRows)) {
+        catalogRows.forEach((item) => {
+          const asin = (item?.asin || '').trim();
+          if (!asin) return;
+          const key = asin.toUpperCase();
+          const existing = inventoryMap.get(key);
+          if (existing) {
+            finalRows.push(existing);
+            inventoryMap.delete(key);
+          } else {
+            finalRows.push({
+              asin,
+              sellable: 0,
+              sales_30d: null,
+            });
+          }
+        });
+      }
+
+      inventoryMap.forEach((row) => {
+        finalRows.push(row);
+      });
+
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('[InventoryUnion]', {
+          inventoryCount: rows.length,
+          unionCount: finalRows.length,
+          catalogCount: Array.isArray(catalogRows) ? catalogRows.length : 0,
+        });
+      }
+
+      return finalRows;
     }
 
     function sortInventoryTableBy(col) {
@@ -3568,20 +4220,14 @@
 
     function setQuickFilter(f) {
       invQuickFilter = f;
-      const buttons = ['inv-qf-all', 'inv-qf-zero', 'inv-qf-aged', 'inv-qf-unhealthy'];
+      const buttons = ['inv-qf-all', 'inv-qf-zero'];
       buttons.forEach((id) => {
         const btn = document.getElementById(id);
         if (!btn) return;
-        if (
+        const isActive =
           (f === 'all' && id === 'inv-qf-all') ||
-          (f === 'zero' && id === 'inv-qf-zero') ||
-          (f === 'aged' && id === 'inv-qf-aged') ||
-          (f === 'unhealthy' && id === 'inv-qf-unhealthy')
-        ) {
-          btn.classList.add('active');
-        } else {
-          btn.classList.remove('active');
-        }
+          (f === 'zero' && id === 'inv-qf-zero');
+        btn.classList.toggle('active', isActive);
       });
       renderVendorInventoryCurrentSubtab();
     }
@@ -3594,6 +4240,26 @@
       if (!headEl || !bodyEl || !footEl) return;
 
       let rows = vendorInventorySnapshot || [];
+      rows = dedupeInventoryRowsByAsin(rows);
+      rows = buildInventoryRowsUnionWithCatalog(rows);
+      rows = buildInventoryRowsUnionWithCatalog(rows);
+
+      const getSellableUnits = (row) => {
+        const candidates = [
+          row.sellable,
+          row.sellable_onhand_units,
+          row.sellableOnHandInventoryUnits,
+        ];
+        for (const value of candidates) {
+          if (value !== undefined && value !== null) {
+            const num = Number(value);
+            if (!Number.isNaN(num)) {
+              return num;
+            }
+          }
+        }
+        return 0;
+      };
 
       // Filter per subtab
       if (mode === 'aged') {
@@ -3613,28 +4279,13 @@
       if (q) {
         rows = rows.filter((r) =>
           (r.asin || '').toLowerCase().includes(q) ||
-          (r.title || r.product_title || '').toLowerCase().includes(q)
+          getInventoryDisplayTitle(r).toLowerCase().includes(q)
         );
       }
 
       // Quick filters
       if (invQuickFilter === 'zero') {
-        rows = rows.filter((r) => {
-          const sellable = r.sellable_onhand_units ?? r.sellableOnHandInventoryUnits ?? 0;
-          const unsellable = r.unsellable_onhand_units ?? r.unsellableOnHandInventoryUnits ?? 0;
-          const total = sellable + unsellable;
-          return sellable === 0 && total > 0;
-        });
-      } else if (invQuickFilter === 'aged') {
-        rows = rows.filter((r) => {
-          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
-          return aged > 0;
-        });
-      } else if (invQuickFilter === 'unhealthy') {
-        rows = rows.filter((r) => {
-          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
-          return unhealthy > 0;
-        });
+        rows = rows.filter((r) => getSellableUnits(r) === 0);
       }
 
       // Sort rows
@@ -3645,34 +4296,17 @@
           aVal = (a.asin || '').toLowerCase();
           bVal = (b.asin || '').toLowerCase();
         } else if (invSortColumn === 'title') {
-          aVal = (a.title || a.product_title || '').toLowerCase();
-          bVal = (b.title || b.product_title || '').toLowerCase();
+          aVal = getInventoryDisplayTitle(a).toLowerCase();
+          bVal = getInventoryDisplayTitle(b).toLowerCase();
         } else if (invSortColumn === 'sellable') {
-          aVal = a.sellable_onhand_units ?? a.sellableOnHandInventoryUnits ?? 0;
-          bVal = b.sellable_onhand_units ?? b.sellableOnHandInventoryUnits ?? 0;
-        } else if (invSortColumn === 'unsellable') {
-          aVal = a.unsellable_onhand_units ?? a.unsellableOnHandInventoryUnits ?? 0;
-          bVal = b.unsellable_onhand_units ?? b.unsellableOnHandInventoryUnits ?? 0;
-        } else if (invSortColumn === 'total') {
-          const aTotal = (a.sellable_onhand_units ?? a.sellableOnHandInventoryUnits ?? 0) + (a.unsellable_onhand_units ?? a.unsellableOnHandInventoryUnits ?? 0);
-          const bTotal = (b.sellable_onhand_units ?? b.sellableOnHandInventoryUnits ?? 0) + (b.unsellable_onhand_units ?? b.unsellableOnHandInventoryUnits ?? 0);
-          aVal = aTotal;
-          bVal = bTotal;
-        } else if (invSortColumn === 'openpo') {
-          aVal = a.open_po_units ?? a.openPurchaseOrderUnits ?? 0;
-          bVal = b.open_po_units ?? b.openPurchaseOrderUnits ?? 0;
-        } else if (invSortColumn === 'aged') {
-          aVal = a.aged90plus_sellable_units ?? a.aged90PlusDaysSellableInventoryUnits ?? 0;
-          bVal = b.aged90plus_sellable_units ?? b.aged90PlusDaysSellableInventoryUnits ?? 0;
-        } else if (invSortColumn === 'unhealthy') {
-          aVal = a.unhealthy_units ?? a.unhealthyInventoryUnits ?? 0;
-          bVal = b.unhealthy_units ?? b.unhealthyInventoryUnits ?? 0;
-        } else if (invSortColumn === 'netreceived') {
-          aVal = a.net_received_units ?? a.netReceivedInventoryUnits ?? 0;
-          bVal = b.net_received_units ?? b.netReceivedInventoryUnits ?? 0;
-        } else if (invSortColumn === 'sellthrough') {
-          aVal = a.sell_through_rate ?? a.sellThroughRate ?? 0;
-          bVal = b.sell_through_rate ?? b.sellThroughRate ?? 0;
+          aVal = getSellableUnits(a);
+          bVal = getSellableUnits(b);
+        } else if (invSortColumn === 'sales30d') {
+          const fallback = invSortDirection === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+          const aRaw = getSales30dValue(a);
+          const bRaw = getSales30dValue(b);
+          aVal = Number.isFinite(aRaw) ? aRaw : fallback;
+          bVal = Number.isFinite(bRaw) ? bRaw : fallback;
         }
 
         if (typeof aVal === 'string') {
@@ -3701,48 +4335,36 @@
           <th class="inv-image-col">Image</th>
           <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
           <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
-          <th onclick="sortInventoryTableBy('unsellable')">Unsellable ${arrow('unsellable')}</th>
-          <th onclick="sortInventoryTableBy('openpo')">Open PO ${arrow('openpo')}</th>
-          <th onclick="sortInventoryTableBy('aged')" title="Units that are at least 90 days old and still sellable in Amazon FCs. Highlighted in blue when > 0.">Aged 90+ Units ${arrow('aged')}</th>
-          <th onclick="sortInventoryTableBy('unhealthy')" title="Excess inventory versus forecasted demand on the last day of the week. Highlighted in red when > 0.">Unhealthy Units ${arrow('unhealthy')}</th>
-          <th onclick="sortInventoryTableBy('netreceived')">Net Received Units ${arrow('netreceived')}</th>
-          <th onclick="sortInventoryTableBy('sellthrough')" title="Net units shipped during the week (after returns) divided by starting on-hand units plus units received during the week. Example: 0.31 = 31% sell-through.">Sell-through Rate ${arrow('sellthrough')}</th>
+          <th onclick="sortInventoryTableBy('sales30d')">Last 30d Sales ${arrow('sales30d')}</th>
         </tr>
       `;
 
       // Accumulators for totals
       let totalSellable = 0;
-      let totalUnsellable = 0;
-      let totalOnHand = 0;
-      let totalOpenPo = 0;
-      let totalAged = 0;
-      let totalUnhealthy = 0;
-      let totalNetReceived = 0;
+      let totalSales30d = 0;
+      let countedSales30d = 0;
 
       // Build rows HTML
       let bodyHtml = '';
 
       rows.forEach((r) => {
         const asin = r.asin || '';
-        const title = r.title || r.product_title || '';
+        const title = getInventoryDisplayTitle(r);
 
-        const sellable = r.sellable_onhand_units ?? r.sellableOnHandInventoryUnits ?? 0;
+        const sellable = getSellableUnits(r);
         const unsellable = r.unsellable_onhand_units ?? r.unsellableOnHandInventoryUnits ?? 0;
         const total = sellable + unsellable;
 
-        const openPo = r.open_po_units ?? r.openPurchaseOrderUnits ?? 0;
         const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
         const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
-        const netReceived = r.net_received_units ?? r.netReceivedInventoryUnits ?? 0;
-        const sellThrough = r.sell_through_rate ?? r.sellThroughRate ?? null;
+        const sales30dValue = getSales30dValue(r);
+        const sales30dText = sales30dValue === null ? '—' : sales30dValue;
 
         totalSellable += sellable;
-        totalUnsellable += unsellable;
-        totalOnHand += total;
-        totalOpenPo += openPo;
-        totalAged += aged;
-        totalUnhealthy += unhealthy;
-        totalNetReceived += netReceived;
+        if (sales30dValue !== null) {
+          totalSales30d += sales30dValue;
+          countedSales30d += 1;
+        }
 
         // Color coding
         let rowClass = '';
@@ -3756,7 +4378,7 @@
 
         const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
 
-        const imgUrl = r.image_url || r.image || '';
+        const imgUrl = getInventoryImageUrl(r);
         const imgHtml = imgUrl
           ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" style="max-width:50px; max-height:50px; object-fit:contain; border-radius:6px;" />`
           : '';
@@ -3767,12 +4389,7 @@
             <td class="inv-image-col">${imgHtml}</td>
             <td class="inv-title-col">${escapeHtml(title)}</td>
             <td class="text-right">${sellable}</td>
-            <td class="text-right">${unsellable}</td>
-            <td class="text-right">${openPo}</td>
-            <td class="text-right">${aged}</td>
-            <td class="text-right">${unhealthy}</td>
-            <td class="text-right">${netReceived}</td>
-            <td class="text-right">${sellThrough !== null ? sellThrough.toFixed(2) : ''}</td>
+            <td class="text-right">${sales30dText}</td>
           </tr>
         `;
       });
@@ -3780,16 +4397,12 @@
       bodyEl.innerHTML = bodyHtml;
 
       // Footer totals
+      const sales30dFooter = countedSales30d ? totalSales30d : '';
       const footerRow = document.createElement('tr');
       footerRow.innerHTML = `
         <td colspan="3"><strong>Totals (${rows.length} ASINs)</strong></td>
         <td class="text-right"><strong>${totalSellable}</strong></td>
-        <td class="text-right"><strong>${totalUnsellable}</strong></td>
-        <td class="text-right"><strong>${totalOpenPo}</strong></td>
-        <td class="text-right"><strong>${totalAged}</strong></td>
-        <td class="text-right"><strong>${totalUnhealthy}</strong></td>
-        <td class="text-right"><strong>${totalNetReceived}</strong></td>
-        <td></td>
+        <td class="text-right"><strong>${sales30dFooter}</strong></td>
       `;
       footEl.appendChild(footerRow);
     }
@@ -3802,6 +4415,7 @@
 
       // Reuse the same filtering logic as renderVendorInventoryTable()
       let rows = vendorInventorySnapshot || [];
+      rows = dedupeInventoryRowsByAsin(rows);
       if (currentInventorySubtab === 'aged') {
         rows = rows.filter((r) => {
           const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
@@ -3814,17 +4428,28 @@
         });
       }
 
+      const resolveSellable = (row) => {
+        const candidates = [
+          row.sellable,
+          row.sellable_onhand_units,
+          row.sellableOnHandInventoryUnits,
+        ];
+        for (const value of candidates) {
+          if (value !== undefined && value !== null) {
+            const num = Number(value);
+            if (!Number.isNaN(num)) {
+              return num;
+            }
+          }
+        }
+        return 0;
+      };
+
       const header = [
         'ASIN',
         'Title',
         'SellableUnits',
-        'UnsellableUnits',
-        'TotalOnHandUnits',
-        'OpenPOUnits',
-        'Aged90PlusUnits',
-        'UnhealthyUnits',
-        'NetReceivedUnits',
-        'SellThroughRate',
+        'Sales30d',
       ];
 
       const lines = [];
@@ -3832,44 +4457,17 @@
 
       rows.forEach((r) => {
         const asin = r.asin || '';
-        const title = (r.title || r.product_title || '').replace(/"/g, '""');
+        const title = getInventoryDisplayTitle(r).replace(/"/g, '""');
 
-        const sellable =
-          r.sellable_onhand_units ??
-          r.sellableOnHandInventoryUnits ??
-          0;
-        const unsellable =
-          r.unsellable_onhand_units ??
-          r.unsellableOnHandInventoryUnits ??
-          0;
-        const total = sellable + unsellable;
-
-        const openPo = r.open_po_units ?? r.openPurchaseOrderUnits ?? 0;
-        const aged =
-          r.aged90plus_sellable_units ??
-          r.aged90PlusDaysSellableInventoryUnits ??
-          0;
-        const unhealthy =
-          r.unhealthy_units ??
-          r.unhealthyInventoryUnits ??
-          0;
-        const netReceived =
-          r.net_received_units ??
-          r.netReceivedInventoryUnits ??
-          0;
-        const sellThrough = r.sell_through_rate ?? r.sellThroughRate ?? '';
+        const sellable = resolveSellable(r);
+        const sales30dValue = getSales30dValue(r);
+        const sales30d = Number.isFinite(sales30dValue) ? sales30dValue : '';
 
         const row = [
           asin,
           `"${title}"`,
           sellable,
-          unsellable,
-          total,
-          openPo,
-          aged,
-          unhealthy,
-          netReceived,
-          sellThrough,
+          sales30d,
         ];
 
         lines.push(row.join(','));

@@ -16,8 +16,9 @@
     "updatedAt": "2025-12-07T13:03:14Z"
   },
   "7TI5STLN": {
-    "status": "Preparing",
-    "updatedAt": "2025-12-09T07:46:16Z"
+    "status": "Appointment Scheduled",
+    "updatedAt": "2025-12-13T21:33:51Z",
+    "appointmentDate": "2025-12-21"
   },
   "4AEMJ8ED": {
     "status": "Delivered",
@@ -165,8 +166,9 @@
     "updatedAt": "2025-12-07T13:03:05Z"
   },
   "4EYAZAOY": {
-    "status": "Preparing",
-    "updatedAt": "2025-12-09T07:46:14Z"
+    "status": "Appointment Scheduled",
+    "updatedAt": "2025-12-13T21:33:43Z",
+    "appointmentDate": "2025-12-21"
   },
   "73A7HE2A": {
     "status": "Delivered",
@@ -177,15 +179,18 @@
     "updatedAt": "2025-12-08T16:37:25Z"
   },
   "1T1TA65C": {
-    "status": "Preparing",
-    "updatedAt": "2025-12-09T07:46:17Z"
+    "status": "Appointment Scheduled",
+    "updatedAt": "2025-12-13T21:34:10Z",
+    "appointmentDate": "2025-12-21"
   },
   "54JL4C4X": {
-    "status": "Preparing",
-    "updatedAt": "2025-12-09T07:46:18Z"
+    "status": "Appointment Scheduled",
+    "updatedAt": "2025-12-13T21:34:01Z",
+    "appointmentDate": "2025-12-21"
   },
   "1NSXJCNA": {
-    "status": "Preparing",
-    "updatedAt": "2025-12-09T07:46:19Z"
+    "status": "Appointment Scheduled",
+    "updatedAt": "2025-12-13T21:33:35Z",
+    "appointmentDate": "2025-12-21"
   }
 }

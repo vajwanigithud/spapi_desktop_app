@@ -81,7 +81,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Set
 from io import BytesIO, StringIO
 import csv
 import time
@@ -108,6 +108,18 @@ from services.catalog_service import (
     get_catalog_entry,
     parse_catalog_payload,
     list_catalog_indexes,
+    ensure_asin_in_universe,
+    list_universe_asins,
+    get_catalog_fetch_attempts_map,
+    get_catalog_asin_sources_map,
+    seed_catalog_universe,
+    record_catalog_asin_sources,
+    record_catalog_asin_source,
+    record_catalog_fetch_attempt,
+    should_fetch_catalog,
+    reset_catalog_fetch_attempts,
+    reset_all_catalog_fetch_attempts,
+    mark_catalog_fetch_terminal,
 )
 import services.oos_service as oos_service
 import services.picklist_service as picklist_service
@@ -127,10 +139,12 @@ from services.vendor_inventory import (
     refresh_vendor_inventory_snapshot,
     get_vendor_inventory_snapshot_for_ui,
 )
+from services.vendor_inventory_realtime import get_cached_realtime_inventory_snapshot
 from routes.printer_routes import register_printer_routes
 from routes.barcode_print_routes import register_barcode_print_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.print_log_routes import register_print_log_routes
+from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -222,6 +236,7 @@ register_printer_routes(app)
 register_barcode_print_routes(app)
 register_printer_health_routes(app)
 register_print_log_routes(app)
+register_vendor_inventory_realtime_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -345,6 +360,8 @@ auth_client = SpApiAuth()
 
 # Catalog DB
 CATALOG_DB_PATH = Path(__file__).parent / "catalog.db"
+CATALOG_FETCH_MAX_ATTEMPTS = 5
+CATALOG_AUTO_FETCH_LIMIT = 25
 CATALOG_API_HOST = os.getenv("CATALOG_API_HOST", "https://sellingpartnerapi-na.amazon.com")
 
 # Marketplace region mappings for SP-API endpoints
@@ -2878,31 +2895,228 @@ def restock_oos_item(payload: Dict[str, Any]):
     return {"status": "ok", "asin": asin, "removed": removed}
 
 
+def _load_inventory_asin_set() -> Set[str]:
+    try:
+        snapshot = get_cached_realtime_inventory_snapshot()
+    except Exception as exc:
+        logger.warning(f"[Catalog] Failed to read realtime inventory snapshot: {exc}")
+        return set()
+    items = snapshot.get("items") or []
+    result: Set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        asin = (item.get("asin") or "").strip().upper()
+        if asin and is_asin(asin):
+            result.add(asin)
+    return result
+
+
+def _load_realtime_sales_asin_set() -> Set[str]:
+    try:
+        from services.db import get_db_connection
+    except Exception:
+        return set()
+    try:
+        with get_db_connection() as conn:
+            rows = conn.execute("SELECT DISTINCT asin FROM vendor_realtime_sales").fetchall()
+    except Exception as exc:
+        logger.warning(f"[Catalog] Failed to read realtime sales ASINs: {exc}")
+        return set()
+    result: Set[str] = set()
+    for row in rows:
+        asin_value = row["asin"] if row and "asin" in row.keys() else (row[0] if row else None)
+        asin_norm = (asin_value or "").strip().upper()
+        if asin_norm and is_asin(asin_norm):
+            result.add(asin_norm)
+    return result
+
+
 @app.get("/api/catalog/asins")
-def list_catalog_asins():
+def list_catalog_asins(background_tasks: BackgroundTasks):
     """
-    Return unique ASINs from vendor POs with fetched flag from local SP-API catalog DB.
+    Return unique ASINs from the persistent catalog universe.
     """
     try:
         asins, sku_map = extract_asins_from_pos()
+        seeded = seed_catalog_universe(asins)
+        if seeded:
+            logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor_pos_cache")
+        record_catalog_asin_sources(asins, "vendor_po")
+        universe = list_universe_asins()
         fetched = spapi_catalog_status()
+        attempts_map = get_catalog_fetch_attempts_map(universe)
+        source_map = get_catalog_asin_sources_map(universe)
+        inventory_asins = _load_inventory_asin_set()
+        sales_asins = _load_realtime_sales_asin_set()
     except Exception as exc:
         return JSONResponse({"error": f"Failed to load ASINs: {exc}"}, status_code=500)
 
-    return {
-        "items": [
+    items = []
+    auto_queued = 0
+    coverage_summary = {
+        "total_asins": len(universe),
+        "with_catalog_data": 0,
+        "with_barcode": 0,
+        "with_inventory": 0,
+        "with_sales": 0,
+        "terminal": 0,
+    }
+    coverage_health_summary = {
+        "total_asins": len(universe),
+        "catalog_ready_count": 0,
+        "barcode_ready_count": 0,
+        "commercial_ready_count": 0,
+        "operationally_active_count": 0,
+        "dormant_count": 0,
+    }
+    bucket_summary = {
+        "total_asins": len(universe),
+        "by_bucket": {},
+        "blocked_count": 0,
+        "terminal_count": 0,
+    }
+    for asin in universe:
+        info = fetched.get(asin, {}) or {}
+        is_fetched = bool(info.get("title") or info.get("image"))
+        attempt_info = attempts_map.get(asin, {}) or {}
+        attempt_count = int(attempt_info.get("attempts") or 0)
+        last_error = attempt_info.get("last_error")
+        last_attempt_at = attempt_info.get("last_attempt_at")
+        terminal_code = attempt_info.get("terminal_code")
+        terminal_message = attempt_info.get("terminal_message")
+        barcode_value = info.get("barcode")
+        fetch_blocked = (not is_fetched) and (
+            bool(terminal_code) or attempt_count >= CATALOG_FETCH_MAX_ATTEMPTS
+        )
+        has_catalog_data = is_fetched
+        has_barcode = bool(str(barcode_value or "").strip())
+        has_inventory = asin in inventory_asins
+        has_sales = asin in sales_asins
+        is_terminal = bool(terminal_code)
+        catalog_ready = bool(info.get("title")) and bool(info.get("image"))
+        barcode_ready = has_barcode
+        commercial_ready = catalog_ready and barcode_ready
+        operationally_active = bool(has_inventory or has_sales)
+        dormant = (not operationally_active) and (not catalog_ready) and bool(terminal_code)
+        if is_terminal:
+            bucket = "Terminal (Not Found/Invalid)"
+            bucket_rank = 1
+        elif commercial_ready and operationally_active:
+            bucket = "Ready (Commercial + Active)"
+            bucket_rank = 2
+        elif commercial_ready and not operationally_active:
+            bucket = "Ready (Commercial, No Activity)"
+            bucket_rank = 3
+        elif catalog_ready and not barcode_ready:
+            bucket = "Needs Barcode"
+            bucket_rank = 4
+        elif (not catalog_ready) and operationally_active:
+            bucket = "Needs Catalog (Active)"
+            bucket_rank = 5
+        elif fetch_blocked:
+            bucket = "Blocked (Retries Exhausted)"
+            bucket_rank = 6
+        else:
+            bucket = "Needs Catalog (Inactive)"
+            bucket_rank = 7
+        bucket_summary["by_bucket"][bucket] = bucket_summary["by_bucket"].get(bucket, 0) + 1
+        if fetch_blocked:
+            bucket_summary["blocked_count"] += 1
+        if is_terminal:
+            bucket_summary["terminal_count"] += 1
+        if has_catalog_data:
+            coverage_summary["with_catalog_data"] += 1
+        if has_barcode:
+            coverage_summary["with_barcode"] += 1
+        if has_inventory:
+            coverage_summary["with_inventory"] += 1
+        if has_sales:
+            coverage_summary["with_sales"] += 1
+        if is_terminal:
+            coverage_summary["terminal"] += 1
+        if catalog_ready:
+            coverage_health_summary["catalog_ready_count"] += 1
+        if barcode_ready:
+            coverage_health_summary["barcode_ready_count"] += 1
+        if commercial_ready:
+            coverage_health_summary["commercial_ready_count"] += 1
+        if operationally_active:
+            coverage_health_summary["operationally_active_count"] += 1
+        if dormant:
+            coverage_health_summary["dormant_count"] += 1
+        if not is_fetched and auto_queued < CATALOG_AUTO_FETCH_LIMIT:
+            if should_fetch_catalog(asin, is_fetched, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
+                background_tasks.add_task(_fetch_catalog_background, asin)
+                auto_queued += 1
+        items.append(
             {
                 "asin": asin,
-                "fetched": asin in fetched,
-                "title": fetched.get(asin, {}).get("title"),
-                "image": fetched.get(asin, {}).get("image"),
-                "sku": fetched.get(asin, {}).get("sku") or sku_map.get(asin),
-                "model": fetched.get(asin, {}).get("model"),
-                "barcode": fetched.get(asin, {}).get("barcode"),
+                "fetched": is_fetched,
+                "title": info.get("title"),
+                "image": info.get("image"),
+                "sku": info.get("sku") or sku_map.get(asin),
+                "model": info.get("model"),
+                "barcode": barcode_value,
+                "fetch_attempts": attempt_count,
+                "fetch_last_error": last_error,
+                "fetch_last_attempt_at": last_attempt_at,
+                "fetch_terminal_code": terminal_code,
+                "fetch_terminal_message": terminal_message,
+                "fetch_blocked": fetch_blocked,
+                "asin_sources": sorted(source_map.get(asin, [])),
+                "has_catalog_data": has_catalog_data,
+                "has_barcode": has_barcode,
+                "has_inventory": has_inventory,
+                "has_sales": has_sales,
+                "is_terminal": is_terminal,
+                "catalog_ready": catalog_ready,
+                "barcode_ready": barcode_ready,
+                "commercial_ready": commercial_ready,
+                "operationally_active": operationally_active,
+                "dormant": dormant,
+                "bucket": bucket,
+                "bucket_rank": bucket_rank,
             }
-            for asin in asins
-        ]
+        )
+    return {
+        "items": items,
+        "coverage_summary": coverage_summary,
+        "coverage_health_summary": coverage_health_summary,
+        "bucket_summary": bucket_summary,
     }
+
+
+@app.post("/api/catalog/add-asin")
+def add_catalog_asin(payload: Dict[str, Any]):
+    """
+    Persist a manually entered ASIN into the catalog universe.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    asin = (payload.get("asin") or "").strip().upper()
+    if not asin:
+        raise HTTPException(status_code=400, detail="asin is required")
+    if not is_asin(asin):
+        raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    ensure_asin_in_universe(asin)
+    record_catalog_asin_source(asin, "manual")
+    return {"status": "ok", "asin": asin}
+
+
+@app.post("/api/catalog/reset-fetch-attempts/{asin}")
+def reset_catalog_attempts(asin: str):
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm or not is_asin(asin_norm):
+        raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    reset_catalog_fetch_attempts(asin_norm)
+    return {"status": "ok", "asin": asin_norm}
+
+
+@app.post("/api/catalog/reset-fetch-attempts")
+def reset_all_catalog_attempts():
+    cleared = reset_all_catalog_fetch_attempts()
+    return {"status": "ok", "cleared": cleared}
 
 
 @app.post("/api/catalog/fetch/{asin}")
@@ -2910,12 +3124,18 @@ def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
     """
     Queue catalog fetch in background and return immediately.
     """
+    has_data = False
     try:
         fetched = spapi_catalog_status().get(asin)
         if fetched and (fetched.get("title") or fetched.get("image")):
             return {"asin": asin, "status": "cached", "title": fetched.get("title"), "image": fetched.get("image")}
+        has_data = bool(fetched and (fetched.get("title") or fetched.get("image")))
     except Exception as e:
         logger.warning(f"[Catalog] Error checking cache for {asin}: {e}")
+        fetched = None
+
+    if not should_fetch_catalog(asin, has_data, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
+        return {"asin": asin, "status": "blocked", "reason": "max_attempts"}
     
     background_tasks.add_task(_fetch_catalog_background, asin)
     return {"asin": asin, "status": "queued"}
@@ -2925,10 +3145,31 @@ def _fetch_catalog_background(asin: str):
     """Helper function to fetch catalog in background thread."""
     try:
         fetch_spapi_catalog_item(asin)
+        record_catalog_fetch_attempt(asin, ok=True)
         logger.info(f"[Catalog] Background fetch completed for {asin}")
     except HTTPException as e:
-        logger.warning(f"[Catalog] Background fetch failed for {asin}: {e.detail}")
+        detail_payload = e.detail
+        error_detail = detail_payload if isinstance(detail_payload, str) else str(detail_payload)
+        detail_code = ""
+        detail_message = error_detail
+        if isinstance(detail_payload, dict):
+            detail_code = (detail_payload.get("code") or detail_payload.get("type") or "").upper()
+            detail_message = detail_payload.get("message") or error_detail
+        detail_upper = (detail_code or error_detail or "").upper()
+        detail_lower = (detail_message or "").lower()
+        if "NOT_FOUND" in detail_upper or "not found in marketplace" in detail_lower:
+            mark_catalog_fetch_terminal(
+                asin,
+                "NOT_FOUND",
+                detail_message,
+                max_attempts=CATALOG_FETCH_MAX_ATTEMPTS,
+            )
+            logger.info(f"[Catalog] Marked {asin} as NOT_FOUND terminal")
+        else:
+            record_catalog_fetch_attempt(asin, ok=False, error=error_detail)
+            logger.warning(f"[Catalog] Background fetch failed for {asin}: {e.detail}")
     except Exception as e:
+        record_catalog_fetch_attempt(asin, ok=False, error=str(e))
         logger.error(f"[Catalog] Unexpected error fetching {asin}: {e}", exc_info=True)
 
 
@@ -2948,11 +3189,15 @@ def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
     if not missing:
         return {"fetched": 0, "queued": 0, "message": "All ASINs already fetched"}
     
+    queued = 0
     for asin in missing:
+        if not should_fetch_catalog(asin, False, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
+            continue
         background_tasks.add_task(_fetch_catalog_background, asin)
-    
-    logger.info(f"[Catalog] Queued {len(missing)} ASINs for background fetch")
-    return {"fetched": 0, "queued": len(missing), "missingTotal": len(missing)}
+        queued += 1
+
+    logger.info(f"[Catalog] Queued {queued} ASINs for background fetch (missing={len(missing)})")
+    return {"fetched": 0, "queued": queued, "missingTotal": len(missing)}
 
 
 @app.get("/api/catalog/item/{asin}")
