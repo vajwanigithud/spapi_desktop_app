@@ -119,3 +119,5 @@ Thumbs.db
 # ============================
 !tests/golden/
 !tests/golden/*.json
+tools/_codex_cleanup_backup_/
+
