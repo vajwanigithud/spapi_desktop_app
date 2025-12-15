@@ -1,11 +1,10 @@
 """Manual debug script for verifying PO status totals; not part of the main app."""
 
 import json
-from pathlib import Path
 from typing import Dict, List
 
+from main import VENDOR_POS_CACHE, fetch_po_status_totals
 from services.db import get_db_connection
-from main import fetch_po_status_totals, VENDOR_POS_CACHE
 
 
 def load_po_numbers() -> List[str]:

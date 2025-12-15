@@ -3,7 +3,6 @@ import gzip
 import json
 import logging
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
@@ -16,7 +15,6 @@ from services.spapi_reports import (
     poll_vendor_report,
     request_vendor_report,
 )
-
 
 # Vendor Retail Analytics reports always reference PST (no DST).
 PST = timezone(timedelta(hours=-8), name="PST")

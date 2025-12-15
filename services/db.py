@@ -1,8 +1,8 @@
-import sqlite3
-from pathlib import Path
-from contextlib import contextmanager
-from threading import Lock
 import logging
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 logger = logging.getLogger(__name__)

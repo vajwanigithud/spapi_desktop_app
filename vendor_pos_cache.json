@@ -32444,6 +32444,774 @@
       },
       "total_received_qty": 77,
       "total_pending_qty": 88
+    },
+    {
+      "purchaseOrderNumber": "2FLBUJAO",
+      "purchaseOrderState": "New",
+      "orderDetails": {
+        "purchaseOrderDate": "2025-12-15T00:25:30Z",
+        "purchaseOrderStateChangedDate": "2025-12-15T00:25:38Z",
+        "purchaseOrderType": "RegularOrder",
+        "paymentMethod": "Invoice",
+        "buyingParty": {
+          "partyId": "DXB6"
+        },
+        "sellingParty": {
+          "partyId": "FK6EI"
+        },
+        "shipToParty": {
+          "partyId": "DXB6"
+        },
+        "billToParty": {
+          "partyId": "DXB6"
+        },
+        "deliveryWindow": "2025-12-14T23:00:00Z--2025-12-18T00:00:00Z",
+        "items": [
+          {
+            "itemSequenceNumber": "1",
+            "amazonProductIdentifier": "B0DKFGYBX1",
+            "vendorProductIdentifier": "B0DKFGYBX1",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "15"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "15"
+            }
+          },
+          {
+            "itemSequenceNumber": "2",
+            "amazonProductIdentifier": "B0DYP8CYFG",
+            "vendorProductIdentifier": "6937517609911",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "12"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "12"
+            }
+          },
+          {
+            "itemSequenceNumber": "3",
+            "amazonProductIdentifier": "B0FS7CFMQ3",
+            "vendorProductIdentifier": "6937517602202",
+            "orderedQuantity": {
+              "amount": 3,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "220"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "220"
+            }
+          },
+          {
+            "itemSequenceNumber": "4",
+            "amazonProductIdentifier": "B0DS5Q4J3N",
+            "vendorProductIdentifier": "B0DS5Q4J3N",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "24"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "24"
+            }
+          },
+          {
+            "itemSequenceNumber": "5",
+            "amazonProductIdentifier": "B0BWVC6T2L",
+            "vendorProductIdentifier": "6959125752384",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "5"
+            }
+          },
+          {
+            "itemSequenceNumber": "6",
+            "amazonProductIdentifier": "B0G48NPV1J",
+            "vendorProductIdentifier": "B0G48NPV1J",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            }
+          },
+          {
+            "itemSequenceNumber": "7",
+            "amazonProductIdentifier": "B0FS78TM1P",
+            "vendorProductIdentifier": "B0FS78TM1P",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "160"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "160"
+            }
+          },
+          {
+            "itemSequenceNumber": "8",
+            "amazonProductIdentifier": "B0FS7BZ9X8",
+            "vendorProductIdentifier": "B0FS7BZ9X8",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "325"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "325"
+            }
+          },
+          {
+            "itemSequenceNumber": "9",
+            "amazonProductIdentifier": "B098TGD3PL",
+            "vendorProductIdentifier": "B098TGD3PL",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "8"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "8"
+            }
+          },
+          {
+            "itemSequenceNumber": "10",
+            "amazonProductIdentifier": "B0DYVBGX65",
+            "vendorProductIdentifier": "6937517609683",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "14"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "14"
+            }
+          },
+          {
+            "itemSequenceNumber": "11",
+            "amazonProductIdentifier": "B0CX8W6CWL",
+            "vendorProductIdentifier": "6976154505897",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "6"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "11.54"
+            }
+          },
+          {
+            "itemSequenceNumber": "12",
+            "amazonProductIdentifier": "B0G48T3GB4",
+            "vendorProductIdentifier": "B0G48T3GB4",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            }
+          },
+          {
+            "itemSequenceNumber": "13",
+            "amazonProductIdentifier": "B0C43LY13T",
+            "vendorProductIdentifier": "B0C43LY13T",
+            "orderedQuantity": {
+              "amount": 2,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "9"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "9"
+            }
+          },
+          {
+            "itemSequenceNumber": "14",
+            "amazonProductIdentifier": "B0FS79M8CP",
+            "vendorProductIdentifier": "B0FS79M8CP",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "350"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "350"
+            }
+          },
+          {
+            "itemSequenceNumber": "15",
+            "amazonProductIdentifier": "B092D7N9DQ",
+            "vendorProductIdentifier": "0726667955742",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "8"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "19.88"
+            }
+          },
+          {
+            "itemSequenceNumber": "16",
+            "amazonProductIdentifier": "B0G1H28ZLK",
+            "vendorProductIdentifier": "B0G1H28ZLK",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "4"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "4"
+            }
+          },
+          {
+            "itemSequenceNumber": "17",
+            "amazonProductIdentifier": "B0CTKNPDG9",
+            "vendorProductIdentifier": "B0CTKNPDG9",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "6"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "23.8"
+            }
+          },
+          {
+            "itemSequenceNumber": "18",
+            "amazonProductIdentifier": "B0G1H642P8",
+            "vendorProductIdentifier": "B0G1H642P8",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            }
+          },
+          {
+            "itemSequenceNumber": "19",
+            "amazonProductIdentifier": "B09QHWDDRX",
+            "vendorProductIdentifier": "8375513886550",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "6.25"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "6.25"
+            }
+          },
+          {
+            "itemSequenceNumber": "20",
+            "amazonProductIdentifier": "B0G48Q5FX1",
+            "vendorProductIdentifier": "B0G48Q5FX1",
+            "orderedQuantity": {
+              "amount": 15,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            }
+          },
+          {
+            "itemSequenceNumber": "21",
+            "amazonProductIdentifier": "B0C3CLLJQL",
+            "vendorProductIdentifier": "6976154501950",
+            "orderedQuantity": {
+              "amount": 14,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "4"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "4"
+            }
+          },
+          {
+            "itemSequenceNumber": "22",
+            "amazonProductIdentifier": "B0G1H68YRL",
+            "vendorProductIdentifier": "B0G1H68YRL",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            }
+          },
+          {
+            "itemSequenceNumber": "23",
+            "amazonProductIdentifier": "B081VYGWVW",
+            "vendorProductIdentifier": "742089685005",
+            "orderedQuantity": {
+              "amount": 4,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "26"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "41.55"
+            }
+          },
+          {
+            "itemSequenceNumber": "24",
+            "amazonProductIdentifier": "B0DYVHXTNH",
+            "vendorProductIdentifier": "B0DYVHXTNH",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "27"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "27"
+            }
+          },
+          {
+            "itemSequenceNumber": "25",
+            "amazonProductIdentifier": "B0G48K91M5",
+            "vendorProductIdentifier": "6937517608044",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "6"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "6"
+            }
+          },
+          {
+            "itemSequenceNumber": "26",
+            "amazonProductIdentifier": "B0DYTVHSTF",
+            "vendorProductIdentifier": "6937517609768",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "9"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "9"
+            }
+          },
+          {
+            "itemSequenceNumber": "27",
+            "amazonProductIdentifier": "B0DKTLYLGD",
+            "vendorProductIdentifier": "B0DKTLYLGD",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "5"
+            }
+          },
+          {
+            "itemSequenceNumber": "28",
+            "amazonProductIdentifier": "B08NJZ99VH",
+            "vendorProductIdentifier": "3658745985624",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "52.5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "52.5"
+            }
+          },
+          {
+            "itemSequenceNumber": "29",
+            "amazonProductIdentifier": "B0D5M7JKG9",
+            "vendorProductIdentifier": "6976154509048",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "45"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "45"
+            }
+          },
+          {
+            "itemSequenceNumber": "30",
+            "amazonProductIdentifier": "B0G48LQCYV",
+            "vendorProductIdentifier": "B0G48LQCYV",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "11.99"
+            }
+          },
+          {
+            "itemSequenceNumber": "31",
+            "amazonProductIdentifier": "B0G1H57PYF",
+            "vendorProductIdentifier": "B0G1H57PYF",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            }
+          },
+          {
+            "itemSequenceNumber": "32",
+            "amazonProductIdentifier": "B0G1H4ZRBK",
+            "vendorProductIdentifier": "B0G1H4ZRBK",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "3.5"
+            }
+          },
+          {
+            "itemSequenceNumber": "33",
+            "amazonProductIdentifier": "B0BWVDSPV7",
+            "vendorProductIdentifier": "B0BWVDSPV7",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "10"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "10"
+            }
+          },
+          {
+            "itemSequenceNumber": "34",
+            "amazonProductIdentifier": "B0C7MSL8NW",
+            "vendorProductIdentifier": "6976154501035",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "8"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "26.42"
+            }
+          },
+          {
+            "itemSequenceNumber": "35",
+            "amazonProductIdentifier": "B0F9Z1HFF3",
+            "vendorProductIdentifier": "6937517603940",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "15"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "15"
+            }
+          },
+          {
+            "itemSequenceNumber": "36",
+            "amazonProductIdentifier": "B0DB8K9TX7",
+            "vendorProductIdentifier": "6976154509420",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "25"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "25"
+            }
+          },
+          {
+            "itemSequenceNumber": "37",
+            "amazonProductIdentifier": "B0CNLRGR6Q",
+            "vendorProductIdentifier": "6976154505484",
+            "orderedQuantity": {
+              "amount": 3,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "4.59"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "18.35"
+            }
+          },
+          {
+            "itemSequenceNumber": "38",
+            "amazonProductIdentifier": "B0CZLL82MN",
+            "vendorProductIdentifier": "B0CZLL82MN",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "24"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "24"
+            }
+          },
+          {
+            "itemSequenceNumber": "39",
+            "amazonProductIdentifier": "B0G48GZQY5",
+            "vendorProductIdentifier": "6937517608051",
+            "orderedQuantity": {
+              "amount": 1,
+              "unitOfMeasure": "Eaches",
+              "unitSize": 1
+            },
+            "isBackOrderAllowed": false,
+            "netCost": {
+              "currencyCode": "AED",
+              "amount": "6"
+            },
+            "listPrice": {
+              "currencyCode": "AED",
+              "amount": "6"
+            }
+          }
+        ]
+      },
+      "total_received_qty": 0,
+      "total_pending_qty": 0
     }
   ]
 }

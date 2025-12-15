@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from services.db import execute_many_write, execute_write, get_db_connection
 from services.perf import time_block

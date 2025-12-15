@@ -29,12 +29,12 @@ if db_path.exists():
             total_received += received
             total_shipped += shipped
         
-        print(f"\nTotals:")
+        print("\nTotals:")
         print(f"  Total Ordered:  {total_ordered}")
         print(f"  Total Received: {total_received}")
         print(f"  Total Shipped:  {total_shipped}")
-        print(f"\nExpected (from Amazon dashboard):")
-        print(f"  Ordered: 975")
-        print(f"  Received: 40")
+        print("\nExpected (from Amazon dashboard):")
+        print("  Ordered: 975")
+        print("  Received: 40")
 else:
     print(f"Database not found at {db_path}")

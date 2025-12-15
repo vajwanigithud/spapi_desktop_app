@@ -1,6 +1,8 @@
 import logging
-import requests
 from urllib.parse import urlencode
+
+import requests
+
 from auth.spapi_auth import SpApiAuth
 from config import MARKETPLACE_ID
 

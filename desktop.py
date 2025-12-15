@@ -1,9 +1,9 @@
-﻿import subprocess
-import time
-import webview
-import threading
+﻿import os
+import subprocess
 import sys
-import os
+import time
+
+import webview
 
 API_HOST = "127.0.0.1"
 API_PORT = 8001

@@ -1,7 +1,7 @@
 """Simple print job logging."""
 
-from datetime import datetime
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from services.db import execute_write, get_db_connection

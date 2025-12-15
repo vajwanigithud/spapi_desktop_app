@@ -9,11 +9,10 @@ Pattern: Reuses existing spapi_reports helpers (request_vendor_report, poll_vend
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
 
-from services import db
-from services import spapi_reports
+from services import db, spapi_reports
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +118,7 @@ def fetch_latest_vendor_inventory_report_json(marketplace_id: str) -> dict:
             # In case the top level is a list (shouldn't be for GET_VENDOR_INVENTORY_REPORT, but handle it)
             report_json = {"inventoryByAsin": report_content}
         else:
-            logger.warning(f"[VendorInventory] Report content is not JSON-like, returning empty dict")
+            logger.warning("[VendorInventory] Report content is not JSON-like, returning empty dict")
             return {}
         
         logger.info(f"[VendorInventory] Successfully downloaded and parsed report {report_id}")

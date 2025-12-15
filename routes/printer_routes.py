@@ -1,8 +1,7 @@
 """Printer settings API consumed by the frontend."""
 
-from typing import Dict, Optional
-
 import logging
+from typing import Dict, Optional
 
 from fastapi import APIRouter, FastAPI
 from pydantic import BaseModel, Field, root_validator

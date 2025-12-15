@@ -19,9 +19,11 @@
 #   - Update callers to track transaction IDs from their POST requests
 # ============================================================================
 
-import requests
 import logging
 from urllib.parse import urlencode
+
+import requests
+
 from auth.spapi_auth import SpApiAuth
 from config import MARKETPLACE_ID
 

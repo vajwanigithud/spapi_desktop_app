@@ -1,4 +1,5 @@
 import random
+
 import win32print
 
 # ----------------- SETTINGS -----------------
@@ -94,3 +95,4 @@ if __name__ == "__main__":
     print("Printing EAN:", ean)
     send_raw(PRINTER_NAME, epl)
     print("✅ Sent EPL job")
+

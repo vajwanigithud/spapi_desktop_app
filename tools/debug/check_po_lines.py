@@ -3,6 +3,7 @@
 import sqlite3
 import sys
 
+
 def main():
     db_path = r'C:\spapi_desktop_app\catalog.db'
     

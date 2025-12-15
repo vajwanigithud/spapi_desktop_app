@@ -2,10 +2,11 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Iterable, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from services.db import get_db_connection
 from services.perf import time_block
+
 from .utils_barcodes import is_asin
 
 schema_logger = logging.getLogger("forecast_schema")

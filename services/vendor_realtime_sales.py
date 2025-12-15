@@ -9,13 +9,13 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 - Support for flexible lookback windows and view-by modes (ASIN / Time)
 """
 
-import logging
 import json
+import logging
 import os
 import sqlite3
-from datetime import datetime, timezone, timedelta, time
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     # Python 3.9+ standard lib
@@ -26,11 +26,11 @@ except Exception:
     class ZoneInfoNotFoundError(Exception):
         pass
 
-from services.db import execute_write, get_db_connection, execute_many_write
 from services.catalog_service import (
-    seed_catalog_universe,
     record_catalog_asin_sources,
+    seed_catalog_universe,
 )
+from services.db import execute_many_write, execute_write, get_db_connection
 from services.perf import time_block
 from services.spapi_reports import (
     SpApiQuotaError,
@@ -1669,6 +1669,7 @@ def backfill_realtime_sales_for_gap(
         SpApiQuotaError: If quota is exceeded (caller should activate cooldown)
     """
     import time
+
     from services import spapi_reports
     from services.spapi_reports import SpApiQuotaError
 
@@ -2515,7 +2516,7 @@ def run_one_time_four_week_backfill(
             rows, asins, hours
         )
 
-    except SpApiQuotaError as e:
+    except SpApiQuotaError:
         start_quota_cooldown(datetime.now(timezone.utc))
         logger.error(
             f"{LOG_PREFIX_API} Weekly backfill stopped early due to quota; already ingested %d rows.",
@@ -2530,7 +2531,7 @@ def run_one_time_four_week_backfill(
             "asins": total_asins,
             "hours": total_hours,
         }
-    except Exception as e:
+    except Exception:
         logger.exception(f"{LOG_PREFIX_INGEST} Unexpected error during weekly backfill")
         return {
             "status": "error",

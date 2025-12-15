@@ -2,8 +2,7 @@ import json
 import logging
 from pathlib import Path
 
-from main import normalize_pos_entries, harvest_barcodes_from_pos
-from services.utils_barcodes import normalize_barcode
+from main import harvest_barcodes_from_pos, normalize_pos_entries
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backfill_barcodes")

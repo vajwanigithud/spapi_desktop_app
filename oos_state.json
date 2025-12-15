@@ -2818,5 +2818,75 @@
     "qty": "2",
     "image": null,
     "isOutOfStock": true
+  },
+  "2FLBUJAO::B0BWVC6T2L": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0BWVC6T2L",
+    "vendorSku": "6959125752384",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "1",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B0G48NPV1J": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0G48NPV1J",
+    "vendorSku": "B0G48NPV1J",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "1",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B0G48T3GB4": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0G48T3GB4",
+    "vendorSku": "B0G48T3GB4",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "1",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B0G48Q5FX1": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0G48Q5FX1",
+    "vendorSku": "B0G48Q5FX1",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "15",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B081VYGWVW": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B081VYGWVW",
+    "vendorSku": "742089685005",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "4",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B0G48LQCYV": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0G48LQCYV",
+    "vendorSku": "B0G48LQCYV",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "1",
+    "image": null,
+    "isOutOfStock": true
+  },
+  "2FLBUJAO::B0BWVDSPV7": {
+    "poNumber": "2FLBUJAO",
+    "asin": "B0BWVDSPV7",
+    "vendorSku": "B0BWVDSPV7",
+    "purchaseOrderDate": "2025-12-15T00:25:30Z",
+    "shipToPartyId": "DXB6",
+    "qty": "1",
+    "image": null,
+    "isOutOfStock": true
   }
 }

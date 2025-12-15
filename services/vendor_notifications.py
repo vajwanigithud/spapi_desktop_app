@@ -4,8 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-from services.db import get_db_connection
-
 logger = logging.getLogger(__name__)
 
 VENDOR_NOTIFICATION_TYPES = [

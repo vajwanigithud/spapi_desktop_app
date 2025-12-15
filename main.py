@@ -75,98 +75,96 @@
 # =============================================
 
 import asyncio
-import json
-import os
-import logging
-from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional, Set
-from io import BytesIO, StringIO
 import csv
+import json
+import logging
+import os
 import time
+from datetime import datetime, timedelta, timezone
+from io import StringIO
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl
-from endpoint_presets import ENDPOINT_PRESETS
-from services.utils_barcodes import is_asin, normalize_barcode, is_valid_ean13
-from services import db_repos
-from services.json_cache import (
-    load_vendor_pos_cache,
-    save_vendor_pos_cache,
-    load_asin_cache,
-    save_asin_cache,
-    load_po_tracker,
-    save_po_tracker,
-    load_oos_state,
-    save_oos_state,
-)
-from services.catalog_service import (
-    init_catalog_db,
-    upsert_spapi_catalog,
-    spapi_catalog_status,
-    update_catalog_barcode,
-    set_catalog_barcode_if_absent,
-    get_catalog_entry,
-    parse_catalog_payload,
-    list_catalog_indexes,
-    ensure_asin_in_universe,
-    list_universe_asins,
-    get_catalog_fetch_attempts_map,
-    get_catalog_asin_sources_map,
-    seed_catalog_universe,
-    record_catalog_asin_sources,
-    record_catalog_asin_source,
-    record_catalog_fetch_attempt,
-    should_fetch_catalog,
-    reset_catalog_fetch_attempts,
-    reset_all_catalog_fetch_attempts,
-    mark_catalog_fetch_terminal,
-)
+
 import services.oos_service as oos_service
 import services.picklist_service as picklist_service
-from services.async_utils import run_single_arg
-from services.vendor_notifications import (
-    get_po_notification_flags,
-    mark_po_as_needing_refresh,
-    clear_po_refresh_flag,
-    log_vendor_notification,
-    process_vendor_notification,
-    get_recent_notifications,
-)
-from services.perf import time_block, get_recent_timings
 import services.vendor_realtime_sales as vendor_realtime_sales_service
-from services import spapi_reports
-from services.vendor_inventory import (
-    refresh_vendor_inventory_snapshot,
-    get_vendor_inventory_snapshot_for_ui,
-)
-from services.vendor_inventory_realtime import get_cached_realtime_inventory_snapshot
-from routes.printer_routes import register_printer_routes
+from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
-from routes.printer_health_routes import register_printer_health_routes
 from routes.print_log_routes import register_print_log_routes
+from routes.printer_health_routes import register_printer_health_routes
+from routes.printer_routes import register_printer_routes
 from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
 from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
+from services import db_repos, spapi_reports
+from services.async_utils import run_single_arg
+from services.catalog_service import (
+    ensure_asin_in_universe,
+    get_catalog_asin_sources_map,
+    get_catalog_entry,
+    get_catalog_fetch_attempts_map,
+    init_catalog_db,
+    list_catalog_indexes,
+    list_universe_asins,
+    mark_catalog_fetch_terminal,
+    parse_catalog_payload,
+    record_catalog_asin_source,
+    record_catalog_asin_sources,
+    record_catalog_fetch_attempt,
+    reset_all_catalog_fetch_attempts,
+    reset_catalog_fetch_attempts,
+    seed_catalog_universe,
+    set_catalog_barcode_if_absent,
+    should_fetch_catalog,
+    spapi_catalog_status,
+    update_catalog_barcode,
+    upsert_spapi_catalog,
+)
+from services.json_cache import (
+    load_asin_cache,
+    load_oos_state,
+    load_po_tracker,
+    load_vendor_pos_cache,
+    save_oos_state,
+    save_po_tracker,
+    save_vendor_pos_cache,
+)
+from services.perf import get_recent_timings, time_block
+from services.utils_barcodes import is_asin, normalize_barcode
+from services.vendor_inventory import (
+    get_vendor_inventory_snapshot_for_ui,
+    refresh_vendor_inventory_snapshot,
+)
+from services.vendor_inventory_realtime import get_cached_realtime_inventory_snapshot
+from services.vendor_notifications import (
+    clear_po_refresh_flag,
+    get_po_notification_flags,
+    get_recent_notifications,
+    process_vendor_notification,
+)
 
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
-import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException, Query, Request, BackgroundTasks, Body
+import uvicorn
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from auth.spapi_auth import SpApiAuth
 from pydantic import BaseModel
+
+from auth.spapi_auth import SpApiAuth
 
 # --- Logging configuration ---
 LOG_DIR = Path(__file__).parent / "logs"
@@ -401,7 +399,12 @@ except Exception as e:
 try:
     vendor_realtime_sales_service.init_vendor_realtime_sales_table()
     vendor_realtime_sales_service.init_vendor_rt_audit_hours_table()
-    from services.db import init_vendor_rt_sales_state_table, ensure_oos_export_history_table, ensure_vendor_inventory_table, ensure_app_kv_table
+    from services.db import (
+        ensure_app_kv_table,
+        ensure_oos_export_history_table,
+        ensure_vendor_inventory_table,
+        init_vendor_rt_sales_state_table,
+    )
     init_vendor_rt_sales_state_table()
     ensure_oos_export_history_table()
     ensure_vendor_inventory_table()
@@ -442,13 +445,13 @@ def run_vendor_rt_sales_startup_backfill():
     This function is intended to run in a background daemon thread so startup is non-blocking.
     """
     try:
-        from services.vendor_realtime_sales import (
-            get_safe_now_utc,
-            get_last_ingested_end_utc,
-            backfill_realtime_sales_for_gap,
-            MAX_HISTORY_DAYS,
-        )
         from services.db import get_db_connection
+        from services.vendor_realtime_sales import (
+            MAX_HISTORY_DAYS,
+            backfill_realtime_sales_for_gap,
+            get_last_ingested_end_utc,
+            get_safe_now_utc,
+        )
         
         safe_now = get_safe_now_utc()
         earliest_allowed = safe_now - timedelta(days=MAX_HISTORY_DAYS)
@@ -507,7 +510,6 @@ def vendor_rt_sales_auto_sync_loop():
     - Optionally runs daily/weekly audits (controlled by ENABLE_* flags).
     """
     global _rt_sales_auto_sync_stop
-    import time
     
     logger.info(f"[RTSalesAutoSync] Started, will sync every {VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES} minutes")
     
@@ -518,20 +520,20 @@ def vendor_rt_sales_auto_sync_loop():
     
     while not _rt_sales_auto_sync_stop:
         try:
+            from services.db import get_db_connection
+            from services.spapi_reports import SpApiQuotaError
             from services.vendor_realtime_sales import (
-                get_safe_now_utc,
-                get_last_ingested_end_utc,
-                backfill_realtime_sales_for_gap,
-                is_in_quota_cooldown,
-                start_quota_cooldown,
-                is_backfill_in_progress,
-                start_backfill,
-                end_backfill,
                 ENABLE_VENDOR_RT_SALES_DAILY_AUDIT,
                 ENABLE_VENDOR_RT_SALES_WEEKLY_AUDIT,
+                backfill_realtime_sales_for_gap,
+                end_backfill,
+                get_last_ingested_end_utc,
+                get_safe_now_utc,
+                is_backfill_in_progress,
+                is_in_quota_cooldown,
+                start_backfill,
+                start_quota_cooldown,
             )
-            from services.spapi_reports import SpApiQuotaError
-            from services.db import get_db_connection
             
             now_utc = get_safe_now_utc()
             
@@ -607,10 +609,10 @@ def vendor_rt_sales_auto_sync_loop():
                 try:
                     from services.vendor_realtime_sales import (
                         get_vendor_rt_sales_state,
-                        update_daily_audit_state,
+                        mark_rt_sales_daily_audit_ran,
                         run_realtime_sales_audit_window,
                         should_run_rt_sales_daily_audit,
-                        mark_rt_sales_daily_audit_ran,
+                        update_daily_audit_state,
                     )
                     
                     with get_db_connection() as conn:
@@ -654,8 +656,8 @@ def vendor_rt_sales_auto_sync_loop():
                 try:
                     from services.vendor_realtime_sales import (
                         get_vendor_rt_sales_state,
-                        update_weekly_audit_state,
                         run_realtime_sales_audit_window,
+                        update_weekly_audit_state,
                     )
                     
                     with get_db_connection() as conn:
@@ -1345,7 +1347,6 @@ def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, i
     - total_accepted_cost_currency: currency code for the cost
     - amazonStatus: raw purchaseOrderState from SP-API
     """
-    from decimal import Decimal
     
     po_num = po.get("purchaseOrderNumber") or ""
     
@@ -2433,7 +2434,6 @@ def api_vendor_inventory_refresh():
     """
     try:
         from services.db import get_db_connection
-        from services.spapi_reports import SpApiQuotaError
         
         marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
         marketplace_id = marketplace_ids[0]
@@ -2776,6 +2776,7 @@ def export_oos_items():
     Records exported ASINs in export history for future reference.
     """
     import uuid
+
     from services.db import is_asin_exported, mark_oos_asins_exported
     
     state = load_oos_state()
@@ -3904,7 +3905,7 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     """
     print(f"\n[VerifyPOReceipts {po_number}] ===== COMPARING DB vs SHIPMENTS =====")
     print(f"[VerifyPOReceipts {po_number}] Data sources:")
-    print(f"  DB (vendor_po_lines): Vendor Orders API -> Ordered/Received from itemStatus")
+    print("  DB (vendor_po_lines): Vendor Orders API -> Ordered/Received from itemStatus")
     print(f"  Shipments API: /vendor/shipping/v1/shipments filtered by buyerReferenceNumber={po_number}")
     
     # Get DB data
@@ -4198,8 +4199,8 @@ if __name__ == "__main__":
             po_number = sys.argv[idx + 1]
             debug_dump_vendor_po(po_number)
             sys.exit(0)
-        except (IndexError, ValueError) as e:
-            print(f"Usage: python main.py --debug-po <PO_NUMBER>")
+        except (IndexError, ValueError):
+            print("Usage: python main.py --debug-po <PO_NUMBER>")
             sys.exit(1)
     
     # Verify: check mapping against SP-API
@@ -4209,8 +4210,8 @@ if __name__ == "__main__":
             po_number = sys.argv[idx + 1]
             verify_vendor_po_mapping(po_number)
             sys.exit(0)
-        except (IndexError, ValueError) as e:
-            print(f"Usage: python main.py --verify-po <PO_NUMBER>")
+        except (IndexError, ValueError):
+            print("Usage: python main.py --verify-po <PO_NUMBER>")
             sys.exit(1)
     
     # Verify receipts: compare vendor_po_lines (DB) against Vendor Shipments API
@@ -4220,8 +4221,8 @@ if __name__ == "__main__":
             po_number = sys.argv[idx + 1]
             verify_po_receipts_against_shipments(po_number)
             sys.exit(0)
-        except (IndexError, ValueError) as e:
-            print(f"Usage: python main.py --verify-po-receipts <PO_NUMBER>")
+        except (IndexError, ValueError):
+            print("Usage: python main.py --verify-po-receipts <PO_NUMBER>")
             sys.exit(1)
     
     # Normal mode: start the FastAPI server

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Manual debug script for PO data sync verification; not part of the main app."""
 import sys
+
 sys.path.insert(0, '/spapi_desktop_app')
 
-from pathlib import Path
 import json
 import sqlite3
+from pathlib import Path
 
 # Initialize DB
 print("=== Initializing Database ===")
@@ -56,7 +57,7 @@ if cache_file.exists():
         # Test quantity parsing
         if items:
             first_item = items[0]
-            print(f"\n  First item breakdown:")
+            print("\n  First item breakdown:")
             print(f"    - ASIN: {first_item.get('amazonProductIdentifier')}")
             print(f"    - SKU: {first_item.get('vendorProductIdentifier')}")
             
@@ -81,7 +82,7 @@ if cache_file.exists():
         print(f"\n  - itemStatus count: {len(item_status_list)}")
         if item_status_list:
             first_status = item_status_list[0]
-            print(f"  First status breakdown:")
+            print("  First status breakdown:")
             print(f"    - itemSequenceNumber: {first_status.get('itemSequenceNumber')}")
             print(f"    - statusCode: {first_status.get('statusCode')}")
             

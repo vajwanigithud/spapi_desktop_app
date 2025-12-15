@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Callable, Iterable, List, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Sequence
 
 
 async def run_in_threads(func: Callable[..., Any], args_list: Iterable[Sequence[Any]], max_concurrency: int = 5) -> List[Any]:

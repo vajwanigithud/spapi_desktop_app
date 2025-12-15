@@ -1,10 +1,10 @@
 # NOTE: Forecast is currently disabled. This tool is kept only for manual maintenance of old data.
-import os
-import sys
-import sqlite3
-import shutil
-import datetime
 import argparse
+import datetime
+import os
+import shutil
+import sqlite3
+import sys
 
 # Forecast-only tables we want to drop from catalog.db
 FORECAST_TABLES = [

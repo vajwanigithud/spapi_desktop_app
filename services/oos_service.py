@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, List
 
-from services import json_cache, db_repos
+from services import db_repos, json_cache
 
 logger = logging.getLogger(__name__)
 

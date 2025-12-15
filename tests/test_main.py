@@ -1,5 +1,4 @@
 """Tests for main.py helper functions."""
-import pytest
 
 
 def test_resolve_catalog_host_uae_returns_eu():

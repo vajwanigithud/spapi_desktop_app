@@ -5,10 +5,10 @@ import logging
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 
+from services.epl_label import build_epl_ean13_label
+from services.print_log import log_print_job
 from services.printers import get_printer_settings
 from services.raw_print import send_raw_to_printer
-from services.print_log import log_print_job
-from services.epl_label import build_epl_ean13_label
 
 try:
     import win32print

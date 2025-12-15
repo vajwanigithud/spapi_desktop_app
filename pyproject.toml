@@ -1,0 +1,38 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+include = ["*.py"]
+
+exclude = [
+  ".venv",
+  ".venv_spapi",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  "tools/_codex_cleanup_backup_",
+  "reports_archive",
+  "logs",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",   # syntax / indentation / real errors
+  "F",   # unused vars, undefined names (REAL BUGS)
+  "B",   # bugbear (dangerous patterns)
+  "I",   # import sorting
+]
+
+ignore = [
+  "E501",   # line length (formatter handles this)
+  "UP006",  # Dict/List/Tuple modernization (later)
+  "UP035",  # typing import modernization (later)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

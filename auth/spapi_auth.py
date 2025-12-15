@@ -6,16 +6,13 @@
 #  - Make API calls using only LWA + RDT
 # ================================================================
 
-import requests
 import datetime
-import time
 import logging
+import time
 
-from config import (
-    LWA_CLIENT_ID,
-    LWA_CLIENT_SECRET,
-    LWA_REFRESH_TOKEN
-)
+import requests
+
+from config import LWA_CLIENT_ID, LWA_CLIENT_SECRET, LWA_REFRESH_TOKEN
 
 logger = logging.getLogger("spapi_auth")
 

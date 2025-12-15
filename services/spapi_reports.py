@@ -1,12 +1,13 @@
-import logging
+import gzip
+import json
 import logging
 import os
 import time
-import gzip
-import json
-import requests
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
+
+import requests
+
 
 class SpApiQuotaError(RuntimeError):
     """Raised when SP-API returns a QuotaExceeded / 429."""

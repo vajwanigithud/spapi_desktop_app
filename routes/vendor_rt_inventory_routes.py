@@ -99,7 +99,7 @@ def _load_sales_30d_map(
         try:
             for chunk in _chunked(asins):
                 placeholders = ",".join(["?"] * len(chunk))
-                query = f"""
+                query = """
                     SELECT asin, SUM(ordered_units) AS total_units
                     FROM vendor_realtime_sales
                     WHERE hour_start_utc >= ?

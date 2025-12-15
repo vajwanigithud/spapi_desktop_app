@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.catalog_service import (
-    spapi_catalog_status,
-    seed_catalog_universe,
     record_catalog_asin_sources,
+    seed_catalog_universe,
+    spapi_catalog_status,
 )
 from services.db import get_db_connection
 from services.spapi_reports import (
