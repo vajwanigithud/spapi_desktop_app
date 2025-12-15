@@ -42,6 +42,13 @@ These zones require tighter testing, code review, and incremental rollouts becau
 - Record golden outputs (e.g., CSV snapshots, API payloads) before structural refactors to verify equivalence.
 - Avoid mixed-responsibility edits—never blend UI tweaks with DB migrations in one PR.
 
+## Decomposition Plan
+- `app/bootstrap.py`: future home for app startup glue currently inside `main.py`.
+- `app/http.py`: will host route-registration helpers and HTTP-only utilities.
+- `app/cli.py`: planned destination for CLI argument parsing and entrypoints.
+- `app/paths.py`: centralizes filesystem/Path handling shared across modules.
+- `app/logging_setup.py`: consolidates logging formatter/handler setup.
+
 ## Verification Workflow
 - Always run `python tools/verify.py` before committing or deploying upgrades. It enforces `ruff check .`, `python -m compileall -q .`, and an import sanity check for `main.py`.
 - Treat `tools/verify.py` as mandatory preflight; no upgrade should proceed without a clean verify run.

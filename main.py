@@ -5,6 +5,7 @@
 # This backend is intentionally minimal. Codex must NOT refactor it,
 # must NOT change endpoint paths, and must NOT reintroduce any
 # Forecast/Google Sheets logic.
+# Decomposition scaffolding (app/ package) is staged; logic remains here until migrations are scheduled.
 #
 # -------------------------------
 # HARD REQUIREMENTS FOR CODEX

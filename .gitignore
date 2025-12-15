@@ -1,45 +1,77 @@
-# Python cache files
+# ============================
+# Python cache / bytecode
+# ============================
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Virtual environment
+# ============================
+# Virtual environments
+# ============================
 .venv/
 venv/
 env/
 
-# Log files
+# ============================
+# Logs
+# ============================
 logs/
+*.log
 
-# Pytest cache
+# ============================
+# Pytest / test caches
+# ============================
 .pytest_cache/
+.coverage
+htmlcov/
 
-# IDE files
+# ============================
+# IDE / Editor files
+# ============================
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Local databases (may contain user data)
+# ============================
+# Local databases (may contain data)
+# ============================
 *.db
+*.db.backup*
+*.sqlite
+*.sqlite3
 
-# State files (may contain user-specific data)
+# ============================
+# State / cache files (runtime-generated)
+# ============================
 *_state.json
-
-# Cache files
 *_cache.json
+vendor_pos_cache.json
 po_tracker.json
+oos_state.json
 
+# ============================
 # Environment variables
+# ============================
 .env
+.env*
+*.env
 
-# Build artifacts
+# ============================
+# Build / packaging artifacts
+# ============================
 dist/
 build/
 *.egg-info/
+*.whl
 
-# Ignore Copilot auto-generated Markdown files
+# ============================
+# Reports / diagnostics / AI-generated files
+# ============================
+_reports_archive/
+
+# Markdown reports
 SPAPI_*.md
 CHANGES_*.md
 *_ANALYSIS.md
@@ -57,8 +89,7 @@ RELIABILITY_*.md
 FINAL_*.md
 CODE_*.md
 
-# Ignore Copilot / diagnostic reports
-_reports_archive/
+# Text diagnostics
 DIAGNOSIS_*.txt
 QUICK_*.txt
 RELIABILITY_*.txt
@@ -76,4 +107,15 @@ FINAL_SUMMARY.txt
 FIX_VERIFICATION_CHECKLIST.txt
 PROJECT_CLEANUP_SUMMARY.txt
 VISUAL_FIX_SUMMARY.txt
-.env*
+
+# ============================
+# OS files
+# ============================
+.DS_Store
+Thumbs.db
+
+# ============================
+# Safety: never ignore golden baselines
+# ============================
+!tests/golden/
+!tests/golden/*.json
