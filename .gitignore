@@ -43,7 +43,7 @@ htmlcov/
 *.sqlite3
 
 # ============================
-# State / cache files (runtime-generated)
+# Runtime state / cache files
 # ============================
 *_state.json
 *_cache.json
@@ -52,10 +52,10 @@ po_tracker.json
 oos_state.json
 
 # ============================
-# Environment variables
+# Environment variables (CRITICAL)
 # ============================
 .env
-.env*
+.env.*
 *.env
 
 # ============================
@@ -109,6 +109,11 @@ PROJECT_CLEANUP_SUMMARY.txt
 VISUAL_FIX_SUMMARY.txt
 
 # ============================
+# Codex / AI cleanup artifacts
+# ============================
+tools/_codex_cleanup_backup_/
+
+# ============================
 # OS files
 # ============================
 .DS_Store
@@ -119,5 +124,3 @@ Thumbs.db
 # ============================
 !tests/golden/
 !tests/golden/*.json
-tools/_codex_cleanup_backup_/
-
