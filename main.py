@@ -145,6 +145,7 @@ from routes.barcode_print_routes import register_barcode_print_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
+from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -237,6 +238,7 @@ register_barcode_print_routes(app)
 register_printer_health_routes(app)
 register_print_log_routes(app)
 register_vendor_inventory_realtime_routes(app)
+register_vendor_rt_inventory_routes(app)
 
 app.add_middleware(
     CORSMiddleware,

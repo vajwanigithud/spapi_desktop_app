@@ -377,3 +377,43 @@ def get_state_snapshot(
     with _connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_state_rows(
+    marketplace_id: str = "",
+    limit: Optional[int] = None,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> List[Dict[str, Any]]:
+    ensure_vendor_rt_inventory_state_table(db_path)
+    query = """
+        SELECT asin, sellable, last_end_time, updated_at, marketplace_id, source
+        FROM vendor_rt_inventory_state
+    """
+    params: List[Any] = []
+    if marketplace_id:
+        query += " WHERE marketplace_id = ?"
+        params.append(marketplace_id)
+    query += " ORDER BY sellable DESC, asin ASC"
+    if limit and limit > 0:
+        query += " LIMIT ?"
+        params.append(int(limit))
+    with _connection(db_path) as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_state_max_end_time(
+    marketplace_id: str = "",
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> Optional[str]:
+    ensure_vendor_rt_inventory_state_table(db_path)
+    query = "SELECT MAX(last_end_time) AS max_end FROM vendor_rt_inventory_state"
+    params: Tuple[Any, ...] = ()
+    if marketplace_id:
+        query += " WHERE marketplace_id = ?"
+        params = (marketplace_id,)
+    with _connection(db_path) as conn:
+        row = conn.execute(query, params).fetchone()
+    if not row or not row["max_end"]:
+        return None
+    return parse_end_time(row["max_end"])
