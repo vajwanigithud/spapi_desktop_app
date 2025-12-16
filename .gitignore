@@ -50,13 +50,16 @@ htmlcov/
 vendor_pos_cache.json
 po_tracker.json
 oos_state.json
+vendor_realtime_inventory_snapshot.json
+debug_po_*.json
 
 # ============================
-# Environment variables
+# Environment variables / secrets
 # ============================
 .env
 .env*
 *.env
+gsheets_service_account.json
 
 # ============================
 # Build / packaging artifacts
@@ -109,6 +112,11 @@ PROJECT_CLEANUP_SUMMARY.txt
 VISUAL_FIX_SUMMARY.txt
 
 # ============================
+# Exported data / generated artifacts
+# ============================
+exports/
+
+# ============================
 # OS files
 # ============================
 .DS_Store
@@ -119,5 +127,8 @@ Thumbs.db
 # ============================
 !tests/golden/
 !tests/golden/*.json
-tools/_codex_cleanup_backup_/
 
+# ============================
+# Codex cleanup artifacts
+# ============================
+tools/_codex_cleanup_backup_/
