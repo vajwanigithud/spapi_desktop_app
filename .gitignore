@@ -10,6 +10,7 @@ __pycache__/
 # Virtual environments
 # ============================
 .venv/
+.venv_*/
 venv/
 env/
 
@@ -18,6 +19,7 @@ env/
 # ============================
 logs/
 *.log
+uvicorn.log
 
 # ============================
 # Pytest / test caches
@@ -35,6 +37,12 @@ htmlcov/
 *.swo
 
 # ============================
+# OS files
+# ============================
+.DS_Store
+Thumbs.db
+
+# ============================
 # Local databases (may contain data)
 # ============================
 *.db
@@ -43,20 +51,30 @@ htmlcov/
 *.sqlite3
 
 # ============================
-# State / cache files (runtime-generated)
+# Environment variables / secrets
+# ============================
+.env
+.env.*
+*.env
+
+# ============================
+# Runtime-generated state / caches (LOCAL ONLY)
 # ============================
 *_state.json
 *_cache.json
-vendor_pos_cache.json
 po_tracker.json
+vendor_pos_cache.json
+vendor_realtime_inventory_snapshot.json
 oos_state.json
+debug_po_*.json
+gsheets_service_account.json
 
 # ============================
-# Environment variables
+# Exports / reports / diagnostics (often large + re-generated)
 # ============================
-.env
-.env*
-*.env
+exports/
+_reports_archive/
+*.gz
 
 # ============================
 # Build / packaging artifacts
@@ -67,11 +85,8 @@ build/
 *.whl
 
 # ============================
-# Reports / diagnostics / AI-generated files
+# AI / Codex artifacts (noise)
 # ============================
-_reports_archive/
-
-# Markdown reports
 SPAPI_*.md
 CHANGES_*.md
 *_ANALYSIS.md
@@ -89,7 +104,6 @@ RELIABILITY_*.md
 FINAL_*.md
 CODE_*.md
 
-# Text diagnostics
 DIAGNOSIS_*.txt
 QUICK_*.txt
 RELIABILITY_*.txt
@@ -109,15 +123,12 @@ PROJECT_CLEANUP_SUMMARY.txt
 VISUAL_FIX_SUMMARY.txt
 
 # ============================
-# OS files
+# Codex backup folder (explicit)
 # ============================
-.DS_Store
-Thumbs.db
+tools/_codex_cleanup_backup_/
 
 # ============================
 # Safety: never ignore golden baselines
 # ============================
 !tests/golden/
 !tests/golden/*.json
-tools/_codex_cleanup_backup_/
-
