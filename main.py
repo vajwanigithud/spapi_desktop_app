@@ -155,16 +155,22 @@ from services.vendor_po_store import (
     export_vendor_pos_snapshot,
     get_rejected_vendor_po_lines,
     get_vendor_po as store_get_vendor_po,
+    get_vendor_po_line_totals_for_po,
     get_vendor_po_lines as store_get_vendor_po_lines,
     get_vendor_po_list,
     get_vendor_po_sync_state,
     get_vendor_pos_by_numbers,
-    get_vendor_po_line_totals_for_po,
     replace_vendor_po_lines,
     update_header_raw_payload,
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
     count_vendor_po_lines,
+)
+from services.vendor_po_status_store import (
+    get_vendor_po_status_payload,
+    record_vendor_po_run_failure,
+    record_vendor_po_run_start,
+    record_vendor_po_run_success,
 )
 
 try:
@@ -1338,6 +1344,7 @@ def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
     if not acquired:
         return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
 
+    record_vendor_po_run_start("sync")
     try:
         stats = _fetch_and_persist_vendor_pos(
             created_after,
@@ -1346,18 +1353,24 @@ def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
             source_detail="sync_endpoint",
             max_pages=5,
         )
+    except HTTPException as exc:
+        error_msg = _summarize_vendor_po_error(exc)
+        record_vendor_po_run_failure(error_msg)
+        release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        raise
+    except Exception as exc:
+        error_msg = _summarize_vendor_po_error(exc)
+        record_vendor_po_run_failure(error_msg)
+        release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
+    else:
+        record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
             owner,
             status="SUCCESS",
             window_start=created_after,
             window_end=created_before,
         )
-    except HTTPException:
-        release_vendor_po_lock(owner, status="FAILED", error="sync_failed", window_start=created_after, window_end=created_before)
-        raise
-    except Exception as exc:
-        release_vendor_po_lock(owner, status="FAILED", error=str(exc), window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
 
     stats.update(
         {
@@ -1383,6 +1396,7 @@ def rebuild_vendor_pos_full():
     if not acquired:
         return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
 
+    record_vendor_po_run_start("rebuild")
     try:
         stats = _fetch_and_persist_vendor_pos(
             created_after,
@@ -1391,18 +1405,24 @@ def rebuild_vendor_pos_full():
             source_detail="full_rebuild",
             max_pages=10,
         )
+    except HTTPException as exc:
+        error_msg = _summarize_vendor_po_error(exc)
+        record_vendor_po_run_failure(error_msg)
+        release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        raise
+    except Exception as exc:
+        error_msg = _summarize_vendor_po_error(exc)
+        record_vendor_po_run_failure(error_msg)
+        release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+    else:
+        record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
             owner,
             status="SUCCESS",
             window_start=created_after,
             window_end=created_before,
         )
-    except HTTPException:
-        release_vendor_po_lock(owner, status="FAILED", error="rebuild_failed", window_start=created_after, window_end=created_before)
-        raise
-    except Exception as exc:
-        release_vendor_po_lock(owner, status="FAILED", error=str(exc), window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
 
     stats.update(
         {
@@ -1466,6 +1486,24 @@ def _fetch_and_persist_vendor_pos(
             logger.error(f"[VendorPO] Error syncing vendor_po_lines: {exc}")
 
     return {"fetched": len(pos)}
+
+
+def _summarize_vendor_po_error(exc: Exception) -> str:
+    """
+    Produce a short, user-facing summary for Vendor PO sync/rebuild errors.
+    """
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, (list, tuple)) and detail:
+            detail = detail[0]
+        if isinstance(detail, dict):
+            detail = detail.get("detail") or detail.get("message") or str(detail)
+        detail_str = str(detail or "")
+        return f"http_{exc.status_code}:{detail_str}" if detail_str else f"http_{exc.status_code}"
+    msg = str(exc or "").strip()
+    if not msg:
+        msg = exc.__class__.__name__
+    return msg
 
 
 
@@ -1579,10 +1617,7 @@ def get_vendor_pos(
 @app.get("/api/vendor-pos/status")
 def get_vendor_pos_status():
     ensure_vendor_po_schema()
-    return {
-        "sync_state": get_vendor_po_sync_state(),
-        "line_count": count_vendor_po_lines(),
-    }
+    return get_vendor_po_status_payload()
 
 
 @app.get("/api/vendor-pos/export-json")
