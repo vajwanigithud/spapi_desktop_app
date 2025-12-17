@@ -53,6 +53,16 @@ def test_po_details_hydrates_lines_from_db(monkeypatch):
                 "pending_qty": None,
                 "shortage_qty": 0,
             },
+            {
+                "asin": "ASIN2",
+                "vendor_sku": "SKU2",
+                "ordered_qty": 5,
+                "accepted_qty": 5,
+                "received_qty": 1,
+                "cancelled_qty": 0,
+                "pending_qty": None,
+                "shortage_qty": 0,
+            },
         ]
 
     monkeypatch.setattr(main, "store_get_vendor_po", fake_get_po)
@@ -68,5 +78,9 @@ def test_po_details_hydrates_lines_from_db(monkeypatch):
         payload = resp.json()
         items = payload["item"]["orderDetails"]["items"]
         assert len(items) == 2
-        assert items[0]["amazonProductIdentifier"] == "ASIN1"
-        assert items[1]["acknowledgementStatus"]["acceptedQuantity"]["amount"] == 20
+        asin1 = next(line for line in items if line["amazonProductIdentifier"] == "ASIN1")
+        asin2 = next(line for line in items if line["amazonProductIdentifier"] == "ASIN2")
+        assert asin1["orderedQuantity"]["amount"] == 10
+        assert asin2["orderedQuantity"]["amount"] == 25
+        assert asin2["acknowledgementStatus"]["acceptedQuantity"]["amount"] == 25
+        assert asin2["receivingStatus"]["receivedQuantity"]["amount"] == 1
