@@ -20,6 +20,30 @@
     th, td { user-select: text; }
     tbody tr:hover { background:#f1f5f9; cursor:pointer; }
     .empty { padding:14px; color:var(--muted); text-align:center; }
+    .product-thumb {
+      display:block;
+      border-radius:6px;
+      object-fit:cover;
+      background:#f8fafc;
+      border:1px solid var(--border);
+      overflow:hidden;
+      flex-shrink:0;
+    }
+    .product-thumb.thumb-40 { width:40px; height:40px; }
+    .product-thumb.thumb-50 { width:50px; height:50px; }
+    .product-thumb.thumb-60 { width:60px; height:60px; }
+    .product-thumb.thumb-80 { width:80px; height:80px; }
+    .img-fallback {
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:#e5e7eb;
+      color:#94a3b8;
+      font-size:10px;
+      text-transform:uppercase;
+      letter-spacing:0.03em;
+    }
+    .thumb-muted { opacity:0.5; }
     select.po-status-select { padding:8px 12px; border-radius:8px; font-size:15px; font-weight:700; min-width:170px; }
     input.po-date-input { padding:6px 10px; border-radius:8px; font-size:15px; font-weight:700; border:1px solid var(--border); }
     .rt-sales-sortable-header { cursor:pointer; user-select:none; transition: background-color 0.15s ease; }
@@ -287,15 +311,6 @@
       }
       .inv-unhealthy {
         background-color: #ffeaea !important;
-      }
-      .inv-row-zero {
-        /* placeholder for zero inventory rows */
-      }
-      .inv-row-aged {
-        /* placeholder for aged rows */
-      }
-      .inv-row-unhealthy {
-        /* placeholder for unhealthy rows */
       }
       .text-right {
         text-align: right;
@@ -1016,6 +1031,31 @@
       "Delivered",
     ];
 
+    function toAmazonThumb(url) {
+      if (typeof url !== "string") return url;
+      const trimmed = url.trim();
+      if (!trimmed) return url;
+      if (!trimmed.includes("m.media-amazon.com/images/")) return url;
+      if (/\._SL\d+_\.jpg/i.test(trimmed)) return trimmed;
+      return trimmed.replace(
+        /(\/I\/[^.]+)\.jpg(\?.*)?$/i,
+        (_, base, query = "") => `${base}._SL110_.jpg${query || ""}`
+      );
+    }
+
+    function handleImageError(imgEl) {
+      if (!imgEl || imgEl.dataset.fallbackApplied) return;
+      imgEl.dataset.fallbackApplied = "1";
+      const classes = Array.from(imgEl.classList || []);
+      if (!classes.includes("product-thumb")) classes.push("product-thumb");
+      if (!classes.some(cls => cls.startsWith("thumb-"))) classes.push("thumb-60");
+      classes.push("img-fallback");
+      const placeholder = document.createElement("div");
+      placeholder.className = classes.join(" ");
+      placeholder.setAttribute("aria-hidden", "true");
+      imgEl.replaceWith(placeholder);
+    }
+
     function getRowColorForStatus(status) {
       switch (status) {
         case "Preparing":
@@ -1485,9 +1525,10 @@
         }
 
         const rawImageUrl = resolveImage(it);
+        const thumbSrc = rawImageUrl ? toAmazonThumb(rawImageUrl) : "";
         const img = rawImageUrl
-          ? `<img src="${rawImageUrl}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`
-          : `<div class="img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}" style="width:60px; height:60px; background:#e5e7eb; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:11px;">No image</div>`;
+          ? `<img src="${thumbSrc}" alt="" class="product-thumb thumb-60" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+          : `<div class="product-thumb thumb-60 img-fallback img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}">No image</div>`;
         const encodedImage = encodeURIComponent(rawImageUrl || "");
 
         return `<tr${rowClass} data-ean="${escapeAttr(lineEan)}" data-sku="${escapeAttr(vendorSku)}" data-prompt-if-missing="true" oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
@@ -1594,7 +1635,8 @@
         const asin = ph.dataset.asin;
         const cached = catalogImageCache[asin];
         if (cached) {
-          ph.outerHTML = `<img src="${cached}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`;
+          const thumbSrc = toAmazonThumb(cached);
+          ph.outerHTML = `<img src="${thumbSrc}" alt="" class="product-thumb thumb-60" loading="lazy" decoding="async" onerror="handleImageError(this)" />`;
         }
       });
     }
@@ -2786,7 +2828,7 @@
         const qty = it.qty ?? "";
         const exportStatus = it.export_status || "pending";
         const img = it.image
-          ? `<img src="${it.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />`
+          ? `<img src="${toAmazonThumb(it.image)}" alt="" class="product-thumb thumb-50" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
           : "";
         
         // Row styling: slightly grey out exported items
@@ -2848,7 +2890,7 @@
         const rowSku = sku;
 
         const imageCell = item.image
-          ? `<img src="${item.image}" alt="" style="width:80px;height:80px;object-fit:contain;border-radius:6px;" />`
+          ? `<img src="${toAmazonThumb(item.image)}" alt="" class="product-thumb thumb-80" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
           : "";
 
         const barcodeCell = isValidBarcode
@@ -3197,7 +3239,11 @@
           const rowStyle = isOos ? 'style="opacity:0.6; background:#fff5f5;"' : '';
           const qtyStyle = isOos ? 'style="font-weight:700; text-align:center; color:#b91c1c; text-decoration:line-through;"' : 'style="font-weight:700; text-align:center;"';
           const asinStyle = isOos ? 'style="text-decoration:line-through; color:#666;"' : '';
-          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;${isOos ? 'opacity:0.5;' : ''}" />` : "";
+          const thumbClasses = ['product-thumb', 'thumb-80'];
+          if (isOos) thumbClasses.push('thumb-muted');
+          const img = it.image
+            ? `<img src="${toAmazonThumb(it.image)}" alt="" class="${thumbClasses.join(' ')}" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+            : "";
           const sku = it.sku || it.externalId || "";
           const oosLabel = isOos ? ' <span style="color:#b91c1c; font-size:11px; font-weight:700;">[OOS]</span>' : '';
           return `<tr ${rowStyle}>
@@ -3682,7 +3728,7 @@
 
       tbody.innerHTML = data.map(asin_row => {
         const imageHtml = asin_row.imageUrl
-          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" style="max-width:40px; max-height:40px; object-fit:contain; border-radius:4px;" />`
+          ? `<img src="${toAmazonThumb(asin_row.imageUrl)}" alt="${asin_row.asin}" class="product-thumb thumb-40" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
           : '—';
         return `
           <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
@@ -4385,8 +4431,9 @@
         const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
 
         const imgUrl = getInventoryImageUrl(r);
-        const imgHtml = imgUrl
-          ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" style="max-width:50px; max-height:50px; object-fit:contain; border-radius:6px;" />`
+        const thumbUrl = imgUrl ? toAmazonThumb(imgUrl) : "";
+        const imgHtml = thumbUrl
+          ? `<img src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(asin)}" class="product-thumb thumb-50" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
           : '';
 
         bodyHtml += `
