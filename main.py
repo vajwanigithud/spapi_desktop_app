@@ -78,6 +78,7 @@ import asyncio
 import csv
 import json
 import logging
+import importlib.util
 import os
 import time
 import uuid
@@ -143,14 +144,16 @@ from services.vendor_notifications import (
     get_recent_notifications,
     process_vendor_notification,
 )
-from services.vendor_po_lock import (
-    acquire_vendor_po_lock,
-    heartbeat_vendor_po_lock,
-    release_vendor_po_lock,
+from services.vendor_po_lock import acquire_vendor_po_lock, release_vendor_po_lock
+from services.vendor_po_status_store import (
+    get_vendor_po_status_payload,
+    record_vendor_po_run_failure,
+    record_vendor_po_run_start,
+    record_vendor_po_run_success,
 )
 from services.vendor_po_store import (
-    aggregate_line_totals,
     bootstrap_headers_from_cache,
+    count_vendor_po_lines,
     ensure_vendor_po_schema,
     export_vendor_pos_snapshot,
     get_rejected_vendor_po_lines,
@@ -164,25 +167,9 @@ from services.vendor_po_store import (
     update_header_raw_payload,
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
-    count_vendor_po_lines,
-)
-from services.vendor_po_status_store import (
-    get_vendor_po_status_payload,
-    record_vendor_po_run_failure,
-    record_vendor_po_run_start,
-    record_vendor_po_run_success,
 )
 
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.lib.utils import ImageReader
-    from reportlab.pdfgen import canvas
-    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
+REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
 import requests
 import uvicorn
@@ -1355,6 +1342,7 @@ def seed_oos_from_rejected_payload(purchase_orders: List[Dict[str, Any]]) -> int
 
 def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
     selected_pos = get_vendor_pos_by_numbers(po_numbers)
+    _hydrate_picklist_po_details(selected_pos)
     return picklist_service.consolidate_picklist(
         po_numbers,
         selected_pos,
@@ -1368,6 +1356,68 @@ def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
 
 def generate_picklist_pdf(po_numbers: List[str], items: List[Dict[str, Any]], summary: Dict[str, Any]) -> bytes:
     return picklist_service.generate_picklist_pdf(po_numbers, items, summary)
+
+
+def _hydrate_picklist_po_details(po_records: List[Dict[str, Any]]) -> None:
+    """
+    Ensure each PO has orderDetails.items populated so picklist preview can show lines.
+    """
+    if not po_records:
+        return
+
+    for po in po_records:
+        details = po.get("orderDetails") or {}
+        items = details.get("items") or []
+        if items:
+            continue
+
+        po_number = (po.get("purchaseOrderNumber") or "").strip()
+        if not po_number:
+            continue
+
+        rows = store_get_vendor_po_lines(po_number) or []
+        normalized_items: List[Dict[str, Any]] = []
+        for row in rows:
+            asin = (row.get("asin") or row.get("vendor_sku") or row.get("external_id") or "").strip()
+            vendor_sku = (row.get("vendor_sku") or "").strip()
+            if not asin:
+                if vendor_sku:
+                    asin = vendor_sku
+                else:
+                    asin = f"ITEM-{row.get('item_sequence_number') or len(normalized_items) + 1}"
+
+            ordered_qty = _coerce_int(row.get("ordered_qty"))
+            accepted_qty = _coerce_int(row.get("accepted_qty") or ordered_qty)
+            received_qty = _coerce_int(row.get("received_qty"))
+            pending_qty_val = row.get("pending_qty")
+            pending_qty = _coerce_int(pending_qty_val if pending_qty_val is not None else max(0, accepted_qty - received_qty))
+
+            normalized_items.append(
+                {
+                    "amazonProductIdentifier": asin,
+                    "vendorProductIdentifier": vendor_sku,
+                    "orderedQuantity": {"amount": ordered_qty},
+                    "acknowledgementStatus": {
+                        "acceptedQuantity": {"amount": accepted_qty},
+                    },
+                    "receivingStatus": {
+                        "receivedQuantity": {"amount": received_qty},
+                        "pendingQuantity": {"amount": pending_qty},
+                    },
+                    "title": row.get("title") or "",
+                    "image": row.get("image") or "",
+                }
+            )
+
+        if normalized_items:
+            po["orderDetails"] = {"items": normalized_items}
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
 
 
 @app.post("/api/vendor-pos/sync")
@@ -3093,11 +3143,24 @@ def picklist_preview(payload: Dict[str, Any]):
     """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
-    po_numbers = payload.get("purchaseOrderNumbers") or []
-    if not isinstance(po_numbers, list) or not all(isinstance(p, str) for p in po_numbers):
+    po_numbers_raw = payload.get("purchaseOrderNumbers") or []
+    if not isinstance(po_numbers_raw, list) or not all(isinstance(p, str) for p in po_numbers_raw):
         raise HTTPException(status_code=400, detail="purchaseOrderNumbers must be a list of strings")
+    po_numbers = [p.strip() for p in po_numbers_raw if isinstance(p, str) and p.strip()]
     result = consolidate_picklist(po_numbers)
-    return result
+    items = result.get("items") or []
+    summary = result.get("summary") or {}
+    line_count = summary.get("totalLines")
+    if line_count is None:
+        line_count = len(items)
+    logger.info("[PicklistPreview] %d PO(s) requested -> %d line(s)", len(po_numbers), line_count)
+    return {
+        "ok": True,
+        "po_count": len(po_numbers),
+        "line_count": line_count,
+        "summary": summary,
+        "items": items,
+    }
 
 
 @app.post("/api/picklist/pdf")
@@ -3114,9 +3177,13 @@ def picklist_pdf(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="purchaseOrderNumbers must be a list of strings")
 
     result = consolidate_picklist(po_numbers)
-    items = result.get("items") or []
+    items = (result.get("items") or [])
     items.sort(key=lambda x: (0 - (x.get("totalQty") or 0)))
     summary = result.get("summary") or {}
+    line_count = summary.get("totalLines")
+    if line_count is None:
+        line_count = len(items)
+    logger.info("[PicklistPDF] (POST) %d PO(s) requested -> %d line(s)", len(po_numbers), line_count)
 
     pdf_bytes = generate_picklist_pdf(po_numbers, items, summary)
     headers = {"Content-Disposition": 'attachment; filename="picklist.pdf"'}
@@ -3138,6 +3205,10 @@ def picklist_pdf_get(poNumbers: str = Query("", description="Comma-separated PO 
     items = result.get("items") or []
     items.sort(key=lambda x: (0 - (x.get("totalQty") or 0)))
     summary = result.get("summary") or {}
+    line_count = summary.get("totalLines")
+    if line_count is None:
+        line_count = len(items)
+    logger.info("[PicklistPDF] (GET) %d PO(s) requested -> %d line(s)", len(po_numbers), line_count)
 
     pdf_bytes = generate_picklist_pdf(po_numbers, items, summary)
     headers = {"Content-Disposition": 'attachment; filename="picklist.pdf"'}
