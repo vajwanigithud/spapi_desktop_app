@@ -33,11 +33,33 @@ def acquire_vendor_po_lock(
     with db_service.get_db_connection() as conn:
         row = conn.execute(f"SELECT * FROM {SYNC_TABLE} WHERE id = 1").fetchone()
         state = dict(row) if row else {}
+        stale = False
         if row and row["sync_in_progress"]:
             lock_exp = _parse_iso(row["lock_expires_at"])
+            lock_start = _parse_iso(row["sync_started_at"])
             if lock_exp and lock_exp > now:
                 LOGGER.info("[VendorPOLock] Lock already held by %s until %s", row["lock_owner"], row["lock_expires_at"])
                 return False, state
+            if not lock_exp and lock_start and (now - lock_start).total_seconds() <= LOCK_TTL_SECONDS:
+                LOGGER.info("[VendorPOLock] Lock already held by %s", row["lock_owner"])
+                return False, state
+            stale = True
+
+        if stale:
+            LOGGER.warning(
+                "[VendorPOLock] Detected stale Vendor PO lock held by %s; reclaiming",
+                state.get("lock_owner") or "unknown",
+            )
+            conn.execute(
+                f"""
+                UPDATE {SYNC_TABLE}
+                SET sync_in_progress = 0,
+                    lock_owner = NULL,
+                    lock_expires_at = NULL
+                WHERE id = 1
+                """
+            )
+            conn.commit()
 
         conn.execute(
             f"""

@@ -475,6 +475,13 @@ def count_vendor_po_lines() -> int:
     return row["c"] if row else 0
 
 
+def count_vendor_po_headers() -> int:
+    ensure_vendor_po_schema()
+    with db_service.get_db_connection() as conn:
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM {HEADER_TABLE}").fetchone()
+    return row["c"] if row else 0
+
+
 def get_rejected_vendor_po_lines(po_numbers: Sequence[str]) -> List[Dict[str, Any]]:
     ensure_vendor_po_schema()
     po_numbers = [po for po in po_numbers if po]
