@@ -353,11 +353,6 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
             """,
             (marketplace_id,),
         ).fetchall()
-        for row in rows:
-            status = row["status"]
-            if status in counts:
-                counts[status] = row["count"]
-
         applied_row = conn.execute(
             f"""
             SELECT MAX(hour_utc) AS hour_utc
@@ -366,9 +361,6 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
             """,
             (marketplace_id, STATUS_APPLIED),
         ).fetchone()
-        if applied_row and applied_row["hour_utc"]:
-            last_applied = applied_row["hour_utc"]
-
         next_row = conn.execute(
             f"""
             SELECT hour_utc
@@ -381,8 +373,17 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
             """,
             (marketplace_id, *CLAIMABLE_STATUSES, now_iso),
         ).fetchone()
-        if next_row and next_row["hour_utc"]:
-            next_claimable = next_row["hour_utc"]
+
+    for row in rows:
+        status = row["status"]
+        if status in counts:
+            counts[status] = row["count"]
+
+    if applied_row and applied_row["hour_utc"]:
+        last_applied = applied_row["hour_utc"]
+
+    if next_row and next_row["hour_utc"]:
+        next_claimable = next_row["hour_utc"]
 
     return {
         "missing": counts[STATUS_MISSING],

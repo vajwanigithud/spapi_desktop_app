@@ -7,11 +7,7 @@ from fastapi import APIRouter, FastAPI, Query
 
 from config import MARKETPLACE_IDS
 from services import vendor_realtime_sales as vendor_rt_sales
-from services.vendor_rt_sales_ledger import (
-    get_ledger_summary,
-    get_worker_lock,
-    list_ledger_rows,
-)
+from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock, list_ledger_rows
 
 router = APIRouter(prefix="/api/vendor/rt-sales")
 DEFAULT_MARKETPLACE_ID = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
