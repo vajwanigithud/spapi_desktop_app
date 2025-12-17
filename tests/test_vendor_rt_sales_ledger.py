@@ -1,126 +1,76 @@
-from __future__ import annotations
-
+import contextlib
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from services import db as db_service
-from services.db import get_db_connection, init_vendor_rt_sales_state_table
-from services.vendor_realtime_sales import (
-    LEDGER_STATUS_FAILED,
-    ensure_vendor_rt_sales_hour_ledger_table,
-    enqueue_vendor_rt_sales_hours,
-    enqueue_vendor_rt_sales_specific_hours,
-    process_rt_sales_hour_ledger,
-    _ledger_mark_failed,
-    _ledger_mark_requested,
-    _ledger_plan_hours,
-)
+from services import vendor_rt_sales_ledger as ledger
 
 
-def _setup_temp_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "catalog.db"
-    monkeypatch.setattr(db_service, "CATALOG_DB_PATH", db_path)
-    init_vendor_rt_sales_state_table()
-    ensure_vendor_rt_sales_hour_ledger_table()
+@pytest.fixture
+def ledger_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "ledger.db"
+
+    @contextlib.contextmanager
+    def _conn_ctx():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(ledger, "get_db_connection", _conn_ctx)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        ledger.ensure_vendor_rt_sales_ledger_table(conn)
     return db_path
 
 
-def _seed_last_ingested(marketplace: str, dt: datetime) -> None:
-    with get_db_connection() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO vendor_rt_sales_state (marketplace_id, last_ingested_end_utc)
-            VALUES (?, ?)
-            """,
-            (marketplace, _utc_iso(dt)),
-        )
-        conn.commit()
+def test_ensure_hours_exist_idempotent(ledger_db):
+    marketplace = "A1"
+    hours = [
+        "2025-12-17T04:00:00+00:00",
+        "2025-12-17T05:00:00+00:00",
+    ]
+    inserted_first = ledger.ensure_hours_exist(marketplace, hours)
+    inserted_second = ledger.ensure_hours_exist(marketplace, hours)
+
+    rows = ledger.list_ledger_rows(marketplace, 10)
+
+    assert inserted_first == len(hours)
+    assert inserted_second == 0
+    assert [row["status"] for row in rows] == [ledger.STATUS_MISSING] * len(hours)
 
 
-def test_ledger_inserts_unique_hours(tmp_path, monkeypatch):
-    _setup_temp_db(tmp_path, monkeypatch)
-    marketplace = "TEST-MKT"
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    end = start + timedelta(hours=3)
+def test_claim_next_missing_hour_transitions_to_requested(ledger_db):
+    marketplace = "A1"
+    hour = "2025-12-17T04:00:00+00:00"
+    ledger.ensure_hours_exist(marketplace, [hour])
 
-    inserted = enqueue_vendor_rt_sales_hours(marketplace, start, end)
-    assert inserted == 3
+    claimed = ledger.claim_next_missing_hour(marketplace, datetime(2025, 12, 17, 5, tzinfo=timezone.utc))
 
-    # Second enqueue should not duplicate
-    inserted_again = enqueue_vendor_rt_sales_hours(marketplace, start, end)
-    assert inserted_again == 0
+    assert claimed is not None
+    assert claimed["hour_utc"] == hour
+    assert claimed["status"] == ledger.STATUS_REQUESTED
+    assert claimed["attempt_count"] == 1
 
-    with get_db_connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) AS c FROM vendor_rt_sales_hour_ledger WHERE marketplace_id = ?",
-            (marketplace,),
-        ).fetchone()["c"]
-    assert count == 3
+    stored = ledger.list_ledger_rows(marketplace, 1)[0]
+    assert stored["status"] == ledger.STATUS_REQUESTED
 
 
-def test_ledger_request_once_behavior(tmp_path, monkeypatch):
-    _setup_temp_db(tmp_path, monkeypatch)
-    marketplace = "TEST-MKT"
-    hour_start = datetime(2025, 1, 2, 5, tzinfo=timezone.utc)
-    _seed_last_ingested(marketplace, hour_start)
-    enqueue_vendor_rt_sales_specific_hours(marketplace, [hour_start])
+def test_mark_failed_sets_cooldown(ledger_db):
+    marketplace = "A1"
+    hour = "2025-12-17T04:00:00+00:00"
+    ledger.ensure_hours_exist(marketplace, [hour])
 
-    now = hour_start + timedelta(hours=2)
-    hours = _ledger_plan_hours(marketplace, max_hours=5, now_utc=now)
-    assert hours == [_utc_iso(hour_start)]
+    ledger.mark_failed(marketplace, hour, "boom", cooldown_minutes=15)
 
-    claimed = _ledger_mark_requested(marketplace, hours[0])
-    assert claimed
+    row = ledger.list_ledger_rows(marketplace, 1)[0]
+    assert row["status"] == ledger.STATUS_FAILED
+    assert row["last_error"] == "boom"
+    assert row["next_retry_utc"] is not None
 
-    # Once marked requested, planner should skip the hour
-    hours_after = _ledger_plan_hours(marketplace, max_hours=5, now_utc=now)
-    assert hours_after == []
-
-
-def test_failed_hour_respects_cooldown(tmp_path, monkeypatch):
-    _setup_temp_db(tmp_path, monkeypatch)
-    marketplace = "TEST-MKT"
-    hour_start = datetime(2025, 1, 3, tzinfo=timezone.utc)
-    _seed_last_ingested(marketplace, hour_start)
-    enqueue_vendor_rt_sales_specific_hours(marketplace, [hour_start])
-
-    hour_iso = _utc_iso(hour_start)
-    cooldown_until = _utc_iso(hour_start + timedelta(hours=1))
-    with get_db_connection() as conn:
-        conn.execute(
-            """
-            UPDATE vendor_rt_sales_hour_ledger
-            SET status = ?, cooldown_until = ?
-            WHERE marketplace_id = ? AND hour_start_utc = ?
-            """,
-            (LEDGER_STATUS_FAILED, cooldown_until, marketplace, hour_iso),
-        )
-        conn.commit()
-
-    future = hour_start + timedelta(minutes=30)
-    hours = _ledger_plan_hours(marketplace, max_hours=1, now_utc=future)
-    assert hours == []
-
-    # After cooldown passes, hour becomes eligible again
-    later = future + timedelta(hours=2)
-    hours_later = _ledger_plan_hours(marketplace, max_hours=1, now_utc=later)
-    assert hours_later == [hour_iso]
-
-
-def test_planner_respects_safety_lag(tmp_path, monkeypatch):
-    _setup_temp_db(tmp_path, monkeypatch)
-    marketplace = "TEST-MKT"
-    now = datetime(2025, 1, 4, 12, tzinfo=timezone.utc)
-    eligible_hour = now - timedelta(hours=3)
-    blocked_hour = now - timedelta(minutes=30)
-    _seed_last_ingested(marketplace, eligible_hour)
-
-    enqueue_vendor_rt_sales_specific_hours(marketplace, [eligible_hour, blocked_hour])
-
-    hours = _ledger_plan_hours(marketplace, max_hours=5, now_utc=now)
-    assert hours == [_utc_iso(eligible_hour)]
-
-
-def _utc_iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    retry_dt = datetime.fromisoformat(row["next_retry_utc"])
+    updated_dt = datetime.fromisoformat(row["updated_at_utc"])
+    assert retry_dt >= updated_dt + timedelta(minutes=15) - timedelta(seconds=1)
