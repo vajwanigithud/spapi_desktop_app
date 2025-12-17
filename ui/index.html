@@ -1016,6 +1016,9 @@
     let invQuickFilter = 'all';
     let invRealtimeRefreshInFlight = false;
     let inventoryAutoRefreshRequested = false;
+    const INVENTORY_REFRESH_POLL_INTERVAL_MS = 15000;
+    let inventoryRefreshPollTimer = null;
+    let inventoryRefreshPollingActive = false;
     let catalogAsinMapCache = null;
     let catalogAsinMapKey = null;
     let catalogBucketSummary = null;
@@ -3940,8 +3943,66 @@
       labelEl.title = `As of: ${meta.as_of} (UTC)`;
     }
 
+    function updateInventoryRefreshButtonState() {
+      const refreshBtn = document.getElementById('inv-refresh-btn');
+      if (!refreshBtn) return;
+      if (invRealtimeRefreshInFlight) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refreshing…';
+        return;
+      }
+      const refreshRunning = !!(
+        vendorInventoryMeta?.refresh_in_progress || vendorInventoryMeta?.refresh?.in_progress
+      );
+      if (refreshRunning) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refresh running…';
+      } else {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh Inventory Snapshot';
+      }
+    }
+
+    function stopInventoryRefreshPolling() {
+      inventoryRefreshPollingActive = false;
+      if (inventoryRefreshPollTimer) {
+        clearTimeout(inventoryRefreshPollTimer);
+        inventoryRefreshPollTimer = null;
+      }
+    }
+
+    function startInventoryRefreshPolling({ immediate = false } = {}) {
+      if (inventoryRefreshPollingActive) return;
+      inventoryRefreshPollingActive = true;
+      const poll = () => {
+        fetchVendorInventorySnapshot({ silent: true }).finally(() => {
+          if (!inventoryRefreshPollingActive) {
+            inventoryRefreshPollTimer = null;
+            return;
+          }
+          inventoryRefreshPollTimer = setTimeout(poll, INVENTORY_REFRESH_POLL_INTERVAL_MS);
+        });
+      };
+      if (immediate) {
+        poll();
+      } else {
+        inventoryRefreshPollTimer = setTimeout(poll, INVENTORY_REFRESH_POLL_INTERVAL_MS);
+      }
+    }
+
     function updateInventoryFreshnessUi(meta, { clearStatusWhenFresh = false } = {}) {
       updateInventoryFreshnessLabel(meta);
+      const refreshRunning = !!(meta?.refresh_in_progress || meta?.refresh?.in_progress);
+      if (refreshRunning) {
+        setInventoryStatus('Refresh in progress…');
+        inventoryAutoRefreshRequested = true;
+        updateInventoryRefreshButtonState();
+        startInventoryRefreshPolling({ immediate: true });
+        return;
+      }
+
+      stopInventoryRefreshPolling();
+      updateInventoryRefreshButtonState();
       const stale = isVendorInventorySnapshotStale(meta);
       if (stale) {
         setInventoryStatus('⚠️ Snapshot older than 24 hours — refreshing…', '#b45309');
@@ -3964,54 +4025,58 @@
         renderVendorInventoryCurrentSubtab();
         return;
       }
+      fetchVendorInventorySnapshot();
+    }
 
-      setInventoryStatus('Loading real-time inventory…');
-
-      fetch('/api/vendor/rt-inventory')
+    function fetchVendorInventorySnapshot({ silent = false } = {}) {
+      if (!silent) {
+        setInventoryStatus('Loading real-time inventory…');
+      }
+      return fetch('/api/vendor/rt-inventory')
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
         })
         .then((data) => {
-          applyVendorRtInventoryPayload(data);
+          applyVendorRtInventoryPayload(data, { silent });
         })
         .catch((err) => {
           console.error(err);
-          setInventoryStatus('Error loading inventory: ' + (err?.message || err), '#b91c1c');
-          vendorInventorySnapshot = [];
-          vendorInventoryMeta = null;
-          renderVendorInventoryCurrentSubtab();
+          if (!silent) {
+            setInventoryStatus('Error loading inventory: ' + (err?.message || err), '#b91c1c');
+            vendorInventorySnapshot = [];
+            vendorInventoryMeta = null;
+            renderVendorInventoryCurrentSubtab();
+          }
         });
     }
 
     function applyVendorRtInventoryPayload(data, { silent = false } = {}) {
       vendorInventorySnapshot = Array.isArray(data?.items) ? data.items : [];
+      const refreshMeta = data?.refresh || {};
       vendorInventoryMeta = {
         as_of: data?.as_of || null,
         marketplace_id: data?.marketplace_id || null,
+        source: data?.source || null,
+        status: data?.status || null,
+        refresh_in_progress: Boolean(data?.refresh_in_progress || refreshMeta?.in_progress),
+        refresh: refreshMeta,
       };
       if (!silent) {
         setInventoryStatus(`Loaded ${vendorInventorySnapshot.length} ASINs`);
       }
+      updateInventoryRefreshButtonState();
       updateInventoryFreshnessUi(vendorInventoryMeta, { clearStatusWhenFresh: silent });
       renderVendorInventoryCurrentSubtab();
     }
 
     function refreshVendorInventorySnapshot(options = {}) {
       const { silent = false } = options;
-      if (silent && invRealtimeRefreshInFlight) {
-        return;
-      }
       if (invRealtimeRefreshInFlight) {
         return;
       }
       invRealtimeRefreshInFlight = true;
-
-      const refreshBtn = document.getElementById('inv-refresh-btn');
-      if (!silent && refreshBtn) {
-        refreshBtn.disabled = true;
-        refreshBtn.textContent = 'Refreshing…';
-      }
+      updateInventoryRefreshButtonState();
       if (!silent) {
         setInventoryStatus('Refreshing real-time inventory…');
       }
@@ -4031,14 +4096,13 @@
           console.error(err);
           if (!silent) {
             setInventoryStatus('Error refreshing inventory: ' + (err?.message || err), '#b91c1c');
+          } else {
+            inventoryAutoRefreshRequested = false;
           }
         })
         .finally(() => {
           invRealtimeRefreshInFlight = false;
-          if (!silent && refreshBtn) {
-            refreshBtn.disabled = false;
-            refreshBtn.textContent = 'Refresh Inventory Snapshot';
-          }
+          updateInventoryRefreshButtonState();
         });
     }
 
