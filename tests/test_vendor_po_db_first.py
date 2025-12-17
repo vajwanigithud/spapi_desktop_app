@@ -8,11 +8,13 @@ from services.vendor_po_lock import acquire_vendor_po_lock, release_vendor_po_lo
 from services.vendor_po_store import (
     ensure_vendor_po_schema,
     export_vendor_pos_snapshot,
-    get_vendor_po as store_get_vendor_po,
     get_vendor_po_list,
     replace_vendor_po_lines,
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
+)
+from services.vendor_po_store import (
+    get_vendor_po as store_get_vendor_po,
 )
 
 
