@@ -1,7 +1,8 @@
 import logging
 from typing import Any, Dict, List
 
-from services import db_repos, json_cache
+from services import json_cache
+from services.vendor_po_store import get_rejected_vendor_po_lines
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def seed_oos_from_rejected_lines(
     state = json_cache.load_oos_state()
     added = 0
     try:
-        rows = db_repos.get_rejected_vendor_po_lines(po_numbers)
+        rows = get_rejected_vendor_po_lines(po_numbers)
         for row in rows:
             po_num = (row.get("po_number") or "").strip()
             asin_val = (row.get("asin") or "").strip()
