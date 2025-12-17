@@ -3,7 +3,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import requests
@@ -18,13 +19,20 @@ from services.vendor_rt_inventory_state import (
     DEFAULT_CATALOG_DB_PATH,
     apply_incremental_rows,
     get_checkpoint,
+    get_refresh_metadata,
+    get_state_max_end_time,
     get_state_rows,
     parse_end_time,
     set_checkpoint,
+    set_refresh_metadata,
 )
 
 LOGGER = logging.getLogger(__name__)
 PST = ZoneInfo("America/Los_Angeles")
+REFRESH_FRESHNESS_HOURS = 24
+REFRESH_IN_PROGRESS_EXPIRY_MINUTES = 60
+_REFRESH_LOCK = Lock()
+RefreshSyncCallable = Callable[..., Dict[str, Any]]
 
 
 def compute_window(hours: int) -> Tuple[datetime, datetime]:
@@ -259,3 +267,178 @@ def sync_vendor_rt_inventory(
         "max_end": max_end_rows,
         "asin_count": len(asin_set),
     }
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _resolve_as_of(marketplace_id: str, db_path: Path) -> Optional[str]:
+    as_of = get_checkpoint(marketplace_id, db_path=db_path)
+    if not as_of:
+        as_of = get_state_max_end_time(marketplace_id, db_path=db_path)
+    return as_of
+
+
+def _is_snapshot_fresh(as_of: Optional[str], freshness_hours: int, now: Optional[datetime] = None) -> bool:
+    if not as_of or freshness_hours <= 0:
+        return False
+    now = now or _now_utc()
+    try:
+        as_of_dt = _iso_to_datetime(as_of)
+    except Exception:
+        return False
+    return now - as_of_dt <= timedelta(hours=freshness_hours)
+
+
+def _purge_stale_in_progress(
+    marketplace_id: str,
+    metadata: Dict[str, Any],
+    *,
+    db_path: Path,
+    now: Optional[datetime] = None,
+    ttl_minutes: int = REFRESH_IN_PROGRESS_EXPIRY_MINUTES,
+) -> Dict[str, Any]:
+    if not metadata.get("in_progress"):
+        return metadata
+    now = now or _now_utc()
+    started_raw = metadata.get("last_refresh_started_at")
+    started_dt = None
+    if started_raw:
+        try:
+            started_dt = _iso_to_datetime(started_raw)
+        except Exception:
+            started_dt = None
+    expired = False
+    if not started_dt:
+        expired = True
+    else:
+        expired = now - started_dt >= timedelta(minutes=ttl_minutes)
+    if expired:
+        metadata["in_progress"] = False
+        metadata["last_refresh_status"] = "FAILED"
+        metadata["last_refresh_finished_at"] = now.isoformat()
+        metadata["last_error"] = "Marked stale refresh as failed"
+        set_refresh_metadata(marketplace_id, metadata, db_path=db_path)
+        LOGGER.warning("[RtInventoryRefresh] cleared stale in-progress flag for %s", marketplace_id)
+    return metadata
+
+
+def _mark_refresh_start(
+    marketplace_id: str,
+    *,
+    db_path: Path,
+    metadata: Dict[str, Any],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or _now_utc()
+    metadata = dict(metadata)
+    metadata["in_progress"] = True
+    metadata["last_refresh_started_at"] = now.isoformat()
+    metadata["last_refresh_status"] = "IN_PROGRESS"
+    metadata["last_refresh_finished_at"] = None
+    metadata["last_error"] = None
+    set_refresh_metadata(marketplace_id, metadata, db_path=db_path)
+    return metadata
+
+
+def _mark_refresh_end(
+    marketplace_id: str,
+    *,
+    db_path: Path,
+    status: str,
+    error: Optional[str] = None,
+    finished_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    finished_at = finished_at or _now_utc()
+    metadata = get_refresh_metadata(marketplace_id, db_path=db_path)
+    metadata["in_progress"] = False
+    metadata["last_refresh_finished_at"] = finished_at.isoformat()
+    metadata["last_refresh_status"] = status
+    metadata["last_error"] = (error or "")[:500] if error else None
+    set_refresh_metadata(marketplace_id, metadata, db_path=db_path)
+    return metadata
+
+
+def refresh_vendor_rt_inventory_singleflight(
+    marketplace_id: str,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    hours: int = 2,
+    freshness_hours: int = REFRESH_FRESHNESS_HOURS,
+    stale_minutes: int = REFRESH_IN_PROGRESS_EXPIRY_MINUTES,
+    sync_callable: Optional[RefreshSyncCallable] = None,
+) -> Dict[str, Any]:
+    """
+    Coordinate a refresh run with single-flight semantics + freshness gating.
+    Returns metadata describing the outcome; snapshot rows should be loaded by caller.
+    """
+    sync_callable = sync_callable or sync_vendor_rt_inventory
+    now = _now_utc()
+    as_of = _resolve_as_of(marketplace_id, db_path)
+    metadata = get_refresh_metadata(marketplace_id, db_path=db_path)
+    metadata = _purge_stale_in_progress(
+        marketplace_id,
+        metadata,
+        db_path=db_path,
+        now=now,
+        ttl_minutes=stale_minutes,
+    )
+    if metadata.get("in_progress"):
+        LOGGER.info("[RtInventoryRefresh] already running for %s", marketplace_id)
+        return {
+            "status": "refresh_in_progress",
+            "source": "cache",
+            "refresh": metadata,
+        }
+
+    if _is_snapshot_fresh(as_of, freshness_hours, now=now):
+        LOGGER.info("[RtInventoryRefresh] skip fresh for %s (as_of=%s)", marketplace_id, as_of)
+        return {
+            "status": "fresh_skipped",
+            "source": "cache",
+            "refresh": metadata,
+        }
+
+    with _REFRESH_LOCK:
+        metadata = get_refresh_metadata(marketplace_id, db_path=db_path)
+        metadata = _purge_stale_in_progress(
+            marketplace_id,
+            metadata,
+            db_path=db_path,
+            now=now,
+            ttl_minutes=stale_minutes,
+        )
+        if metadata.get("in_progress"):
+            LOGGER.info("[RtInventoryRefresh] already running for %s", marketplace_id)
+            return {
+                "status": "refresh_in_progress",
+                "source": "cache",
+                "refresh": metadata,
+            }
+        metadata = _mark_refresh_start(marketplace_id, db_path=db_path, metadata=metadata, now=now)
+
+    LOGGER.info("[RtInventoryRefresh] start for %s", marketplace_id)
+    try:
+        sync_callable(
+            marketplace_id,
+            db_path=db_path,
+            hours=hours,
+            include_items=False,
+        )
+        LOGGER.info("[RtInventoryRefresh] done for %s", marketplace_id)
+        metadata = _mark_refresh_end(marketplace_id, db_path=db_path, status="SUCCESS")
+        return {
+            "status": "refreshed",
+            "source": "refreshed",
+            "refresh": metadata,
+        }
+    except Exception as exc:
+        LOGGER.error("[RtInventoryRefresh] failed: %s", exc, exc_info=True)
+        metadata = _mark_refresh_end(
+            marketplace_id,
+            db_path=db_path,
+            status="FAILED",
+            error=str(exc),
+        )
+        raise
