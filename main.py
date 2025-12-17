@@ -1381,7 +1381,10 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
     owner = f"sync-{uuid.uuid4()}"
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
-        return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
+        return JSONResponse(
+            {"ok": False, "error": "Vendor PO sync already running", "sync_state": state},
+            status_code=409,
+        )
 
     record_vendor_po_run_start("sync")
     try:
@@ -1418,6 +1421,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
             "createdAfter": created_after,
             "createdBefore": created_before,
             "sync_state": release_state,
+            "ok": True,
         }
     )
     return stats
@@ -1434,7 +1438,10 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(defaul
     owner = f"rebuild-{uuid.uuid4()}"
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
-        return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
+        return JSONResponse(
+            {"ok": False, "error": "Vendor PO rebuild already running", "sync_state": state},
+            status_code=409,
+        )
 
     record_vendor_po_run_start("rebuild")
     try:
@@ -1471,6 +1478,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(defaul
             "createdAfter": created_after,
             "createdBefore": created_before,
             "sync_state": release_state,
+            "ok": True,
         }
     )
     return stats
