@@ -22,13 +22,12 @@
 #       GET  /api/catalog/item/{asin}
 #
 # 2. /api/vendor-pos MUST:
-#       - Read ONLY vendor_pos_cache.json.
-#       - Normalize using normalize_pos_entries().
+#       - Read ONLY from the vendor_po_header/lines tables (DB-first).
+#       - Keep the existing response structure.
 #       - Filter POs where purchaseOrderDate >= 2025-10-01.
 #       - Sort by purchaseOrderDate DESC (newest first).
-#       - Return JSON: { "items": [...], "source": "cache" }.
 #
-#    DO NOT add Vendor SP-API calls inside this endpoint.
+#    DO NOT add Vendor SP-API calls inside this endpoint (sync endpoints handle refresh).
 #
 # 3. parse_po_date(po) MUST read from:
 #       po["purchaseOrderDate"]   (top-level key)
@@ -81,7 +80,9 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from io import StringIO
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -98,7 +99,7 @@ from routes.printer_health_routes import register_printer_health_routes
 from routes.printer_routes import register_printer_routes
 from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
 from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
-from services import db_repos, spapi_reports
+from services import spapi_reports
 from services.async_utils import run_single_arg
 from services.catalog_service import (
     ensure_asin_in_universe,
@@ -126,10 +127,8 @@ from services.json_cache import (
     load_asin_cache,
     load_oos_state,
     load_po_tracker,
-    load_vendor_pos_cache,
     save_oos_state,
     save_po_tracker,
-    save_vendor_pos_cache,
 )
 from services.perf import get_recent_timings, time_block
 from services.utils_barcodes import is_asin, normalize_barcode
@@ -143,6 +142,29 @@ from services.vendor_notifications import (
     get_po_notification_flags,
     get_recent_notifications,
     process_vendor_notification,
+)
+from services.vendor_po_lock import (
+    acquire_vendor_po_lock,
+    heartbeat_vendor_po_lock,
+    release_vendor_po_lock,
+)
+from services.vendor_po_store import (
+    aggregate_line_totals,
+    bootstrap_headers_from_cache,
+    ensure_vendor_po_schema,
+    export_vendor_pos_snapshot,
+    get_rejected_vendor_po_lines,
+    get_vendor_po as store_get_vendor_po,
+    get_vendor_po_lines as store_get_vendor_po_lines,
+    get_vendor_po_list,
+    get_vendor_po_sync_state,
+    get_vendor_pos_by_numbers,
+    get_vendor_po_line_totals_for_po,
+    replace_vendor_po_lines,
+    update_header_raw_payload,
+    update_header_totals_from_lines,
+    upsert_vendor_po_headers,
+    count_vendor_po_lines,
 )
 
 try:
@@ -222,6 +244,13 @@ if not tester_logger.handlers:
     tester_logger.addHandler(tester_handler)
 
 app = FastAPI(title="SP-API Desktop App (Minimal)", version="1.0.0")
+
+# Ensure Vendor PO tables exist as early as possible.
+try:
+    ensure_vendor_po_schema()
+    bootstrap_headers_from_cache()
+except Exception as exc:
+    logger.warning("[VendorPO] Failed to ensure Vendor PO schema/bootstrap: %s", exc)
 
 
 @app.middleware("http")
@@ -798,26 +827,16 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
 
 def extract_asins_from_pos() -> Tuple[List[str], Dict[str, str]]:
     """
-    Collect unique ASINs from vendor_pos_cache.json.
+    Collect unique ASINs from stored vendor POs.
     """
-    data = load_vendor_pos_cache(VENDOR_POS_CACHE)
-    if not data:
+    bootstrap_headers_from_cache()
+    pos = get_vendor_po_list(order_desc=False)
+    if not pos:
         return [], {}
-    items_raw = []
-    if isinstance(data, dict) and "items" in data:
-        items_raw = data.get("items") or []
-    elif isinstance(data, list):
-        items_raw = data
-    normalized = []
-    for entry in items_raw:
-        if isinstance(entry, dict) and "raw" in entry and isinstance(entry["raw"], dict):
-            normalized.append(entry["raw"])
-        else:
-            normalized.append(entry)
 
     asins = set()
     sku_map: Dict[str, str] = {}
-    for entry in normalized:
+    for entry in pos:
         details = entry.get("orderDetails") or {}
         for item in details.get("items") or []:
             asin = item.get("amazonProductIdentifier")
@@ -1265,207 +1284,6 @@ def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
     return items, po_total, currency_code
 
 
-def _compute_total_accepted_cost(po: Dict[str, Any], accepted_line_map: Dict[str, int]) -> tuple:
-    """
-    Compute total accepted cost = sum(accepted_qty * netCost.amount) for all items in the PO.
-    
-    BUGFIX: Previous implementation only summed unit costs without multiplying by accepted quantities.
-    This function correctly computes: for each item, accepted_qty (from vendor_po_lines) * unit_price (from netCost).
-    
-    Args:
-        po: PO dict with orderDetails.items[]
-        accepted_line_map: dict mapping ASIN (amazonProductIdentifier) -> accepted_qty from vendor_po_lines
-    
-    Returns:
-        (total_cost: Decimal, currency_code: str)
-    """
-    from decimal import Decimal, InvalidOperation
-    
-    total_cost = Decimal("0")
-    currency_code = "AED"
-    po_num = po.get("purchaseOrderNumber", "?")
-    
-    order_details = po.get("orderDetails", {}) or {}
-    items = order_details.get("items", []) or []
-    
-    for item in items:
-        try:
-            asin = item.get("amazonProductIdentifier", "")
-            if not asin:
-                continue
-            
-            # Get accepted quantity for this ASIN from vendor_po_lines map
-            accepted_qty = accepted_line_map.get(asin, 0)
-            if accepted_qty <= 0:
-                # Skip items with no accepted quantity
-                continue
-            
-            # Get netCost
-            net_cost_obj = item.get("netCost", {})
-            if not isinstance(net_cost_obj, dict):
-                continue
-            
-            cost_amount_str = net_cost_obj.get("amount", "")
-            if not cost_amount_str:
-                continue
-            
-            # Update currency from this item if present
-            if net_cost_obj.get("currencyCode"):
-                currency_code = net_cost_obj.get("currencyCode")
-            
-            # Parse unit price as Decimal (safe handling)
-            try:
-                unit_price = Decimal(str(cost_amount_str))
-            except (InvalidOperation, ValueError, TypeError):
-                logger.warning(f"[VendorPO] Could not parse netCost.amount '{cost_amount_str}' for ASIN {asin} in PO {po_num}")
-                continue
-            
-            # Compute line cost = accepted_qty * unit_price
-            line_cost = Decimal(accepted_qty) * unit_price
-            total_cost += line_cost
-            logger.debug(f"[VendorPO] PO {po_num} ASIN {asin}: accepted_qty={accepted_qty} * unit_price={unit_price} = line_cost={line_cost}")
-            
-        except Exception as e:
-            logger.error(f"[VendorPO] Error processing item in PO {po_num}: {e}", exc_info=True)
-            continue
-    
-    logger.info(f"[VendorPO] PO {po_num}: total_accepted_cost = {total_cost} {currency_code}")
-    return total_cost, currency_code
-
-
-def _compute_vendor_central_columns(po: Dict[str, Any], line_totals: Dict[str, int], accepted_line_map: Dict[str, int] = None) -> None:
-    """
-    Compute Vendor Central-style display columns from line totals and PO data.
-    Adds the following derived fields to the PO dict:
-    - poItemsCount: number of distinct items in the PO
-    - requestedQty: total ordered quantity (units)
-    - acceptedQty: total accepted quantity (units)
-    - asnQty: ASN (shipment announced) quantity (units) [set to 0 for now; future: integrate Vendor Shipments API]
-    - receivedQty: total received quantity (units)
-    - remainingQty: accepted - received - cancelled (units)
-    - cancelledQty: total cancelled quantity (units)
-    - total_accepted_cost: sum(accepted_qty * netCost.amount) for all items (FIXED: was just summing unit prices)
-    - total_accepted_cost_currency: currency code for the cost
-    - amazonStatus: raw purchaseOrderState from SP-API
-    """
-    
-    po_num = po.get("purchaseOrderNumber") or ""
-    
-    requested = line_totals.get("total_ordered", 0)
-    accepted = line_totals.get("total_accepted", 0)
-    received = line_totals.get("total_received", 0)
-    cancelled = line_totals.get("total_cancelled", 0)
-    
-    remaining = max(0, accepted - received - cancelled)
-    
-    po["poItemsCount"] = po.get("orderDetails", {}).get("items", []) if isinstance(po.get("orderDetails", {}), dict) else 0
-    if isinstance(po["poItemsCount"], list):
-        po["poItemsCount"] = len(po["poItemsCount"])
-    
-    po["requestedQty"] = requested
-    po["acceptedQty"] = accepted
-    po["asnQty"] = 0
-    po["receivedQty"] = received
-    po["remainingQty"] = remaining
-    po["cancelledQty"] = cancelled
-    
-    # Compute total accepted cost from order items and accepted quantities
-    # FIXED: Now correctly multiplies accepted_qty * unit_price instead of just summing unit prices
-    if accepted_line_map is None:
-        accepted_line_map = {}
-    
-    total_cost, currency_code = _compute_total_accepted_cost(po, accepted_line_map)
-    
-    po["total_accepted_cost"] = float(total_cost)
-    po["total_accepted_cost_currency"] = currency_code
-    
-    # Also set legacy field names for backward compatibility
-    po["totalAcceptedCostAmount"] = str(total_cost)
-    po["totalAcceptedCostCurrency"] = currency_code
-    
-    # Add Amazon status (raw purchaseOrderState)
-    po["amazonStatus"] = po.get("purchaseOrderState", "")
-    
-    ship_to_party = po.get("orderDetails", {}).get("shipToParty", {}) if isinstance(po.get("orderDetails"), dict) else {}
-    if isinstance(ship_to_party, dict):
-        po["shipToCode"] = ship_to_party.get("partyId", "")
-        address = ship_to_party.get("address", {}) if isinstance(ship_to_party.get("address"), dict) else {}
-        city = address.get("city", "")
-        country = address.get("country", "")
-        po["shipToText"] = f"{po['shipToCode']} – {city}, {country}".replace(" – , ", "") if city or country else po["shipToCode"]
-    else:
-        po["shipToCode"] = ""
-        po["shipToText"] = ""
-
-
-def _aggregate_vendor_po_lines(pos_list: List[Dict[str, Any]]) -> None:
-    """
-    Attach aggregated quantities from vendor_po_lines to each PO in pos_list.
-    Exposes total_ordered_qty, total_accepted_qty, total_received_qty, total_pending_qty,
-    total_cancelled_qty, total_shortage_qty, and Vendor Central-style columns for display.
-    
-    Also builds per-line accepted_qty map (keyed by ASIN) for cost calculation.
-    """
-    if not pos_list:
-        return
-
-    po_numbers = [po.get("purchaseOrderNumber") for po in pos_list if po.get("purchaseOrderNumber")]
-    if not po_numbers:
-        return
-
-    try:
-        with time_block(f"vendor_po_lines.aggregate:{len(po_numbers)}"):
-            agg_map = db_repos.get_vendor_po_line_totals(po_numbers)
-            # Also fetch per-line accepted quantities for cost calculation
-            line_details_map = db_repos.get_vendor_po_line_details(po_numbers)
-    except Exception as e:
-        logger.error(f"[VendorPO] Error aggregating vendor_po_lines: {e}", exc_info=True)
-        for po in pos_list:
-            po.setdefault("total_ordered_qty", 0)
-            po.setdefault("total_received_qty", 0)
-            po.setdefault("total_pending_qty", 0)
-            po.setdefault("total_accepted_qty", 0)
-            po.setdefault("total_cancelled_qty", 0)
-            po.setdefault("total_shortage_qty", 0)
-            _compute_vendor_central_columns(po, {})
-        return
-
-    for po in pos_list:
-        po_num = po.get("purchaseOrderNumber")
-        totals = agg_map.get(po_num, {})
-        if totals:
-            po.update(
-                {
-                    "total_ordered_qty": totals.get("total_ordered", 0),
-                    "total_accepted_qty": totals.get("total_accepted", 0),
-                    "total_received_qty": totals.get("total_received", 0),
-                    "total_pending_qty": totals.get("total_pending", 0),
-                    "total_cancelled_qty": totals.get("total_cancelled", 0),
-                    "total_shortage_qty": totals.get("total_shortage", 0),
-                }
-            )
-        else:
-            po.setdefault("total_ordered_qty", 0)
-            po.setdefault("total_accepted_qty", 0)
-            po.setdefault("total_received_qty", 0)
-            po.setdefault("total_pending_qty", 0)
-            po.setdefault("total_cancelled_qty", 0)
-            po.setdefault("total_shortage_qty", 0)
-        
-        # Build ASIN-keyed accepted_qty map for this PO
-        accepted_line_map = {}
-        po_lines = line_details_map.get(po_num, [])
-        for line in po_lines:
-            asin = line.get("asin", "")
-            accepted_qty = line.get("accepted_qty", 0)
-            if asin:
-                accepted_line_map[asin] = accepted_qty
-        
-        _compute_vendor_central_columns(po, totals if totals else {}, accepted_line_map)
-        po.setdefault("total_received_qty", 0)
-        po.setdefault("total_pending_qty", 0)
-
-
 def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
     """
     Enrich each PO with total_received_qty and total_pending_qty from purchaseOrdersStatus endpoint.
@@ -1483,45 +1301,6 @@ def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
             po.setdefault("total_pending_qty", 0)
 
 
-def _refresh_po_in_cache(po_number: str) -> None:
-    """
-    Best-effort refresh of a single PO inside vendor_pos_cache.json by fetching live details.
-    Does not raise; logs on failure.
-    """
-    if not po_number:
-        return
-    try:
-        data = load_vendor_pos_cache(VENDOR_POS_CACHE)
-    except Exception as exc:
-        logger.warning(f"[VendorPO] Failed to read cache for refresh: {exc}")
-        return
-
-    try:
-        detailed = fetch_detailed_po_with_status(po_number)
-    except Exception as exc:
-        logger.warning(f"[VendorPO] Failed to fetch detailed PO during refresh {po_number}: {exc}")
-        return
-
-    if not isinstance(detailed, dict):
-        return
-
-    normalized = normalize_pos_entries(data)
-    updated = False
-    for idx, po in enumerate(normalized):
-        if po.get("purchaseOrderNumber") == po_number:
-            normalized[idx] = detailed
-            updated = True
-            break
-    if not updated:
-        normalized.append(detailed)
-
-    try:
-        payload = {"items": normalized}
-        save_vendor_pos_cache(payload, VENDOR_POS_CACHE)
-    except Exception as exc:
-        logger.warning(f"[VendorPO] Failed to write refreshed cache for {po_number}: {exc}")
-
-
 def seed_oos_from_rejected_lines(po_numbers: List[str], po_date_map: Dict[str, str] | None = None) -> int:
     return oos_service.seed_oos_from_rejected_lines(po_numbers, po_date_map)
 
@@ -1531,15 +1310,15 @@ def seed_oos_from_rejected_payload(purchase_orders: List[Dict[str, Any]]) -> int
 
 
 def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
+    selected_pos = get_vendor_pos_by_numbers(po_numbers)
     return picklist_service.consolidate_picklist(
         po_numbers,
-        VENDOR_POS_CACHE,
-        normalize_pos_entries,
+        selected_pos,
         load_oos_state,
         save_oos_state,
         spapi_catalog_status,
         oos_service.upsert_oos_entry,
-        db_repos.get_rejected_vendor_po_lines,
+        get_rejected_vendor_po_lines,
     )
 
 
@@ -1550,149 +1329,143 @@ def generate_picklist_pdf(po_numbers: List[str], items: List[Dict[str, Any]], su
 @app.post("/api/vendor-pos/sync")
 def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
     """
-    Fetch Vendor POs from SP-API for a window and persist to vendor_pos_cache.json.
+    Fetch Vendor POs from SP-API for a window and persist to SQLite (canonical store).
     """
     created_after = createdAfter or default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    owner = f"sync-{uuid.uuid4()}"
+    acquired, state = acquire_vendor_po_lock(owner)
+    if not acquired:
+        return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
+
     try:
-        pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=5)
+        stats = _fetch_and_persist_vendor_pos(
+            created_after,
+            created_before,
+            source_label="spapi_sync",
+            source_detail="sync_endpoint",
+            max_pages=5,
+        )
+        release_state = release_vendor_po_lock(
+            owner,
+            status="SUCCESS",
+            window_start=created_after,
+            window_end=created_before,
+        )
     except HTTPException:
+        release_vendor_po_lock(owner, status="FAILED", error="sync_failed", window_start=created_after, window_end=created_before)
         raise
     except Exception as exc:
+        release_vendor_po_lock(owner, status="FAILED", error=str(exc), window_start=created_after, window_end=created_before)
         raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
 
-        try:
-            harvested = harvest_barcodes_from_pos(pos)
-            if harvested.get("set"):
-                logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from PO sync (lines={harvested['lines']}, invalid={harvested['invalid']})")
-        except Exception as exc:
-            logger.warning(f"[VendorPO] Barcode harvest failed during sync: {exc}")
-
-    if not pos:
-        print(f"[vendor-pos-sync] fetched 0 POs from {created_after} to {created_before} - leaving vendor_pos_cache.json unchanged")
-        return {
-            "status": "no_update",
+    stats.update(
+        {
+            "status": "ok",
             "source": "spapi",
-            "fetched": 0,
             "createdAfter": created_after,
             "createdBefore": created_before,
+            "sync_state": release_state,
         }
-
-    # Attach status totals (received/pending) from purchaseOrdersStatus
-    try:
-        _attach_po_status_totals(pos)
-    except Exception as e:
-        logger.warning(f"[VendorPO] Failed to attach status totals during sync: {e}")
-
-    merged_items = []
-    try:
-        old_data = load_vendor_pos_cache(VENDOR_POS_CACHE)
-        old_normalized = normalize_pos_entries(old_data)
-    except Exception:
-        old_normalized = []
-
-    by_po = {}
-    for po in old_normalized:
-        po_num = po.get("purchaseOrderNumber")
-        if po_num:
-            by_po[po_num] = po
-    for po in pos:
-        po_num = po.get("purchaseOrderNumber")
-        if po_num:
-            by_po[po_num] = po
-    merged_items = list(by_po.values())
-
-    payload = {"items": merged_items}
-    try:
-        save_vendor_pos_cache(payload, VENDOR_POS_CACHE)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
-
-    # FIX: Sync vendor_po_lines for all fetched POs with detailed status
-    po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
-    if po_numbers:
-        try:
-            sync_vendor_po_lines_batch(po_numbers)
-            logger.info(f"[VendorPO] Synced {len(po_numbers)} POs with detailed status")
-        except Exception as e:
-            logger.error(f"[VendorPO] Error syncing vendor_po_lines: {e}")
-            # Don't fail the main sync, just log the error
-    
-    # DEBUG: Log vendor_po_lines count after sync
-    try:
-        line_count = db_repos.count_vendor_po_lines()
-        logger.info(f"[VendorPO] vendor_po_lines row count after sync: {line_count}")
-    except Exception as e:
-        logger.warning(f"[VendorPO] Could not log vendor_po_lines count: {e}")
-
-    return {
-        "status": "ok",
-        "source": "spapi",
-        "fetched": len(pos),
-        "createdAfter": created_after,
-        "createdBefore": created_before,
-    }
+    )
+    return stats
 
 
 @app.post("/api/vendor-pos/rebuild")
 def rebuild_vendor_pos_full():
     """
-    Full rebuild: fetch all POs since 2025-10-01, attach status totals, overwrite cache, and sync vendor_po_lines.
+    Full rebuild: fetch all POs since 2025-10-01 and refresh SQLite snapshot.
     """
     created_after = default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    owner = f"rebuild-{uuid.uuid4()}"
+    acquired, state = acquire_vendor_po_lock(owner)
+    if not acquired:
+        return JSONResponse({"status": "sync_in_progress", "sync_state": state}, status_code=202)
+
     try:
-        pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=10)
+        stats = _fetch_and_persist_vendor_pos(
+            created_after,
+            created_before,
+            source_label="spapi_rebuild",
+            source_detail="full_rebuild",
+            max_pages=10,
+        )
+        release_state = release_vendor_po_lock(
+            owner,
+            status="SUCCESS",
+            window_start=created_after,
+            window_end=created_before,
+        )
+    except HTTPException:
+        release_vendor_po_lock(owner, status="FAILED", error="rebuild_failed", window_start=created_after, window_end=created_before)
+        raise
+    except Exception as exc:
+        release_vendor_po_lock(owner, status="FAILED", error=str(exc), window_start=created_after, window_end=created_before)
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+
+    stats.update(
+        {
+            "status": "ok",
+            "source": "spapi",
+            "createdAfter": created_after,
+            "createdBefore": created_before,
+            "sync_state": release_state,
+        }
+    )
+    return stats
+
+
+def _fetch_and_persist_vendor_pos(
+    created_after: str,
+    created_before: str,
+    *,
+    source_label: str,
+    source_detail: str,
+    max_pages: int,
+) -> Dict[str, Any]:
+    """
+    Helper that fetches Vendor POs from SP-API and persists them to SQLite.
+    """
+    try:
+        pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=max_pages)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Vendor PO fetch failed: {exc}")
+
+    synced_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
     try:
         harvested = harvest_barcodes_from_pos(pos)
         if harvested.get("set"):
-            logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from rebuild (lines={harvested['lines']}, invalid={harvested['invalid']})")
+            logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes (lines={harvested['lines']}, invalid={harvested['invalid']})")
     except Exception as exc:
-        logger.warning(f"[VendorPO] Barcode harvest failed during rebuild: {exc}")
+        logger.warning(f"[VendorPO] Barcode harvest failed: {exc}")
 
     if not pos:
-        print(f"[vendor-pos-rebuild] fetched 0 POs from {created_after} to {created_before} - leaving vendor_pos_cache.json unchanged")
-        return {
-            "status": "no_update",
-            "source": "spapi",
-            "fetched": 0,
-            "createdAfter": created_after,
-            "createdBefore": created_before,
-        }
+        return {"fetched": 0}
 
-    # Attach status totals (received/pending) from purchaseOrdersStatus
     try:
         _attach_po_status_totals(pos)
-    except Exception as e:
-        logger.warning(f"[VendorPO] Failed to attach status totals during full rebuild: {e}")
-
-    payload = {"items": pos}
-    try:
-        save_vendor_pos_cache(payload, VENDOR_POS_CACHE)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
+        logger.warning(f"[VendorPO] Failed to attach status totals: {exc}")
 
-    # Sync vendor_po_lines for all fetched POs
+    upsert_vendor_po_headers(
+        pos,
+        source=source_label,
+        source_detail=source_detail,
+        synced_at=synced_at,
+    )
+
     po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
     if po_numbers:
         try:
             sync_vendor_po_lines_batch(po_numbers)
-            logger.info(f"[VendorPO] Rebuild synced {len(po_numbers)} POs with detailed status")
-        except Exception as e:
-            logger.error(f"[VendorPO] Error syncing vendor_po_lines during rebuild: {e}")
+        except Exception as exc:
+            logger.error(f"[VendorPO] Error syncing vendor_po_lines: {exc}")
 
-    return {
-        "status": "ok",
-        "source": "spapi",
-        "fetched": len(pos),
-        "createdAfter": created_after,
-        "createdBefore": created_before,
-    }
+    return {"fetched": len(pos)}
 
 
 
@@ -1723,70 +1496,53 @@ def get_vendor_pos(
     enrich: bool = Query(False, description="Enrich ASINs with Catalog data"),
     createdAfter: Optional[str] = Query(None, description="ISO start date; defaults to 60d ago"),
 ):
-    source = "cache"
+    ensure_vendor_po_schema()
+    source = "db"
     created_after_param = createdAfter or default_created_after()
     if refresh == 1:
-        created_after = created_after_param
         created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-        try:
-            pos = fetch_vendor_pos_from_api(created_after, created_before, max_pages=5)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
-        try:
-            save_vendor_pos_cache({"items": pos}, VENDOR_POS_CACHE)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to write vendor_pos_cache.json: {exc}")
-        
-        try:
-            harvested = harvest_barcodes_from_pos(pos)
-            if harvested.get("set"):
-                logger.info(f"[VendorPO] Harvested {harvested['set']} barcodes from GET refresh (lines={harvested['lines']}, invalid={harvested['invalid']})")
-        except Exception as exc:
-            logger.warning(f"[VendorPO] Barcode harvest failed during GET refresh: {exc}")
-
-        po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
-        try:
-            _attach_po_status_totals(pos)
-        except Exception as e:
-            logger.warning(f"[VendorPO] Failed to attach status totals during GET refresh: {e}")
-        if po_numbers:
+        owner = f"get-refresh-{uuid.uuid4()}"
+        acquired, state = acquire_vendor_po_lock(owner)
+        if not acquired:
+            logger.info("[VendorPO] Refresh skipped; lock held by %s", state.get("lock_owner"))
+        else:
             try:
-                sync_vendor_po_lines_batch(po_numbers)
-                logger.info(f"[VendorPO] Synced {len(po_numbers)} POs with detailed status from GET refresh")
-            except Exception as e:
-                logger.error(f"[VendorPO] Error syncing vendor_po_lines from GET refresh: {e}")
-        
-        source = "spapi"
+                _fetch_and_persist_vendor_pos(
+                    created_after_param,
+                    created_before,
+                    source_label="spapi_get_refresh",
+                    source_detail="get_endpoint",
+                    max_pages=5,
+                )
+                release_vendor_po_lock(
+                    owner,
+                    status="SUCCESS",
+                    window_start=created_after_param,
+                    window_end=created_before,
+                )
+                source = "spapi"
+            except Exception as exc:
+                release_vendor_po_lock(owner, status="FAILED", error=str(exc), window_start=created_after_param, window_end=created_before)
+                raise
 
-    try:
-        data = load_vendor_pos_cache(VENDOR_POS_CACHE, raise_on_error=True)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read cache: {exc}")
-    if not data:
-        return {"items": [], "source": source}
+    created_after_param = createdAfter or default_created_after()
+    bootstrap_headers_from_cache()
+    normalized = get_vendor_po_list(created_after=created_after_param)
 
-    normalized = normalize_pos_entries(data)
     try:
         cutoff_dt = datetime.fromisoformat(created_after_param.replace("Z", "+00:00"))
     except Exception:
         cutoff_dt = None
     if cutoff_dt:
-        filtered = []
-        for po in normalized:
-            po_dt = parse_po_date(po)
-            if po_dt and po_dt < cutoff_dt:
-                continue
-            filtered.append(po)
-        normalized = filtered
+        normalized = [po for po in normalized if parse_po_date(po) >= cutoff_dt]
+
     cutoff = datetime(2025, 10, 1)
-    print(f"[vendor-pos] normalized POs: {len(normalized)}")
     filtered = []
     for po in normalized:
         dt = parse_po_date(po)
         if dt == datetime.min or dt >= cutoff:
             filtered.append(po)
+    filtered.sort(key=parse_po_date, reverse=True)
     filtered.sort(key=parse_po_date, reverse=True)
     tracker = load_po_tracker()
     for po in filtered:
@@ -1810,13 +1566,30 @@ def get_vendor_pos(
         except Exception as exc:
             logger.warning(f"[VendorPO] Failed to attach notification flags for {po_num}: {exc}")
     print(f"[vendor-pos] filtered POs (>= 2025-10-01): {len(filtered)}")
-
-    _aggregate_vendor_po_lines(filtered)
-
     if enrich:
         enrich_items_with_catalog(filtered)
 
-    return {"items": filtered, "source": source}
+    return {
+        "items": filtered,
+        "source": source,
+        "sync_state": get_vendor_po_sync_state(),
+    }
+
+
+@app.get("/api/vendor-pos/status")
+def get_vendor_pos_status():
+    ensure_vendor_po_schema()
+    return {
+        "sync_state": get_vendor_po_sync_state(),
+        "line_count": count_vendor_po_lines(),
+    }
+
+
+@app.get("/api/vendor-pos/export-json")
+def export_vendor_pos_json():
+    ensure_vendor_po_schema()
+    snapshot = export_vendor_pos_snapshot()
+    return snapshot
 
 
 @app.get("/api/vendor-pos/{po_number}")
@@ -1825,39 +1598,26 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     Return a single vendor PO by purchaseOrderNumber.
     If enrich=1, run enrich_items_with_catalog on just this PO before returning.
     """
-    try:
-        data = load_vendor_pos_cache(VENDOR_POS_CACHE, raise_on_error=True)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read cache: {exc}")
-    if not data:
-        return JSONResponse({"error": "PO not found"}, status_code=404)
-
-    normalized = normalize_pos_entries(data)
-
-    po = next((p for p in normalized if p.get("purchaseOrderNumber") == po_number), None)
+    bootstrap_headers_from_cache()
+    po = store_get_vendor_po(po_number)
     if not po:
         return JSONResponse({"error": "PO not found"}, status_code=404)
-
     flags = get_po_notification_flags(po_number)
     if flags.get("needs_refresh"):
         try:
-            _refresh_po_in_cache(po_number)
+            _sync_vendor_po_lines_for_po(po_number)
             clear_po_refresh_flag(po_number)
-            data = load_vendor_pos_cache(VENDOR_POS_CACHE, raise_on_error=True)
-            normalized = normalize_pos_entries(data)
-            po = next((p for p in normalized if p.get("purchaseOrderNumber") == po_number), po)
+            po = store_get_vendor_po(po_number) or po
         except Exception as exc:
             logger.warning(f"[VendorPO] Refresh on open failed for {po_number}: {exc}")
 
-    try:
-        detailed = fetch_detailed_po_with_status(po_number)
-        if isinstance(detailed, dict):
-            status_items = detailed.get("itemStatus") or detailed.get("items") or []
-            if status_items:
-                po.setdefault("orderDetails", {})
-                po["orderDetails"]["items"] = status_items
-    except Exception as exc:
-        logger.warning(f"[VendorPO] Could not attach status items for PO {po_number}: {exc}")
+    # Ensure detail exists for modal display
+    if not po.get("orderDetails", {}).get("items"):
+        try:
+            _sync_vendor_po_lines_for_po(po_number)
+            po = store_get_vendor_po(po_number) or po
+        except Exception as exc:
+            logger.warning(f"[VendorPO] Could not fetch detail for PO {po_number}: {exc}")
 
     # Compute accepted line amounts for modal display
     try:
@@ -1883,6 +1643,7 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
             print(f"Error enriching PO {po_number}: {exc}")
 
     po["notificationFlags"] = flags
+    po["sync_state"] = get_vendor_po_sync_state()
     return {"item": po}
 
 
@@ -1897,19 +1658,19 @@ def get_vendor_po_lines(po_number: str):
     
     try:
         with time_block("vendor_po_lines.endpoint_fetch"):
-            rows = db_repos.get_vendor_po_lines(po_number)
+            rows = store_get_vendor_po_lines(po_number)
         lines = []
         if rows:
             for row in rows:
                 lines.append(
                     {
                         "asin": row.get("asin") or "",
-                        "sku": row.get("sku") or "",
+                        "sku": row.get("vendor_sku") or "",
                         "ordered_qty": row.get("ordered_qty") or 0,
                         "received_qty": row.get("received_qty") or 0,
                         "pending_qty": row.get("pending_qty") or 0,
                         "shortage_qty": row.get("shortage_qty") or 0,
-                        "last_changed_utc": row.get("last_changed_utc") or "",
+                        "last_changed_utc": row.get("last_updated_at") or "",
                     }
                 )
             logger.info(f"[VendorPO] Retrieved {len(lines)} lines for PO {po_number}")
@@ -2945,7 +2706,7 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         asins, sku_map = extract_asins_from_pos()
         seeded = seed_catalog_universe(asins)
         if seeded:
-            logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor_pos_cache")
+            logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor PO database")
         record_catalog_asin_sources(asins, "vendor_po")
         universe = list_universe_asins()
         fetched = spapi_catalog_status()
@@ -3305,13 +3066,8 @@ def debug_sample_po():
     """
     Return the first PO item from cache for debugging purposes.
     """
-    try:
-        data = load_vendor_pos_cache(VENDOR_POS_CACHE, raise_on_error=True)
-    except Exception:
-        return {"message": "no items in cache"}
-    if not data:
-        return {"message": "no items in cache"}
-    normalized = normalize_pos_entries(data)
+    bootstrap_headers_from_cache()
+    normalized = get_vendor_po_list(order_desc=False)
     for po in normalized:
         details = po.get("orderDetails") or {}
         items = details.get("items") or []
@@ -3394,7 +3150,7 @@ def debug_dump_vendor_po(po_number: str, output_path: str = None):
 
 def init_vendor_po_lines_table():
     """Create vendor_po_lines table if it doesn't exist."""
-    db_repos.init_vendor_po_lines_table()
+    ensure_vendor_po_schema()
 
 
 def verify_vendor_po_mapping(po_number: str):
@@ -3515,7 +3271,7 @@ def verify_vendor_po_mapping(po_number: str):
     )
 
     try:
-        totals = db_repos.get_vendor_po_line_totals_for_po(po_number)
+        totals = get_vendor_po_line_totals_for_po(po_number)
     except Exception as exc:
         logger.error(f"[VerifyPO {po_number}] Error querying database: {exc}", exc_info=True)
         print(f"[VerifyPO {po_number}] ERROR: {exc}")
@@ -3525,12 +3281,12 @@ def verify_vendor_po_mapping(po_number: str):
         print(f"[VerifyPO {po_number}] ERROR: No rows found in database for this PO")
         return
 
-    db_ordered = totals.get("total_ordered", 0)
-    db_accepted = totals.get("total_accepted", 0)
-    db_cancelled = totals.get("total_cancelled", 0)
-    db_received = totals.get("total_received", 0)
-    db_pending = totals.get("total_pending", 0)
-    db_shortage = totals.get("total_shortage", 0)
+    db_ordered = totals.get("requested_qty", 0)
+    db_accepted = totals.get("accepted_qty", 0)
+    db_cancelled = totals.get("cancelled_qty", 0)
+    db_received = totals.get("received_qty", 0)
+    db_pending = max(0, db_accepted - db_received - db_cancelled)
+    db_shortage = max(0, db_ordered - db_accepted - db_cancelled)
 
     print(
         f"[VerifyPO {po_number}] DB TOTALS: "
@@ -3583,32 +3339,20 @@ def _sync_vendor_po_lines_for_po(po_number: str):
     - Quantity received = receivingStatus.receivedQuantity (what was received)
     - Quantity outstanding = pending_qty (confirmed but not yet received)
     """
-    # Fetch detailed PO from SP-API
     detailed_po = fetch_detailed_po_with_status(po_number)
     if not detailed_po:
         logger.warning(f"[VendorPO] Could not fetch detailed PO {po_number}")
         return
-    
+
     ship_to_party = (
         detailed_po.get("orderDetails", {}).get("shipToParty")
         or detailed_po.get("shipToParty", {})
         or {}
     )
     ship_to_location = ship_to_party.get("partyId", "")
-    
-    # FIX: Clear only this PO's lines (scoped delete)
-    try:
-        with time_block("vendor_po_lines.clear_po"):
-            db_repos.delete_vendor_po_lines_for_po(po_number)
-    except Exception as e:
-        logger.error(f"[VendorPO] Failed to clear lines for PO {po_number}: {e}")
-        return
-    
-    # Try itemStatus first, then items (full status often lives under items in purchaseOrders payload)
+
     item_status_list = detailed_po.get("itemStatus") or detailed_po.get("items") or []
     use_item_status = bool(item_status_list)
-
-    # Fallback to orderDetails.items if neither present
     if not use_item_status:
         item_status_list = detailed_po.get("orderDetails", {}).get("items", [])
         if not item_status_list:
@@ -3617,21 +3361,20 @@ def _sync_vendor_po_lines_for_po(po_number: str):
         logger.info(f"[VendorPO] PO {po_number} using fallback orderDetails.items (no itemStatus available)")
     else:
         logger.info(f"[VendorPO] PO {po_number} has detailed items ({len(item_status_list)} items)")
-    
-    # Process each item
+
     now_utc = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    rows_to_insert: List[Tuple[Any, ...]] = []
+    line_payloads: List[Dict[str, Any]] = []
+    totals = {"requested_qty": 0, "accepted_qty": 0, "received_qty": 0, "cancelled_qty": 0}
+    total_cost = Decimal("0")
+    cost_currency = "AED"
+
     for item in item_status_list:
         try:
-            item_seq = item.get("itemSequenceNumber", "")
+            item_seq = item.get("itemSequenceNumber") or item.get("itemSequenceId") or ""
             asin = item.get("amazonProductIdentifier") or item.get("buyerProductIdentifier") or ""
             sku = item.get("vendorProductIdentifier", "")
-            
+
             if use_item_status:
-                # ============================================================
-                # CASE 1: Using itemStatus/items with full acknowledgement/receiving data
-                # ============================================================
-                # Extract ORDERED quantity (from orderedQuantity.orderedQuantity)
                 ordered_qty = 0
                 oq_wrapper = item.get("orderedQuantity", {})
                 if isinstance(oq_wrapper, dict):
@@ -3639,14 +3382,12 @@ def _sync_vendor_po_lines_for_po(po_number: str):
                     if isinstance(oq_inner, dict):
                         ordered_qty = int(oq_inner.get("amount", 0) or 0)
 
-                # Extract CANCELLED quantity (from orderedQuantity.cancelledQuantity)
                 cancelled_qty = 0
                 if isinstance(oq_wrapper, dict):
                     can_inner = oq_wrapper.get("cancelledQuantity", {})
                     if isinstance(can_inner, dict):
                         cancelled_qty = int(can_inner.get("amount", 0) or 0)
 
-                # Extract ACCEPTED quantity (from acknowledgementStatus.acceptedQuantity or rejectedQuantity)
                 accepted_qty = 0
                 ack_obj = item.get("acknowledgementStatus", {})
                 if isinstance(ack_obj, dict):
@@ -3657,7 +3398,6 @@ def _sync_vendor_po_lines_for_po(po_number: str):
                     if isinstance(rej_qty, dict):
                         cancelled_qty += int(rej_qty.get("amount", 0) or 0)
 
-                # Extract RECEIVED quantity (from receivingStatus.receivedQuantity)
                 received_qty = 0
                 pending_qty = 0
                 recv_obj = item.get("receivingStatus", {}) or {}
@@ -3668,15 +3408,9 @@ def _sync_vendor_po_lines_for_po(po_number: str):
                     pending_obj = recv_obj.get("pendingQuantity", {})
                     if isinstance(pending_obj, dict):
                         pending_qty = int(pending_obj.get("amount", 0) or 0)
-
-                    # If API pending not provided, derive from accepted - received
-                    if pending_qty == 0:
-                        pending_qty = max(0, accepted_qty - received_qty)
-
+                if pending_qty == 0:
+                    pending_qty = max(0, accepted_qty - received_qty)
             else:
-                # ============================================================
-                # CASE 2: Fallback using orderDetails.items (minimal data)
-                # ============================================================
                 ordered_qty = 0
                 oq = item.get("orderedQuantity", {})
                 if isinstance(oq, dict):
@@ -3686,39 +3420,99 @@ def _sync_vendor_po_lines_for_po(po_number: str):
                 received_qty = 0
                 pending_qty = max(0, accepted_qty - received_qty)
 
-            # ============================================================
-            # Calculate DERIVED quantities
-            # ============================================================
-            # pending_qty already derived above; ensure non-negative
             pending_qty = max(0, pending_qty)
-
             shortage_qty = max(0, ordered_qty - accepted_qty - cancelled_qty)
 
-            rows_to_insert.append(
-                (
-                    po_number,
-                    ship_to_location,
-                    asin,
-                    sku,
-                    ordered_qty,
-                    accepted_qty,
-                    cancelled_qty,
-                    0,  # shipped_qty not provided by vendor orders API
-                    received_qty,
-                    shortage_qty,
-                    pending_qty,
-                    now_utc,
-                )
+            barcode_raw = (
+                item.get("externalId")
+                or item.get("vendorProductIdentifier")
+                or item.get("buyerProductIdentifier")
+                or ""
             )
+            normalized_barcode = normalize_barcode(barcode_raw or "")
+            title = item.get("title") or item.get("productTitle") or ""
+            image = item.get("image") or ""
+
+            net_cost_obj = item.get("netCost") or {}
+            net_cost_amount = None
+            net_cost_currency = None
+            if isinstance(net_cost_obj, dict):
+                net_cost_currency = net_cost_obj.get("currencyCode") or cost_currency
+                try:
+                    amt = net_cost_obj.get("amount")
+                    net_cost_amount = float(amt) if amt is not None else None
+                except (TypeError, ValueError):
+                    net_cost_amount = None
+
+            list_price_obj = item.get("listPrice") or {}
+            list_price_amount = None
+            list_price_currency = None
+            if isinstance(list_price_obj, dict):
+                list_price_currency = list_price_obj.get("currencyCode")
+                try:
+                    lp_amt = list_price_obj.get("amount")
+                    list_price_amount = float(lp_amt) if lp_amt is not None else None
+                except (TypeError, ValueError):
+                    list_price_amount = None
+
+            line_payloads.append(
+                {
+                    "item_sequence_number": str(item_seq or len(line_payloads) + 1),
+                    "asin": asin,
+                    "vendor_sku": sku,
+                    "barcode": normalized_barcode or "",
+                    "title": title,
+                    "image": image,
+                    "ordered_qty": ordered_qty,
+                    "accepted_qty": accepted_qty,
+                    "cancelled_qty": cancelled_qty,
+                    "received_qty": received_qty,
+                    "pending_qty": pending_qty,
+                    "shortage_qty": shortage_qty,
+                    "net_cost_amount": net_cost_amount,
+                    "net_cost_currency": net_cost_currency,
+                    "list_price_amount": list_price_amount,
+                    "list_price_currency": list_price_currency,
+                    "last_updated_at": now_utc,
+                    "raw": item,
+                    "ship_to_location": ship_to_location,
+                }
+            )
+
+            totals["requested_qty"] += ordered_qty
+            totals["accepted_qty"] += accepted_qty
+            totals["received_qty"] += received_qty
+            totals["cancelled_qty"] += cancelled_qty
+
+            if net_cost_amount is not None and accepted_qty > 0:
+                try:
+                    line_total = Decimal(str(net_cost_amount)) * Decimal(accepted_qty)
+                    total_cost += line_total
+                    if net_cost_currency:
+                        cost_currency = net_cost_currency
+                except (InvalidOperation, ValueError):
+                    pass
 
         except Exception as e:
             logger.error(f"[VendorPO] Error processing item {item_seq} in PO {po_number}: {e}", exc_info=True)
             continue
 
-    if rows_to_insert:
-        with time_block(f"vendor_po_lines.bulk_insert:{len(rows_to_insert)}"):
-            db_repos.bulk_insert_vendor_po_lines(rows_to_insert)
-    logger.info(f"[VendorPO] Synced {len(rows_to_insert)} lines for PO {po_number}")
+    replace_vendor_po_lines(po_number, line_payloads)
+    update_header_totals_from_lines(
+        po_number,
+        totals,
+        last_changed_at=detailed_po.get("lastUpdatedDate"),
+        total_cost=float(total_cost),
+        cost_currency=cost_currency,
+    )
+    update_header_raw_payload(
+        po_number,
+        detailed_po,
+        source="line_sync",
+        source_detail="detail_refresh",
+        synced_at=now_utc,
+    )
+    logger.info(f"[VendorPO] Synced {len(line_payloads)} lines for PO {po_number}")
 
 
 def get_shipments_for_po(po_number: str) -> List[Dict[str, Any]]:
@@ -3915,10 +3709,10 @@ def verify_po_receipts_against_shipments(po_number: str) -> None:
     db_received_total = 0
     
     try:
-        rows = db_repos.get_vendor_po_lines(po_number)
+        rows = store_get_vendor_po_lines(po_number)
         for row in rows:
             asin = (row.get("asin") or "").strip()
-            sku = (row.get("sku") or "").strip()
+            sku = (row.get("vendor_sku") or "").strip()
             key = (asin, sku)
             ordered_qty = int(row.get("ordered_qty") or 0)
             received_qty = int(row.get("received_qty") or 0)
@@ -4074,21 +3868,21 @@ def sync_vendor_po_lines_batch(po_numbers: List[str]):
 
 def rebuild_all_vendor_po_lines():
     """
-    Rebuild vendor_po_lines for ALL existing POs in vendor_pos_cache.json.
-    
+    Rebuild vendor_po_lines for ALL existing POs stored in SQLite.
+
     This is a maintenance operation to backfill line quantities for POs that may have been
     created before the line-syncing logic was fixed, or to refresh all data.
-    
+
     Steps:
-    1. Read vendor_pos_cache.json and normalize PO entries
+    1. Query all stored PO numbers from vendor_po_header
     2. For each PO:
        - Fetch detailed PO info from SP-API
        - Call _sync_vendor_po_lines_for_po to refresh line data
        - Log progress every ~10% of completion
     3. Report final counts
-    
-    Does NOT modify vendor_pos_cache.json, only refreshes vendor_po_lines table.
-    
+
+    Does NOT rely on vendor_pos_cache.json.
+
     Typical usage:
         python main.py --rebuild-po-lines
     """
@@ -4098,41 +3892,25 @@ def rebuild_all_vendor_po_lines():
     # Initialize vendor_po_lines table
     init_vendor_po_lines_table()
     
-    # Get all PO numbers from vendor_pos_cache.json
-    try:
-        if not VENDOR_POS_CACHE.exists():
-            logger.info("[VendorPO] vendor_pos_cache.json not found")
-            print("[VendorPO] vendor_pos_cache.json not found - no POs to rebuild")
-            return
-        
-        cache_data = load_vendor_pos_cache(VENDOR_POS_CACHE, raise_on_error=True)
-        normalized = normalize_pos_entries(cache_data)
-        
-        # Sort by date (newest first, matching the grid behavior)
-        normalized.sort(key=parse_po_date, reverse=True)
-        
-        po_numbers = [po.get("purchaseOrderNumber") for po in normalized if po.get("purchaseOrderNumber")]
-        po_date_map = {
-            po.get("purchaseOrderNumber"): (
-                po.get("purchaseOrderDate")
-                or po.get("orderDetails", {}).get("purchaseOrderDate")
-            )
-            for po in normalized
-            if po.get("purchaseOrderNumber")
-        }
-        
-    except Exception as e:
-        logger.error(f"[VendorPO] Failed to read vendor_pos_cache.json: {e}")
-        print(f"[ERROR] Failed to read vendor_pos_cache.json: {e}")
-        return
-    
+    bootstrap_headers_from_cache()
+    normalized = get_vendor_po_list(order_desc=True)
+    po_numbers = [po.get("purchaseOrderNumber") for po in normalized if po.get("purchaseOrderNumber")]
+    po_date_map = {
+        po.get("purchaseOrderNumber"): (
+            po.get("purchaseOrderDate")
+            or po.get("orderDetails", {}).get("purchaseOrderDate")
+        )
+        for po in normalized
+        if po.get("purchaseOrderNumber")
+    }
+
     if not po_numbers:
-        logger.info("[VendorPO] No POs found in vendor_pos_cache.json")
-        print("[VendorPO] No POs found in vendor_pos_cache.json")
+        logger.info("[VendorPO] No POs found in database")
+        print("[VendorPO] No POs found in database")
         return
-    
-    logger.info(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from cache")
-    print(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from cache")
+
+    logger.info(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from database")
+    print(f"[VendorPO] Found {len(po_numbers)} POs to rebuild from database")
     
     # Rebuild lines for each PO concurrently (bounded)
     def _rebuild_safe(po_num: str) -> Tuple[str, Optional[Exception]]:
@@ -4168,7 +3946,7 @@ def rebuild_all_vendor_po_lines():
 
     # Final summary
     try:
-        line_count = db_repos.count_vendor_po_lines()
+        line_count = count_vendor_po_lines()
     except Exception as e:
         logger.warning(f"[VendorPO] Could not query final line count: {e}")
         line_count = 0

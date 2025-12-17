@@ -1,7 +1,5 @@
-import json
 import logging
 from io import BytesIO
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
 from fastapi import HTTPException
@@ -13,24 +11,17 @@ logger = logging.getLogger(__name__)
 
 def consolidate_picklist(
     po_numbers: List[str],
-    vendor_pos_cache_path: Path,
-    normalize_pos_entries_fn,
+    po_records: List[Dict[str, Any]],
     load_oos_state_fn,
     save_oos_state_fn,
     spapi_catalog_status_fn,
     upsert_oos_entry_fn,
     fetch_rejected_lines_fn: Callable[[List[str]], List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    if not vendor_pos_cache_path.exists():
-        return {"summary": {"numPos": 0, "totalUnits": 0, "totalLines": 0, "warning": "Cache missing"}, "items": []}
-    try:
-        with time_block("picklist_cache_read"):
-            data = json.loads(vendor_pos_cache_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read cache: {exc}")
+    if not po_records:
+        return {"summary": {"numPos": 0, "totalUnits": 0, "totalLines": 0, "warning": "No POs"}, "items": []}
 
-    normalized = normalize_pos_entries_fn(data)
-    selected = [po for po in normalized if po.get("purchaseOrderNumber") in po_numbers]
+    selected = [po for po in po_records if po.get("purchaseOrderNumber") in po_numbers]
     if not selected:
         return {"summary": {"numPos": 0, "totalUnits": 0, "totalLines": 0, "warning": "No matching POs"}, "items": []}
 
