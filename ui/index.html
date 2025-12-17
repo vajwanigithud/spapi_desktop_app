@@ -232,6 +232,14 @@
       .rt-sales-status-busy { color: #d97706; font-weight: 500; }
       .rt-sales-status-cooldown { color: #b91c1c; font-weight: 500; }
       .rt-sales-status-idle { color: #059669; font-weight: 500; }
+      .rt-sales-status-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: #475569; }
+      .rt-sales-pill { padding: 4px 10px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-weight: 600; }
+      .rt-sales-pill.alert { background: #fee2e2; color: #b91c1c; }
+      .rt-sales-ledger-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 4px; }
+      .rt-ledger-metric { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; }
+      .rt-ledger-metric-title { font-size: 11px; text-transform: uppercase; color: #6b7280; margin-bottom: 4px; letter-spacing: 0.04em; }
+      .rt-ledger-metric-value { font-size: 18px; font-weight: 700; color: #0f172a; }
+      .rt-ledger-muted { font-size: 12px; color: #6b7280; font-weight: 500; }
       /* Out-of-Stock export status */
       .export-status-pending { font-weight: 600; color: #d97706; }
       .export-status-exported { opacity: 0.6; color: #6b7280; }
@@ -756,7 +764,40 @@
           
           <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()" style="margin-left:12px;">Refresh Now</button>
         </div>
-        <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
+        <div class="rt-sales-status-strip">
+          <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
+          <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
+        </div>
+        <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Missing</div>
+            <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Requested</div>
+            <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Downloaded</div>
+            <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Applied</div>
+            <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Failed</div>
+            <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Last Applied Hour</div>
+            <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+          </div>
+          <div class="rt-ledger-metric">
+            <div class="rt-ledger-metric-title">Next Claimable Hour</div>
+            <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+          </div>
+        </div>
 
         <div id="rt-sales-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
           <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
@@ -3621,9 +3662,66 @@
 
     // ========== Sync Status Monitoring ==========
     let rtSalesStatusIntervalId = null;
+    const RT_LEDGER_FIELDS = {
+      missing: "rt-ledger-missing",
+      requested: "rt-ledger-requested",
+      downloaded: "rt-ledger-downloaded",
+      applied: "rt-ledger-applied",
+      failed: "rt-ledger-failed",
+    };
+
+    function formatRelativeMinutes(targetIso, referenceIso) {
+      if (!targetIso) return null;
+      const targetTs = Date.parse(targetIso);
+      const referenceTs = referenceIso ? Date.parse(referenceIso) : Date.now();
+      if (Number.isNaN(targetTs) || Number.isNaN(referenceTs)) return null;
+      const diffMs = targetTs - referenceTs;
+      if (diffMs <= 0) return null;
+      const minutes = Math.max(1, Math.round(diffMs / 60000));
+      return minutes === 1 ? "1 min" : `${minutes} mins`;
+    }
+
+    function formatShortTime(iso) {
+      if (!iso) return null;
+      const dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return null;
+      return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function formatIsoDisplay(iso) {
+      if (!iso) return "-";
+      try {
+        const dt = new Date(iso);
+        if (Number.isNaN(dt.getTime())) {
+          return iso;
+        }
+        return dt.toISOString().replace(".000Z", "Z");
+      } catch (err) {
+        return iso;
+      }
+    }
+
+    function renderRtSalesLedgerSummary(summary) {
+      const safeSummary = summary || {};
+      Object.entries(RT_LEDGER_FIELDS).forEach(([key, elId]) => {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        const value = safeSummary[key];
+        el.textContent = Number.isFinite(value) ? value : "-";
+      });
+      const lastAppliedEl = document.getElementById("rt-ledger-last-applied");
+      if (lastAppliedEl) {
+        lastAppliedEl.textContent = formatIsoDisplay(safeSummary.last_applied_hour_utc);
+      }
+      const nextClaimableEl = document.getElementById("rt-ledger-next-claimable");
+      if (nextClaimableEl) {
+        nextClaimableEl.textContent = formatIsoDisplay(safeSummary.next_claimable_hour_utc);
+      }
+    }
 
     async function updateRtSalesSyncStatus() {
       const statusEl = document.getElementById("rt-sales-sync-status");
+      const cooldownPill = document.getElementById("rt-sales-cooldown-pill");
       const refreshBtn = document.getElementById("rt-sales-refresh-btn");
       if (!statusEl || !refreshBtn) return;
 
@@ -3632,46 +3730,65 @@
       refreshBtn.title = disabledNote;
 
       try {
-        const resp = await fetch("/api/vendor-realtime-sales/status");
+        const resp = await fetch("/api/vendor/rt-sales/status");
         if (!resp.ok) {
           statusEl.textContent = `${disabledNote} Status: unavailable.`;
           statusEl.className = "rt-sales-status-label";
+          if (cooldownPill) {
+            cooldownPill.textContent = "Status unavailable";
+            cooldownPill.className = "rt-sales-pill alert";
+          }
+          renderRtSalesLedgerSummary(null);
           return;
         }
 
         const data = await resp.json();
+        const workerLock = data.worker_lock || {};
+        const cooldown = data.cooldown || { active: false, reason: "none" };
+        const ledgerSummary = data.ledger_summary || {};
 
-        const busy = !!data.busy;
-        const cooldown = !!data.cooldown_active;
-        const cooldownUntilUae = data.cooldown_until_uae || null;
+        const lockHeld = Boolean(workerLock.held);
+        const nowIso = data.now_utc || null;
+        let lockLabel = "RT Sales: Idle";
+        statusEl.className = "rt-sales-status-label rt-sales-status-idle";
 
-        statusEl.className = "rt-sales-status-label";
-
-        if (busy) {
-          statusEl.textContent = `Auto-sync running (real-time sales backfill in progress). ${disabledNote}`;
-          statusEl.classList.add("rt-sales-status-busy");
-        } else if (cooldown) {
-          let label = "In quota cooldown (refresh temporarily disabled)";
-          if (cooldownUntilUae) {
-            try {
-              const dt = new Date(cooldownUntilUae);
-              const hh = dt.getHours().toString().padStart(2, "0");
-              const mm = dt.getMinutes().toString().padStart(2, "0");
-              label = `In quota cooldown until ${hh}:${mm} UAE (refresh temporarily disabled)`;
-            } catch (e) {
-              // ignore parse errors, keep generic label
-            }
-          }
-          statusEl.textContent = `${label}. ${disabledNote}`;
-          statusEl.classList.add("rt-sales-status-cooldown");
-        } else {
-          statusEl.textContent = `Idle (backfill is not running). ${disabledNote}`;
-          statusEl.classList.add("rt-sales-status-idle");
+        if (lockHeld) {
+          const owner = workerLock.owner || "unknown";
+          const expiresIn = formatRelativeMinutes(workerLock.expires_utc, nowIso);
+          const suffix = expiresIn ? ` (expires in ${expiresIn})` : "";
+          lockLabel = `RT Sales: Locked by ${owner}${suffix}`;
+          statusEl.className = "rt-sales-status-label rt-sales-status-busy";
+        } else if (cooldown.active && cooldown.reason === "quota") {
+          lockLabel = "RT Sales: Cooldown active";
+          statusEl.className = "rt-sales-status-label rt-sales-status-cooldown";
         }
+        statusEl.textContent = `${lockLabel}. ${disabledNote}`;
+
+        if (cooldownPill) {
+          if (cooldown.active) {
+            let pillText = cooldown.reason === "quota" ? "Cooldown due to SP-API quota" : "Waiting for worker lock";
+            const untilTime = formatShortTime(cooldown.until_utc);
+            if (untilTime) {
+              pillText += ` (until ${untilTime})`;
+            }
+            cooldownPill.textContent = pillText;
+            cooldownPill.className = "rt-sales-pill alert";
+          } else {
+            cooldownPill.textContent = "No cooldown active";
+            cooldownPill.className = "rt-sales-pill";
+          }
+        }
+
+        renderRtSalesLedgerSummary(ledgerSummary);
       } catch (err) {
         console.error("[VendorRtSummary] Failed to update sync status", err);
         statusEl.textContent = `${disabledNote} Status inconclusive.`;
         statusEl.className = "rt-sales-status-label";
+        if (cooldownPill) {
+          cooldownPill.textContent = "Status unavailable";
+          cooldownPill.className = "rt-sales-pill alert";
+        }
+        renderRtSalesLedgerSummary(null);
       }
     }
 

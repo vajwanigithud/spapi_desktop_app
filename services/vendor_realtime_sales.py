@@ -111,6 +111,11 @@ def cooldown_remaining_seconds() -> int:
     return max(0, remaining)
 
 
+def get_quota_cooldown_until() -> Optional[datetime]:
+    """Return the datetime when the current quota cooldown ends (or None)."""
+    return _rt_sales_quota_cooldown_until_utc
+
+
 def _format_cooldown_until() -> Optional[str]:
     if _rt_sales_quota_cooldown_until_utc is None:
         return None

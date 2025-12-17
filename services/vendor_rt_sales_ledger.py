@@ -320,6 +320,81 @@ def list_ledger_rows(marketplace_id: str, limit: int = 200) -> List[Dict[str, An
         return [dict(row) for row in rows]
 
 
+def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+    if not marketplace_id:
+        return {
+            "missing": 0,
+            "requested": 0,
+            "downloaded": 0,
+            "applied": 0,
+            "failed": 0,
+            "next_claimable_hour_utc": None,
+            "last_applied_hour_utc": None,
+        }
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now_iso = now.replace(microsecond=0).isoformat()
+    counts = {
+        STATUS_MISSING: 0,
+        STATUS_REQUESTED: 0,
+        STATUS_DOWNLOADED: 0,
+        STATUS_APPLIED: 0,
+        STATUS_FAILED: 0,
+    }
+    next_claimable = None
+    last_applied = None
+    with get_db_connection() as conn:
+        ensure_vendor_rt_sales_ledger_table(conn)
+        rows = conn.execute(
+            f"""
+            SELECT status, COUNT(*) AS count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+            GROUP BY status
+            """,
+            (marketplace_id,),
+        ).fetchall()
+        for row in rows:
+            status = row["status"]
+            if status in counts:
+                counts[status] = row["count"]
+
+        applied_row = conn.execute(
+            f"""
+            SELECT MAX(hour_utc) AS hour_utc
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ? AND status = ?
+            """,
+            (marketplace_id, STATUS_APPLIED),
+        ).fetchone()
+        if applied_row and applied_row["hour_utc"]:
+            last_applied = applied_row["hour_utc"]
+
+        next_row = conn.execute(
+            f"""
+            SELECT hour_utc
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status IN (?, ?)
+              AND (next_retry_utc IS NULL OR next_retry_utc <= ?)
+            ORDER BY hour_utc ASC
+            LIMIT 1
+            """,
+            (marketplace_id, *CLAIMABLE_STATUSES, now_iso),
+        ).fetchone()
+        if next_row and next_row["hour_utc"]:
+            next_claimable = next_row["hour_utc"]
+
+    return {
+        "missing": counts[STATUS_MISSING],
+        "requested": counts[STATUS_REQUESTED],
+        "downloaded": counts[STATUS_DOWNLOADED],
+        "applied": counts[STATUS_APPLIED],
+        "failed": counts[STATUS_FAILED],
+        "next_claimable_hour_utc": next_claimable,
+        "last_applied_hour_utc": last_applied,
+    }
+
+
 # ----------------------------------------------------------------------
 # Worker lock helpers (global RT sales worker coordination)
 # ----------------------------------------------------------------------
@@ -431,3 +506,19 @@ def release_worker_lock(marketplace_id: str, owner: str) -> None:
         conn.commit()
     if cur.rowcount:
         logger.info("[RtSalesWorkerLock] released %s owner=%s", marketplace_id, owner)
+
+
+def get_worker_lock(marketplace_id: str) -> Optional[Dict[str, Any]]:
+    if not marketplace_id:
+        return None
+    with get_db_connection() as conn:
+        _ensure_worker_lock_table(conn)
+        row = conn.execute(
+            f"""
+            SELECT marketplace_id, owner, expires_at, created_at_utc, updated_at_utc
+            FROM {LOCK_TABLE}
+            WHERE marketplace_id = ?
+            """,
+            (marketplace_id,),
+        ).fetchone()
+        return dict(row) if row else None
