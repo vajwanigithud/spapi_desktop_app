@@ -166,3 +166,33 @@ def test_sync_rejects_invalid_created_after(tmp_path, monkeypatch):
     with _vendor_po_test_client(tmp_path, monkeypatch) as client:
         resp_sync = client.post("/api/vendor-pos/sync", json={"createdAfter": "not-a-date"})
         assert resp_sync.status_code == 422
+
+
+def test_sync_conflict_when_lock_held(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        import main as main_module
+
+        def _deny_lock(owner, **kwargs):
+            return False, {"lock_owner": "tester", "sync_in_progress": 1}
+
+        monkeypatch.setattr(main_module, "acquire_vendor_po_lock", _deny_lock)
+        resp_sync = client.post("/api/vendor-pos/sync")
+        assert resp_sync.status_code == 409
+        data = resp_sync.json()
+        assert data["ok"] is False
+        assert "sync already running" in data["error"]
+
+
+def test_rebuild_conflict_when_lock_held(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        import main as main_module
+
+        def _deny_lock(owner, **kwargs):
+            return False, {"lock_owner": "tester", "sync_in_progress": 1}
+
+        monkeypatch.setattr(main_module, "acquire_vendor_po_lock", _deny_lock)
+        resp_rebuild = client.post("/api/vendor-pos/rebuild")
+        assert resp_rebuild.status_code == 409
+        data = resp_rebuild.json()
+        assert data["ok"] is False
+        assert "rebuild already running" in data["error"]
