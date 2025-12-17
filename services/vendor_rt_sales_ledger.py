@@ -17,7 +17,7 @@ STATUS_FAILED = "FAILED"
 CLAIMABLE_STATUSES: Tuple[str, str] = (STATUS_MISSING, STATUS_FAILED)
 
 
-def ensure_vendor_rt_sales_ledger_table(conn: sqlite3.Connection) -> None:
+def _create_ledger_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
@@ -40,6 +40,72 @@ def ensure_vendor_rt_sales_ledger_table(conn: sqlite3.Connection) -> None:
         ON {LEDGER_TABLE} (marketplace_id, status)
         """
     )
+
+
+def ensure_vendor_rt_sales_ledger_table(conn: sqlite3.Connection) -> None:
+    info = conn.execute(f"PRAGMA table_info({LEDGER_TABLE})").fetchall()
+    if not info:
+        _create_ledger_table(conn)
+        conn.commit()
+        return
+
+    column_names = {row["name"] for row in info}
+    if "hour_utc" in column_names:
+        _create_ledger_table(conn)  # ensures indexes exist
+        conn.commit()
+        return
+
+    logger.warning("[RtSalesLedger] Migrating vendor_rt_sales_hour_ledger schema (adding hour_utc)")
+    legacy_table = f"{LEDGER_TABLE}_old"
+    conn.execute(f"ALTER TABLE {LEDGER_TABLE} RENAME TO {legacy_table}")
+    _create_ledger_table(conn)
+
+    source_hour_column = None
+    for candidate in ("hour_utc", "hour", "hour_start_utc"):
+        if candidate in column_names:
+            source_hour_column = candidate
+            break
+
+    required_columns = {
+        "marketplace_id",
+        "status",
+        "attempt_count",
+        "created_at_utc",
+        "updated_at_utc",
+    }
+    can_copy = source_hour_column is not None and required_columns.issubset(column_names)
+
+    if can_copy:
+        select_columns = [
+            "marketplace_id",
+            f"{source_hour_column} AS hour_utc",
+            "status",
+            "report_id" if "report_id" in column_names else "NULL AS report_id",
+            "attempt_count",
+            "last_error" if "last_error" in column_names else "NULL AS last_error",
+            "next_retry_utc" if "next_retry_utc" in column_names else "NULL AS next_retry_utc",
+            "created_at_utc",
+            "updated_at_utc",
+        ]
+        conn.execute(
+            f"""
+            INSERT INTO {LEDGER_TABLE} (
+                marketplace_id, hour_utc, status, report_id,
+                attempt_count, last_error, next_retry_utc,
+                created_at_utc, updated_at_utc
+            )
+            SELECT {", ".join(select_columns)}
+            FROM {legacy_table}
+            """
+        )
+        conn.execute(f"DROP TABLE {legacy_table}")
+    else:
+        logger.warning(
+            "[RtSalesLedger] Skipping legacy ledger copy; missing required columns: %s",
+            column_names,
+        )
+
+    _create_ledger_table(conn)
     conn.commit()
 
 
