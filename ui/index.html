@@ -488,6 +488,9 @@
         <span id="sync-last">Last Sync: -</span>
         <span id="sync-next">Next Auto-Sync: -</span>
       </div>
+      <div id="vendor-po-status" style="font-size:12px; color:#6b7280; margin-right:12px;">
+        <span id="vendor-po-status-label">PO Sync: Loading...</span>
+      </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
@@ -979,6 +982,11 @@
       "manual": { label: "Manual", title: "Manual Add" },
       "other": { label: "Other", title: "Other" },
     };
+    const VENDOR_PO_STATUS_POLL_MS = 4000;
+    let vendorPoStatusData = null;
+    let vendorPoStatusError = null;
+    let vendorPoStatusTimer = null;
+    let vendorPoManualAction = false;
     const CATALOG_BUCKET_DEFS = [
       { value: "Terminal (Not Found/Invalid)", short: "Terminal" },
       { value: "Ready (Commercial + Active)", short: "Ready Active" },
@@ -1084,9 +1092,101 @@
       return startDateIsoFromDays(days);
     }
 
+    function setVendorPoManualAction(inProgress) {
+      vendorPoManualAction = inProgress;
+      renderVendorPoStatus(vendorPoStatusData, vendorPoStatusError);
+    }
+
+    function ensureVendorPoStatusPoll() {
+      if (vendorPoStatusTimer) return;
+      vendorPoStatusTimer = setInterval(() => refreshVendorPoStatus(true), VENDOR_PO_STATUS_POLL_MS);
+    }
+
+    function stopVendorPoStatusPoll() {
+      if (vendorPoStatusTimer) {
+        clearInterval(vendorPoStatusTimer);
+        vendorPoStatusTimer = null;
+      }
+    }
+
+    function updateVendorPoActionButtons(statusRunning) {
+      const syncBtn = document.getElementById("sync-btn");
+      const rebuildBtn = document.getElementById("rebuild-btn");
+      const shouldDisable = vendorPoManualAction || statusRunning;
+      const reason = vendorPoManualAction
+        ? "Vendor PO request is running..."
+        : statusRunning
+        ? "Vendor PO sync already running"
+        : "";
+      [syncBtn, rebuildBtn].forEach(btn => {
+        if (!btn) return;
+        btn.disabled = shouldDisable;
+        btn.title = reason || "";
+      });
+    }
+
+    function renderVendorPoStatus(data, error) {
+      const statusEl = document.getElementById("vendor-po-status-label");
+      if (!statusEl) return;
+      let text = "PO Sync: Loading...";
+      let statusRunning = false;
+      if (error) {
+        const msg = error?.message || "status failed";
+        text = `PO Sync: Unknown (${msg})`;
+      } else if (data && data.sync_state) {
+        const state = data.sync_state;
+        if (state.sync_in_progress) {
+          statusRunning = true;
+          const started = formatTs(state.sync_started_at) || "-";
+          text = `PO Sync: Running… started ${started}`;
+        } else if (state.sync_last_error) {
+          const finished = formatTs(state.sync_finished_at);
+          text = `PO Sync Error: ${state.sync_last_error}${finished ? ` (last finished ${finished})` : ""}`;
+        } else {
+          const last = formatTs(state.sync_last_ok_at) || "-";
+          text = `PO Sync: Idle | Last success: ${last}`;
+        }
+        text += " | Source: DB";
+      } else if (data) {
+        text = "PO Sync: Unknown";
+      }
+      statusEl.textContent = text;
+      updateVendorPoActionButtons(statusRunning);
+    }
+
+    async function refreshVendorPoStatus(silent = false) {
+      try {
+        const resp = await fetch("/api/vendor-pos/status");
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        vendorPoStatusData = data;
+        vendorPoStatusError = null;
+        renderVendorPoStatus(data, null);
+        if (data?.sync_state?.sync_in_progress) {
+          ensureVendorPoStatusPoll();
+        } else {
+          stopVendorPoStatusPoll();
+        }
+      } catch (err) {
+        vendorPoStatusData = null;
+        vendorPoStatusError = err;
+        renderVendorPoStatus(null, err);
+        stopVendorPoStatusPoll();
+        if (!silent) {
+          console.warn("Failed to fetch Vendor PO status", err);
+        }
+      }
+    }
+
     async function loadPOs(sync = false) {
       const btn = document.getElementById("sync-btn");
       if (btn && sync) { btn.disabled = true; btn.textContent = "Syncing..."; }
+      if (sync) {
+        setVendorPoManualAction(true);
+        refreshVendorPoStatus(true);
+      }
       try {
         const createdAfter = currentStartDateParam();
         if (sync) {
@@ -1131,6 +1231,10 @@
         alert("Failed to load POs");
       } finally {
         if (btn && sync) { btn.disabled = false; btn.textContent = "Sync Vendor POs"; }
+        if (sync) {
+          setVendorPoManualAction(false);
+          refreshVendorPoStatus();
+        }
       }
     }
 
@@ -1181,6 +1285,8 @@
       const syncBtn = document.getElementById("sync-btn");
       if (btn) { btn.disabled = true; btn.textContent = "Rebuilding..."; }
       if (syncBtn) syncBtn.disabled = true;
+      setVendorPoManualAction(true);
+      refreshVendorPoStatus(true);
       try {
         const resp = await fetch("/api/vendor-pos/rebuild", { method: "POST" });
         let fetched = 0;
@@ -1205,6 +1311,8 @@
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = "Full Rebuild POs"; }
         if (syncBtn) syncBtn.disabled = false;
+        setVendorPoManualAction(false);
+        refreshVendorPoStatus();
       }
     }
 
@@ -5199,11 +5307,15 @@
       if (tabName === "vrt-audit") {
         refreshAuditCalendar();
       }
+      if (tabName === "pos") {
+        refreshVendorPoStatus();
+      }
     }
 
     initCatalogColumnResizing();
     showTab("pos");
     loadPOs(false);
+    refreshVendorPoStatus();
     scheduleInitialAutoSync();
     setInterval(updateSyncInfo, 60 * 1000);
     setInterval(autoSyncIfDue, 5 * 60 * 1000);
