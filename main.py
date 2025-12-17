@@ -421,6 +421,10 @@ def default_created_after(days: int = 60) -> str:
     return dt.isoformat() + "Z"
 
 
+class VendorPOSyncRequest(BaseModel):
+    createdAfter: Optional[str] = None
+
+
 # Ensure DB exists at import time
 init_catalog_db()
 
@@ -1333,11 +1337,12 @@ def generate_picklist_pdf(po_numbers: List[str], items: List[Dict[str, Any]], su
 
 
 @app.post("/api/vendor-pos/sync")
-def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
+def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
     """
     Fetch Vendor POs from SP-API for a window and persist to SQLite (canonical store).
     """
-    created_after = createdAfter or default_created_after()
+    requested_created_after = payload.createdAfter if payload else None
+    created_after = requested_created_after or default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     owner = f"sync-{uuid.uuid4()}"
     acquired, state = acquire_vendor_po_lock(owner)
@@ -1385,10 +1390,11 @@ def sync_vendor_pos(createdAfter: Optional[str] = Body(None)):
 
 
 @app.post("/api/vendor-pos/rebuild")
-def rebuild_vendor_pos_full():
+def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
     """
     Full rebuild: fetch all POs since 2025-10-01 and refresh SQLite snapshot.
     """
+    _ = payload  # body is optional; request may send {} but is unused
     created_after = default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     owner = f"rebuild-{uuid.uuid4()}"

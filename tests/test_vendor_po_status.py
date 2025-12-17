@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
+from fastapi.testclient import TestClient
 from services import db as db_service
 from services.db import get_db_connection
 from services.vendor_po_lock import LOCK_TTL_SECONDS
@@ -21,6 +23,25 @@ def _setup_tmp_db(tmp_path, monkeypatch):
 
     monkeypatch.setattr(po_store, "SCHEMA_ENSURED", False, raising=False)
     ensure_vendor_po_schema()
+
+
+@contextmanager
+def _vendor_po_test_client(tmp_path, monkeypatch):
+    _setup_tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setenv("LWA_CLIENT_ID", "dummy")
+    monkeypatch.setenv("LWA_CLIENT_SECRET", "dummy")
+    monkeypatch.setenv("LWA_REFRESH_TOKEN", "dummy")
+    import main
+
+    monkeypatch.setattr(main, "start_vendor_rt_sales_startup_backfill_thread", lambda: None)
+    monkeypatch.setattr(main, "start_vendor_rt_sales_auto_sync", lambda: None)
+
+    def _fake_fetch(*args, **kwargs):
+        return {"fetched": 0}
+
+    monkeypatch.setattr(main, "_fetch_and_persist_vendor_pos", _fake_fetch)
+    with TestClient(main.app) as client:
+        yield client
 
 
 def test_status_empty_db(tmp_path, monkeypatch):
@@ -105,3 +126,29 @@ def test_status_duration_calculated(tmp_path, monkeypatch):
     payload = get_vendor_po_status_payload()
     assert payload["state"] == "idle"
     assert payload["last_run_duration_s"] == 600
+
+
+def test_sync_and_rebuild_allow_missing_body(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        resp_sync = client.post("/api/vendor-pos/sync")
+        assert resp_sync.status_code == 200
+        data_sync = resp_sync.json()
+        assert data_sync["status"] == "ok"
+
+        resp_rebuild = client.post("/api/vendor-pos/rebuild")
+        assert resp_rebuild.status_code == 200
+        data_rebuild = resp_rebuild.json()
+        assert data_rebuild["status"] == "ok"
+
+
+def test_sync_and_rebuild_allow_empty_body(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        resp_sync = client.post("/api/vendor-pos/sync", json={})
+        assert resp_sync.status_code == 200
+        data_sync = resp_sync.json()
+        assert data_sync["status"] == "ok"
+
+        resp_rebuild = client.post("/api/vendor-pos/rebuild", json={})
+        assert resp_rebuild.status_code == 200
+        data_rebuild = resp_rebuild.json()
+        assert data_rebuild["status"] == "ok"
