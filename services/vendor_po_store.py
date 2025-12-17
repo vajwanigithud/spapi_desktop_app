@@ -513,7 +513,13 @@ def update_header_totals_from_lines(
     ensure_vendor_po_schema()
     if not po_number:
         return
-    remaining_qty = max(0, _to_int(totals.get("accepted_qty")) - _to_int(totals.get("received_qty")) - _to_int(totals.get("cancelled_qty")))
+    pending_total = _to_int(totals.get("pending_qty"))
+    cancelled_total = _to_int(totals.get("cancelled_qty"))
+    if pending_total > 0:
+        remaining_qty = pending_total
+    else:
+        remaining_qty = max(0, _to_int(totals.get("accepted_qty")) - _to_int(totals.get("received_qty")) - cancelled_total)
+    line_items_count = _to_int(totals.get("line_items_count"))
     sql = f"""
         UPDATE {HEADER_TABLE}
         SET requested_qty = ?,
@@ -521,6 +527,7 @@ def update_header_totals_from_lines(
             received_qty = ?,
             cancelled_qty = ?,
             remaining_qty = ?,
+            po_items_count = ?,
             last_changed_at = COALESCE(?, last_changed_at),
             total_accepted_cost_amount = COALESCE(?, total_accepted_cost_amount),
             total_accepted_cost_currency = COALESCE(?, total_accepted_cost_currency)
@@ -532,6 +539,7 @@ def update_header_totals_from_lines(
         _to_int(totals.get("received_qty")),
         _to_int(totals.get("cancelled_qty")),
         remaining_qty,
+        line_items_count,
         last_changed_at,
         total_cost,
         cost_currency,
