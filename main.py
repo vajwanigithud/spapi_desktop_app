@@ -1366,51 +1366,63 @@ def _hydrate_picklist_po_details(po_records: List[Dict[str, Any]]) -> None:
         return
 
     for po in po_records:
-        details = po.get("orderDetails") or {}
-        items = details.get("items") or []
-        if items:
-            continue
+        _hydrate_po_with_db_lines(po)
 
-        po_number = (po.get("purchaseOrderNumber") or "").strip()
-        if not po_number:
-            continue
 
-        rows = store_get_vendor_po_lines(po_number) or []
-        normalized_items: List[Dict[str, Any]] = []
-        for row in rows:
-            asin = (row.get("asin") or row.get("vendor_sku") or row.get("external_id") or "").strip()
-            vendor_sku = (row.get("vendor_sku") or "").strip()
-            if not asin:
-                if vendor_sku:
-                    asin = vendor_sku
-                else:
-                    asin = f"ITEM-{row.get('item_sequence_number') or len(normalized_items) + 1}"
+def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
+    details = po.get("orderDetails") or {}
+    items = details.get("items") or []
+    if items:
+        return False, len(items)
 
-            ordered_qty = _coerce_int(row.get("ordered_qty"))
-            accepted_qty = _coerce_int(row.get("accepted_qty") or ordered_qty)
-            received_qty = _coerce_int(row.get("received_qty"))
-            pending_qty_val = row.get("pending_qty")
-            pending_qty = _coerce_int(pending_qty_val if pending_qty_val is not None else max(0, accepted_qty - received_qty))
+    po_number = (po.get("purchaseOrderNumber") or "").strip()
+    if not po_number:
+        return False, 0
 
-            normalized_items.append(
-                {
-                    "amazonProductIdentifier": asin,
-                    "vendorProductIdentifier": vendor_sku,
-                    "orderedQuantity": {"amount": ordered_qty},
-                    "acknowledgementStatus": {
-                        "acceptedQuantity": {"amount": accepted_qty},
-                    },
-                    "receivingStatus": {
-                        "receivedQuantity": {"amount": received_qty},
-                        "pendingQuantity": {"amount": pending_qty},
-                    },
-                    "title": row.get("title") or "",
-                    "image": row.get("image") or "",
-                }
-            )
+    rows = store_get_vendor_po_lines(po_number) or []
+    normalized_items: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        asin = (row.get("asin") or row.get("vendor_sku") or row.get("external_id") or "").strip()
+        vendor_sku = (row.get("vendor_sku") or "").strip()
+        if not asin:
+            asin = vendor_sku or f"ITEM-{row.get('item_sequence_number') or idx}"
 
-        if normalized_items:
-            po["orderDetails"] = {"items": normalized_items}
+        ordered_qty = _coerce_int(row.get("ordered_qty"))
+        accepted_raw = row.get("accepted_qty")
+        if accepted_raw is None:
+            accepted_qty = ordered_qty
+        else:
+            accepted_qty = _coerce_int(accepted_raw)
+
+        received_qty = _coerce_int(row.get("received_qty"))
+        pending_qty_val = row.get("pending_qty")
+        if pending_qty_val is None:
+            pending_qty = max(0, accepted_qty - received_qty)
+        else:
+            pending_qty = _coerce_int(pending_qty_val)
+
+        normalized_items.append(
+            {
+                "amazonProductIdentifier": asin,
+                "vendorProductIdentifier": vendor_sku,
+                "orderedQuantity": {"amount": ordered_qty},
+                "acknowledgementStatus": {
+                    "acceptedQuantity": {"amount": accepted_qty},
+                },
+                "receivingStatus": {
+                    "receivedQuantity": {"amount": received_qty},
+                    "pendingQuantity": {"amount": pending_qty},
+                },
+                "title": row.get("title") or "",
+                "image": row.get("image") or "",
+            }
+        )
+
+    if normalized_items:
+        po["orderDetails"] = {"items": normalized_items}
+        po["poItemsCount"] = len(normalized_items)
+        return True, len(normalized_items)
+    return False, 0
 
 
 def _coerce_int(value: Any) -> int:
@@ -1821,11 +1833,15 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         except Exception as exc:
             logger.warning(f"[VendorPO] Refresh on open failed for {po_number}: {exc}")
 
+    used_db_lines, _ = _hydrate_po_with_db_lines(po)
+
     # Ensure detail exists for modal display
     if not po.get("orderDetails", {}).get("items"):
         try:
             _sync_vendor_po_lines_for_po(po_number)
             po = store_get_vendor_po(po_number) or po
+            hydrated_again, _ = _hydrate_po_with_db_lines(po)
+            used_db_lines = used_db_lines or hydrated_again
         except Exception as exc:
             logger.warning(f"[VendorPO] Could not fetch detail for PO {po_number}: {exc}")
 
@@ -1851,6 +1867,10 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
             enrich_items_with_catalog([po])
         except Exception as exc:
             print(f"Error enriching PO {po_number}: {exc}")
+
+    items_for_modal = po.get("orderDetails", {}).get("items", []) or []
+    line_source = "db_lines" if used_db_lines and items_for_modal else ("raw_orderDetails" if items_for_modal else "empty")
+    logger.info("[VendorPODetail] %s line_count=%d source=%s", po_number, len(items_for_modal), line_source)
 
     po["notificationFlags"] = flags
     po["sync_state"] = get_vendor_po_sync_state()
