@@ -1,6 +1,14 @@
 import random
+import sys
 
-import win32print
+import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="EPL RAW printing tests require Windows")
+
+try:
+    import win32print  # type: ignore
+except ModuleNotFoundError:
+    pytest.skip("win32print not available", allow_module_level=True)
 
 # ----------------- SETTINGS -----------------
 PRINTER_NAME = "ZDesigner TLP 2844 (Copy 1)"   # change if needed
@@ -95,4 +103,3 @@ if __name__ == "__main__":
     print("Printing EAN:", ean)
     send_raw(PRINTER_NAME, epl)
     print("✅ Sent EPL job")
-

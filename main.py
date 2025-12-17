@@ -1420,6 +1420,79 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
+def _summarize_vendor_po_lines(lines: List[Dict[str, Any]]) -> Tuple[Dict[str, int], List[Dict[str, Any]], List[str]]:
+    totals = {
+        "requested_units": 0,
+        "accepted_units": 0,
+        "received_units": 0,
+        "cancelled_units": 0,
+        "remaining_units": 0,
+    }
+    normalized_lines: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    fallback_used = False
+
+    for row in lines or []:
+        ordered = _coerce_int(row.get("ordered_qty"))
+        accepted = _coerce_int(row.get("accepted_qty")) or ordered
+        received = _coerce_int(row.get("received_qty"))
+        cancelled = _coerce_int(row.get("cancelled_qty"))
+        pending_raw = row.get("pending_qty")
+        pending = _coerce_int(pending_raw)
+        used_fallback_line = False
+        if pending <= 0:
+            pending = max(0, accepted - received)
+            if pending > 0:
+                used_fallback_line = True
+
+        if used_fallback_line:
+            fallback_used = True
+
+        totals["requested_units"] += ordered
+        totals["accepted_units"] += accepted
+        totals["received_units"] += received
+        totals["cancelled_units"] += cancelled
+        totals["remaining_units"] += pending
+
+        normalized_lines.append(
+            {
+                "asin": (row.get("asin") or "").strip(),
+                "sku": (row.get("vendor_sku") or "").strip(),
+                "ordered": ordered,
+                "accepted": accepted,
+                "received": received,
+                "cancelled": cancelled,
+                "open_remaining": pending,
+                "raw_fields": {
+                    "ordered_qty": row.get("ordered_qty"),
+                    "accepted_qty": row.get("accepted_qty"),
+                    "received_qty": row.get("received_qty"),
+                    "cancelled_qty": row.get("cancelled_qty"),
+                    "pending_qty": row.get("pending_qty"),
+                    "shortage_qty": row.get("shortage_qty"),
+                    "item_sequence_number": row.get("item_sequence_number"),
+                },
+            }
+        )
+
+    if fallback_used:
+        notes.append("Pending quantities missing; computed remaining as accepted minus received for some lines.")
+
+    return totals, normalized_lines, notes
+
+
+def _build_reconcile_header(po: Dict[str, Any], fallback_line_count: int) -> Dict[str, Any]:
+    return {
+        "po_items_count": _coerce_int(po.get("poItemsCount") or po.get("po_items_count") or fallback_line_count),
+        "requested_units": _coerce_int(po.get("requestedQty") or po.get("requested_units")),
+        "accepted_units": _coerce_int(po.get("acceptedQty") or po.get("accepted_units")),
+        "received_units": _coerce_int(po.get("receivedQty") or po.get("received_units")),
+        "remaining_units": _coerce_int(po.get("remainingQty") or po.get("remaining_units")),
+        "cancelled_units": _coerce_int(po.get("cancelledQty") or po.get("cancelled_units")),
+        "total_accepted_cost": po.get("total_accepted_cost") or po.get("totalAcceptedCostAmount") or 0,
+    }
+
+
 @app.post("/api/vendor-pos/sync")
 def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
     """
@@ -1778,6 +1851,30 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     po["notificationFlags"] = flags
     po["sync_state"] = get_vendor_po_sync_state()
     return {"item": po}
+
+
+@app.get("/api/vendor-pos/reconcile/{po_number}")
+def reconcile_vendor_po(po_number: str):
+    """
+    Return detailed line breakdown + totals for auditing PO quantities.
+    """
+    bootstrap_headers_from_cache()
+    po = store_get_vendor_po(po_number)
+    if not po:
+        raise HTTPException(status_code=404, detail="PO not found")
+
+    lines = store_get_vendor_po_lines(po_number)
+    vc_hint, normalized_lines, notes = _summarize_vendor_po_lines(lines)
+    header_summary = _build_reconcile_header(po, len(normalized_lines))
+
+    return {
+        "ok": True,
+        "po_number": po_number,
+        "vc_target_hint": vc_hint,
+        "header": header_summary,
+        "lines": normalized_lines,
+        "notes": notes,
+    }
 
 
 @app.get("/api/vendor-po-lines")
@@ -3518,7 +3615,14 @@ def _sync_vendor_po_lines_for_po(po_number: str):
 
     now_utc = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     line_payloads: List[Dict[str, Any]] = []
-    totals = {"requested_qty": 0, "accepted_qty": 0, "received_qty": 0, "cancelled_qty": 0}
+    totals = {
+        "requested_qty": 0,
+        "accepted_qty": 0,
+        "received_qty": 0,
+        "cancelled_qty": 0,
+        "pending_qty": 0,
+        "line_items_count": 0,
+    }
     total_cost = Decimal("0")
     cost_currency = "AED"
 
@@ -3637,6 +3741,8 @@ def _sync_vendor_po_lines_for_po(po_number: str):
             totals["accepted_qty"] += accepted_qty
             totals["received_qty"] += received_qty
             totals["cancelled_qty"] += cancelled_qty
+            totals["pending_qty"] += pending_qty
+            totals["line_items_count"] += 1
 
             if net_cost_amount is not None and accepted_qty > 0:
                 try:
