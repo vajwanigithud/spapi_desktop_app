@@ -15,6 +15,7 @@ from services.vendor_rt_inventory_state import (
     get_refresh_metadata,
     get_state_max_end_time,
     get_state_rows,
+    parse_end_time,
 )
 from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
 
@@ -22,6 +23,7 @@ router = APIRouter()
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MARKETPLACE_ID = "A2VIGQ35RCS4UG"
+UAE_TZ = timezone(timedelta(hours=4))
 
 
 def _resolve_db_path(raw: Optional[str]) -> Path:
@@ -167,6 +169,49 @@ def _load_inventory_snapshot(
     return {"as_of": as_of, "items": items}
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_to_utc(value: Optional[str]) -> Optional[datetime]:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    elif candidate.endswith("+00") and not candidate.endswith("+00:00"):
+        candidate = candidate + ":00"
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _compute_as_of_fields(as_of_raw: Optional[str]) -> Dict[str, Optional[Any]]:
+    normalized = parse_end_time(as_of_raw) if as_of_raw else None
+    as_of_iso = normalized or as_of_raw
+    as_of_dt = _parse_iso_to_utc(as_of_iso)
+    as_of_uae = None
+    stale_hours = None
+    if as_of_dt is not None:
+        as_of_iso = as_of_dt.isoformat()
+        as_of_uae = as_of_dt.astimezone(UAE_TZ).strftime("%Y-%m-%d %H:%M UAE")
+        delta = _now_utc() - as_of_dt
+        stale_hours = round(max(delta.total_seconds() / 3600.0, 0.0), 2)
+    return {
+        "as_of": as_of_iso,
+        "as_of_uae": as_of_uae,
+        "stale_hours": stale_hours,
+    }
+
+
 @router.get("/api/vendor/rt-inventory")
 def get_vendor_rt_inventory(
     marketplace_id: str = Query(DEFAULT_MARKETPLACE_ID),
@@ -177,10 +222,18 @@ def get_vendor_rt_inventory(
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
     refresh_meta = get_refresh_metadata(marketplace_id, db_path=db_path)
+    raw_as_of = snapshot.get("as_of")
+    as_of_meta = _compute_as_of_fields(raw_as_of)
+    canonical_as_of = as_of_meta["as_of"] or raw_as_of
 
     return {
+        "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of": snapshot["as_of"],
+        "as_of_raw": raw_as_of,
+        "as_of": canonical_as_of,
+        "as_of_utc": canonical_as_of,
+        "as_of_uae": as_of_meta["as_of_uae"],
+        "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],
         "source": "cache",
         "status": "ok",
@@ -212,9 +265,17 @@ def refresh_vendor_rt_inventory(
         response.status_code = 202
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
+    raw_as_of = snapshot.get("as_of")
+    as_of_meta = _compute_as_of_fields(raw_as_of)
+    canonical_as_of = as_of_meta["as_of"] or raw_as_of
     return {
+        "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of": snapshot["as_of"],
+        "as_of_raw": raw_as_of,
+        "as_of": canonical_as_of,
+        "as_of_utc": canonical_as_of,
+        "as_of_uae": as_of_meta["as_of_uae"],
+        "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],
         "source": refresh_result.get("source", "cache"),
         "status": refresh_result["status"],
