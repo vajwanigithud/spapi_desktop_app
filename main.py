@@ -1434,7 +1434,11 @@ def _summarize_vendor_po_lines(lines: List[Dict[str, Any]]) -> Tuple[Dict[str, i
 
     for row in lines or []:
         ordered = _coerce_int(row.get("ordered_qty"))
-        accepted = _coerce_int(row.get("accepted_qty")) or ordered
+        accepted_raw = row.get("accepted_qty")
+        if accepted_raw is None:
+            accepted = ordered
+        else:
+            accepted = _coerce_int(accepted_raw)
         received = _coerce_int(row.get("received_qty"))
         cancelled = _coerce_int(row.get("cancelled_qty"))
         pending_raw = row.get("pending_qty")

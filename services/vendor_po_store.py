@@ -514,10 +514,11 @@ def update_header_totals_from_lines(
     if not po_number:
         return
     pending_total = _to_int(totals.get("pending_qty"))
+    cancelled_total = _to_int(totals.get("cancelled_qty"))
     if pending_total > 0:
         remaining_qty = pending_total
     else:
-        remaining_qty = max(0, _to_int(totals.get("accepted_qty")) - _to_int(totals.get("received_qty")))
+        remaining_qty = max(0, _to_int(totals.get("accepted_qty")) - _to_int(totals.get("received_qty")) - cancelled_total)
     line_items_count = _to_int(totals.get("line_items_count"))
     sql = f"""
         UPDATE {HEADER_TABLE}

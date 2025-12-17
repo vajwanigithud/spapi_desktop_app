@@ -47,6 +47,9 @@ def test_reconcile_endpoint_uses_pending_fallback(monkeypatch):
             if idx == 0:
                 entry["ordered_qty"] = 74
                 entry["accepted_qty"] = 51
+            if idx == 1:
+                entry["ordered_qty"] = 10
+                entry["accepted_qty"] = 0
             lines.append(entry)
         return lines
 
@@ -62,3 +65,5 @@ def test_reconcile_endpoint_uses_pending_fallback(monkeypatch):
         assert payload["vc_target_hint"]["cancelled_units"] == 0
         assert payload["header"]["po_items_count"] == 39
         assert payload["header"]["requested_units"] == 74
+        zero_line = next(line for line in payload["lines"] if line["accepted"] == 0)
+        assert zero_line["ordered"] == 10
