@@ -1382,7 +1382,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
         return JSONResponse(
-            {"ok": False, "error": "sync already running", "sync_state": state},
+            {"ok": False, "error": "Vendor PO sync already running", "sync_state": state},
             status_code=409,
         )
 
@@ -1439,7 +1439,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(defaul
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
         return JSONResponse(
-            {"ok": False, "error": "rebuild already running", "sync_state": state},
+            {"ok": False, "error": "Vendor PO rebuild already running", "sync_state": state},
             status_code=409,
         )
 

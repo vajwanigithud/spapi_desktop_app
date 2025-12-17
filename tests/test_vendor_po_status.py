@@ -180,7 +180,7 @@ def test_sync_conflict_when_lock_held(tmp_path, monkeypatch):
         assert resp_sync.status_code == 409
         data = resp_sync.json()
         assert data["ok"] is False
-        assert "sync already running" in data["error"]
+        assert "Vendor PO sync already running" in data["error"]
 
 
 def test_rebuild_conflict_when_lock_held(tmp_path, monkeypatch):
@@ -195,4 +195,4 @@ def test_rebuild_conflict_when_lock_held(tmp_path, monkeypatch):
         assert resp_rebuild.status_code == 409
         data = resp_rebuild.json()
         assert data["ok"] is False
-        assert "rebuild already running" in data["error"]
+        assert "Vendor PO rebuild already running" in data["error"]
