@@ -482,13 +482,13 @@ def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) ->
             "[VendorRtInventory][DB-FIRST] JSON snapshot read from %s to backfill empty SQLite state",
             path,
         )
-        fallback = _read_snapshot(path)
-        if fallback.get("generated_at"):
+        json_snapshot = _read_snapshot(path)
+        if json_snapshot.get("generated_at"):
             try:
-                _persist_snapshot_to_db(fallback)
+                _persist_snapshot_to_db(json_snapshot)
             except Exception as exc:
                 logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
-            return _decorate_snapshot(fallback)
+            return _decorate_snapshot(json_snapshot)
 
     return _decorate_snapshot(_blank_snapshot())
     if snapshot.get("generated_at"):
