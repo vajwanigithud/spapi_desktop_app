@@ -176,9 +176,10 @@ def _now_utc() -> datetime:
 def _parse_iso_to_utc(value: Optional[str]) -> Optional[datetime]:
     if value is None:
         return None
-    candidate = str(value).strip()
-    if not candidate:
+    text = str(value).strip()
+    if not text:
         return None
+    candidate = text
     if candidate.endswith("Z"):
         candidate = candidate[:-1] + "+00:00"
     elif candidate.endswith("+00") and not candidate.endswith("+00:00"):
@@ -222,16 +223,13 @@ def get_vendor_rt_inventory(
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
     refresh_meta = get_refresh_metadata(marketplace_id, db_path=db_path)
-    raw_as_of = snapshot.get("as_of")
-    as_of_meta = _compute_as_of_fields(raw_as_of)
-    canonical_as_of = as_of_meta["as_of"] or raw_as_of
+    as_of_meta = _compute_as_of_fields(snapshot.get("as_of"))
 
     return {
         "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of_raw": raw_as_of,
-        "as_of": canonical_as_of,
-        "as_of_utc": canonical_as_of,
+        "as_of": as_of_meta["as_of"],
+        "as_of_utc": as_of_meta["as_of"],
         "as_of_uae": as_of_meta["as_of_uae"],
         "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],
@@ -265,15 +263,12 @@ def refresh_vendor_rt_inventory(
         response.status_code = 202
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
-    raw_as_of = snapshot.get("as_of")
-    as_of_meta = _compute_as_of_fields(raw_as_of)
-    canonical_as_of = as_of_meta["as_of"] or raw_as_of
+    as_of_meta = _compute_as_of_fields(snapshot.get("as_of"))
     return {
         "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of_raw": raw_as_of,
-        "as_of": canonical_as_of,
-        "as_of_utc": canonical_as_of,
+        "as_of": as_of_meta["as_of"],
+        "as_of_utc": as_of_meta["as_of"],
         "as_of_uae": as_of_meta["as_of_uae"],
         "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],

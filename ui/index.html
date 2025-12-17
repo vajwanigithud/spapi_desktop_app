@@ -1024,7 +1024,11 @@
     let invQuickFilter = 'all';
     let invRealtimeRefreshInFlight = false;
     let inventoryAutoRefreshRequested = false;
+    let inventoryFetchInFlight = false;
+    let inventoryFetchPromise = null;
+    let lastInventoryFetchAt = 0;
     const INVENTORY_REFRESH_POLL_INTERVAL_MS = 15000;
+    const INVENTORY_FETCH_DEBOUNCE_MS = 60 * 1000;
     let inventoryRefreshPollTimer = null;
     let inventoryRefreshPollingActive = false;
     let catalogAsinMapCache = null;
@@ -4028,6 +4032,9 @@
     }
 
     function isVendorInventorySnapshotStale(meta) {
+      if (typeof meta?.stale_hours === 'number') {
+        return meta.stale_hours >= 24;
+      }
       if (!meta || !meta.as_of) {
         return false;
       }
@@ -4039,16 +4046,33 @@
       return ageMs > 24 * 60 * 60 * 1000;
     }
 
+    function formatInventoryAsOf(meta) {
+      if (!meta) return null;
+      if (meta.as_of_uae) {
+        return `${meta.as_of_uae}`;
+      }
+      if (meta.as_of) {
+        const asOfDate = new Date(meta.as_of);
+        if (!Number.isNaN(asOfDate.getTime())) {
+          return asOfDate.toLocaleString(undefined, { hour12: false });
+        }
+        return meta.as_of;
+      }
+      return null;
+    }
+
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
       if (!labelEl) return;
-      if (!meta || !meta.as_of) {
-        labelEl.textContent = 'As of —';
+      const label = formatInventoryAsOf(meta);
+      if (!label) {
+        labelEl.textContent = 'As of -';
         labelEl.removeAttribute('title');
         return;
       }
-      labelEl.textContent = `As of ${meta.as_of}`;
-      labelEl.title = `As of: ${meta.as_of} (UTC)`;
+      labelEl.textContent = `As of ${label}`;
+      const titleSuffix = meta?.as_of ? ` (UTC: ${meta.as_of})` : '';
+      labelEl.title = `As of: ${label}${titleSuffix}`;
     }
 
     function updateInventoryRefreshButtonState() {
@@ -4083,7 +4107,7 @@
       if (inventoryRefreshPollingActive) return;
       inventoryRefreshPollingActive = true;
       const poll = () => {
-        fetchVendorInventorySnapshot({ silent: true }).finally(() => {
+        fetchVendorInventorySnapshot({ silent: true, force: true }).finally(() => {
           if (!inventoryRefreshPollingActive) {
             inventoryRefreshPollTimer = null;
             return;
@@ -4133,20 +4157,29 @@
         renderVendorInventoryCurrentSubtab();
         return;
       }
-      fetchVendorInventorySnapshot();
+      fetchVendorInventorySnapshot({ force: forceReload });
     }
 
-    function fetchVendorInventorySnapshot({ silent = false } = {}) {
+    function fetchVendorInventorySnapshot({ silent = false, force = false } = {}) {
+      const now = Date.now();
+      if (inventoryFetchInFlight) {
+        return inventoryFetchPromise || Promise.resolve();
+      }
+      if (!force && now - lastInventoryFetchAt < INVENTORY_FETCH_DEBOUNCE_MS) {
+        return Promise.resolve();
+      }
       if (!silent) {
         setInventoryStatus('Loading real-time inventory…');
       }
-      return fetch('/api/vendor/rt-inventory')
+      inventoryFetchInFlight = true;
+      const request = fetch('/api/vendor/rt-inventory')
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
         })
         .then((data) => {
           applyVendorRtInventoryPayload(data, { silent });
+          lastInventoryFetchAt = Date.now();
         })
         .catch((err) => {
           console.error(err);
@@ -4156,14 +4189,26 @@
             vendorInventoryMeta = null;
             renderVendorInventoryCurrentSubtab();
           }
+        })
+        .finally(() => {
+          inventoryFetchInFlight = false;
+          inventoryFetchPromise = null;
+          lastInventoryFetchAt = Date.now();
         });
+      inventoryFetchPromise = request;
+      return request;
     }
 
     function applyVendorRtInventoryPayload(data, { silent = false } = {}) {
       vendorInventorySnapshot = Array.isArray(data?.items) ? data.items : [];
       const refreshMeta = data?.refresh || {};
+      const asOfUtc = data?.as_of_utc || data?.as_of || null;
+      const staleHours = Number.isFinite(data?.stale_hours) ? Number(data.stale_hours) : null;
       vendorInventoryMeta = {
-        as_of: data?.as_of || null,
+        as_of: asOfUtc,
+        as_of_utc: asOfUtc,
+        as_of_uae: data?.as_of_uae || null,
+        stale_hours: staleHours,
         marketplace_id: data?.marketplace_id || null,
         source: data?.source || null,
         status: data?.status || null,
@@ -4330,13 +4375,6 @@
       return '';
     }
 
-    function getSales30dValue(row) {
-      const value = row?.sales_30d;
-      if (value === null || value === undefined) return null;
-      const num = Number(value);
-      return Number.isFinite(num) ? num : null;
-    }
-
     function parseInventoryTimestamp(row) {
       if (!row) return null;
       const fields = [
@@ -4465,8 +4503,6 @@
 
       let rows = vendorInventorySnapshot || [];
       rows = dedupeInventoryRowsByAsin(rows);
-      rows = buildInventoryRowsUnionWithCatalog(rows);
-      rows = buildInventoryRowsUnionWithCatalog(rows);
 
       const getSellableUnits = (row) => {
         const candidates = [
@@ -4525,12 +4561,6 @@
         } else if (invSortColumn === 'sellable') {
           aVal = getSellableUnits(a);
           bVal = getSellableUnits(b);
-        } else if (invSortColumn === 'sales30d') {
-          const fallback = invSortDirection === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
-          const aRaw = getSales30dValue(a);
-          const bRaw = getSales30dValue(b);
-          aVal = Number.isFinite(aRaw) ? aRaw : fallback;
-          bVal = Number.isFinite(bRaw) ? bRaw : fallback;
         }
 
         if (typeof aVal === 'string') {
@@ -4559,14 +4589,11 @@
           <th class="inv-image-col">Image</th>
           <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
           <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
-          <th onclick="sortInventoryTableBy('sales30d')">Last 30d Sales ${arrow('sales30d')}</th>
         </tr>
       `;
 
       // Accumulators for totals
       let totalSellable = 0;
-      let totalSales30d = 0;
-      let countedSales30d = 0;
 
       // Build rows HTML
       let bodyHtml = '';
@@ -4581,14 +4608,7 @@
 
         const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
         const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
-        const sales30dValue = getSales30dValue(r);
-        const sales30dText = sales30dValue === null ? '—' : sales30dValue;
-
         totalSellable += sellable;
-        if (sales30dValue !== null) {
-          totalSales30d += sales30dValue;
-          countedSales30d += 1;
-        }
 
         // Color coding
         let rowClass = '';
@@ -4614,7 +4634,6 @@
             <td class="inv-image-col">${imgHtml}</td>
             <td class="inv-title-col">${escapeHtml(title)}</td>
             <td class="text-right">${sellable}</td>
-            <td class="text-right">${sales30dText}</td>
           </tr>
         `;
       });
@@ -4622,12 +4641,10 @@
       bodyEl.innerHTML = bodyHtml;
 
       // Footer totals
-      const sales30dFooter = countedSales30d ? totalSales30d : '';
       const footerRow = document.createElement('tr');
       footerRow.innerHTML = `
         <td colspan="3"><strong>Totals (${rows.length} ASINs)</strong></td>
         <td class="text-right"><strong>${totalSellable}</strong></td>
-        <td class="text-right"><strong>${sales30dFooter}</strong></td>
       `;
       footEl.appendChild(footerRow);
     }
@@ -4674,7 +4691,6 @@
         'ASIN',
         'Title',
         'SellableUnits',
-        'Sales30d',
       ];
 
       const lines = [];
@@ -4685,15 +4701,10 @@
         const title = getInventoryDisplayTitle(r).replace(/"/g, '""');
 
         const sellable = resolveSellable(r);
-        const sales30dValue = getSales30dValue(r);
-        const sales30d = Number.isFinite(sales30dValue) ? sales30dValue : '';
-        const imageUrl = getInventoryImageUrl(r).replace(/"/g, '""');
-
         const row = [
           asin,
           `"${title}"`,
           sellable,
-          sales30d,
         ];
 
         lines.push(row.join(','));
@@ -5311,6 +5322,20 @@
         refreshVendorPoStatus();
       }
     }
+
+    function handleInventoryTabFocus() {
+      if (activeTab !== "inventory") return;
+      if (!vendorInventorySnapshot || vendorInventorySnapshot.length === 0) {
+        loadVendorInventorySnapshotIfNeeded(true);
+        return;
+      }
+      updateInventoryFreshnessUi(vendorInventoryMeta);
+      if (Date.now() - lastInventoryFetchAt > INVENTORY_FETCH_DEBOUNCE_MS) {
+        fetchVendorInventorySnapshot({ silent: true });
+      }
+    }
+
+    window.addEventListener("focus", handleInventoryTabFocus);
 
     initCatalogColumnResizing();
     showTab("pos");
