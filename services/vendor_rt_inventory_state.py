@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from services.db import get_db_connection
 from services.utils_barcodes import is_asin
 
 LOGGER = logging.getLogger(__name__)
+REFRESH_STATE_KEY_PREFIX = "vendor_rt_inventory_refresh_state"
 
 
 @contextmanager
@@ -417,3 +419,75 @@ def get_state_max_end_time(
     if not row or not row["max_end"]:
         return None
     return parse_end_time(row["max_end"])
+
+
+def _ensure_app_kv_table(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
+    with _connection(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_kv_store (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def _refresh_kv_key(marketplace_id: str) -> str:
+    suffix = (marketplace_id or "default").strip() or "default"
+    return f"{REFRESH_STATE_KEY_PREFIX}:{suffix}"
+
+
+def _default_refresh_meta() -> Dict[str, Any]:
+    return {
+        "last_refresh_started_at": None,
+        "last_refresh_finished_at": None,
+        "last_refresh_status": None,
+        "last_error": None,
+        "in_progress": False,
+    }
+
+
+def get_refresh_metadata(
+    marketplace_id: str,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> Dict[str, Any]:
+    _ensure_app_kv_table(db_path)
+    key = _refresh_kv_key(marketplace_id)
+    with _connection(db_path) as conn:
+        row = conn.execute("SELECT value FROM app_kv_store WHERE key = ?", (key,)).fetchone()
+    defaults = _default_refresh_meta()
+    if not row or not row["value"]:
+        return defaults
+    try:
+        payload = json.loads(row["value"])
+        if isinstance(payload, dict):
+            defaults.update({k: payload.get(k) for k in defaults})
+    except Exception:
+        LOGGER.warning("Failed to parse refresh metadata for %s; resetting", key)
+    defaults["in_progress"] = bool(defaults.get("in_progress"))
+    return defaults
+
+
+def set_refresh_metadata(
+    marketplace_id: str,
+    metadata: Dict[str, Any],
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> None:
+    _ensure_app_kv_table(db_path)
+    key = _refresh_kv_key(marketplace_id)
+    payload = _default_refresh_meta()
+    payload.update({k: metadata.get(k) for k in payload})
+    payload["in_progress"] = bool(payload.get("in_progress"))
+    serialized = json.dumps(payload)
+    with _connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO app_kv_store (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, serialized),
+        )
+        conn.commit()

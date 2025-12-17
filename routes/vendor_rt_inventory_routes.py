@@ -6,16 +6,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Response
 
 from services.vendor_inventory_realtime import SALES_30D_LOOKBACK_DAYS
 from services.vendor_rt_inventory_state import (
     DEFAULT_CATALOG_DB_PATH,
     get_checkpoint,
+    get_refresh_metadata,
     get_state_max_end_time,
     get_state_rows,
 )
-from services.vendor_rt_inventory_sync import sync_vendor_rt_inventory
+from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
 
 router = APIRouter()
 LOGGER = logging.getLogger(__name__)
@@ -153,6 +154,19 @@ def _decorate_inventory_items(
     return items
 
 
+def _load_inventory_snapshot(
+    marketplace_id: str,
+    limit: Optional[int],
+    db_path: Path,
+) -> Dict[str, Any]:
+    as_of = get_checkpoint(marketplace_id, db_path=db_path)
+    if not as_of:
+        as_of = get_state_max_end_time(marketplace_id, db_path=db_path)
+    items = get_state_rows(marketplace_id, limit, db_path)
+    _decorate_inventory_items(items, marketplace_id, db_path)
+    return {"as_of": as_of, "items": items}
+
+
 @router.get("/api/vendor/rt-inventory")
 def get_vendor_rt_inventory(
     marketplace_id: str = Query(DEFAULT_MARKETPLACE_ID),
@@ -161,22 +175,23 @@ def get_vendor_rt_inventory(
 ) -> Dict[str, Any]:
     db_path = _resolve_db_path(db)
 
-    as_of = get_checkpoint(marketplace_id, db_path=db_path)
-    if not as_of:
-        as_of = get_state_max_end_time(marketplace_id, db_path=db_path)
-
-    items = get_state_rows(marketplace_id, limit, db_path)
-    _decorate_inventory_items(items, marketplace_id, db_path)
+    snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
+    refresh_meta = get_refresh_metadata(marketplace_id, db_path=db_path)
 
     return {
         "marketplace_id": marketplace_id,
-        "as_of": as_of,
-        "items": items,
+        "as_of": snapshot["as_of"],
+        "items": snapshot["items"],
+        "source": "cache",
+        "status": "ok",
+        "refresh_in_progress": bool(refresh_meta.get("in_progress")),
+        "refresh": refresh_meta,
     }
 
 
 @router.post("/api/vendor/rt-inventory/refresh")
 def refresh_vendor_rt_inventory(
+    response: Response,
     marketplace_id: str = Query(DEFAULT_MARKETPLACE_ID),
     hours: int = Query(2, ge=1, le=24),
     limit: Optional[int] = Query(None, ge=1),
@@ -184,25 +199,27 @@ def refresh_vendor_rt_inventory(
 ) -> Dict[str, Any]:
     db_path = _resolve_db_path(db)
     try:
-        result = sync_vendor_rt_inventory(
+        refresh_result = refresh_vendor_rt_inventory_singleflight(
             marketplace_id,
             db_path=db_path,
             hours=hours,
-            include_items=False,
         )
     except Exception as exc:
         LOGGER.error("Failed to refresh vendor RT inventory: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to refresh vendor RT inventory") from exc
 
-    as_of = result.get("as_of")
-    if not as_of:
-        as_of = get_state_max_end_time(marketplace_id, db_path=db_path)
-    items = get_state_rows(marketplace_id, limit, db_path)
-    _decorate_inventory_items(items, marketplace_id, db_path)
+    if refresh_result["status"] == "refresh_in_progress":
+        response.status_code = 202
+
+    snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
     return {
         "marketplace_id": marketplace_id,
-        "as_of": as_of,
-        "items": items,
+        "as_of": snapshot["as_of"],
+        "items": snapshot["items"],
+        "source": refresh_result.get("source", "cache"),
+        "status": refresh_result["status"],
+        "refresh_in_progress": bool(refresh_result["refresh"].get("in_progress")),
+        "refresh": refresh_result["refresh"],
     }
 
 
