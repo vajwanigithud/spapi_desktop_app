@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import main
+from services import vendor_realtime_sales as vendor_rt
 from services import vendor_rt_sales_ledger as ledger
 
 
@@ -199,3 +201,68 @@ def test_worker_lock_acquire_refresh_release(tmp_path, monkeypatch):
     assert ledger.refresh_worker_lock("A1", "owner2", ttl_seconds=5)
     ledger.release_worker_lock("A1", "owner2")
     assert ledger.acquire_worker_lock("A1", "owner3", ttl_seconds=5)
+
+
+def test_auto_sync_skips_worker_lock_when_in_cooldown(monkeypatch):
+    fake_now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(main, "MARKETPLACE_IDS", ["TEST-MKT"])
+    main._rt_sales_auto_sync_stop = False
+
+    acquire_called = False
+
+    def _fake_acquire(*args, **kwargs):
+        nonlocal acquire_called
+        acquire_called = True
+        return True
+
+    monkeypatch.setattr(main, "acquire_rt_sales_worker_lock", _fake_acquire)
+    monkeypatch.setattr(main.time, "sleep", lambda _: setattr(main, "_rt_sales_auto_sync_stop", True))
+    monkeypatch.setattr(vendor_rt, "get_safe_now_utc", lambda: fake_now)
+    monkeypatch.setattr(vendor_rt, "is_in_quota_cooldown", lambda _: True)
+
+    main.vendor_rt_sales_auto_sync_loop()
+    assert acquire_called is False
+    main._rt_sales_auto_sync_stop = False
+
+
+def test_auto_sync_releases_backfill_on_exception(monkeypatch):
+    fake_now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(main, "MARKETPLACE_IDS", ["TEST-MKT"])
+    main._rt_sales_auto_sync_stop = False
+
+    acquire_calls = []
+    release_calls = []
+
+    def _fake_acquire(*args, **kwargs):
+        acquire_calls.append(args)
+        return True
+
+    def _fake_release(*args, **kwargs):
+        release_calls.append(args)
+
+    def _fake_refresh(*args, **kwargs):
+        return True
+
+    @contextlib.contextmanager
+    def _fake_conn():
+        yield object()
+
+    monkeypatch.setattr("services.db.get_db_connection", _fake_conn)
+    monkeypatch.setattr(main, "acquire_rt_sales_worker_lock", _fake_acquire)
+    monkeypatch.setattr(main, "release_rt_sales_worker_lock", _fake_release)
+    monkeypatch.setattr(main, "refresh_rt_sales_worker_lock", _fake_refresh)
+    monkeypatch.setattr(main.time, "sleep", lambda _: setattr(main, "_rt_sales_auto_sync_stop", True))
+    monkeypatch.setattr(vendor_rt, "get_safe_now_utc", lambda: fake_now)
+    monkeypatch.setattr(vendor_rt, "is_in_quota_cooldown", lambda _: False)
+    monkeypatch.setattr(vendor_rt, "backfill_realtime_sales_for_gap", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(vendor_rt, "get_last_ingested_end_utc", lambda conn, marketplace_id: fake_now - timedelta(hours=1))
+    monkeypatch.setattr(vendor_rt, "ENABLE_VENDOR_RT_SALES_DAILY_AUDIT", False, raising=False)
+    monkeypatch.setattr(vendor_rt, "ENABLE_VENDOR_RT_SALES_WEEKLY_AUDIT", False, raising=False)
+
+    vendor_rt.end_backfill()
+    main.vendor_rt_sales_auto_sync_loop()
+
+    assert len(acquire_calls) == 1
+    assert len(release_calls) == 1
+    assert vendor_rt.is_backfill_in_progress() is False
+    main._rt_sales_auto_sync_stop = False
