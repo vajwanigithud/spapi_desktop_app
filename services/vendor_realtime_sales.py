@@ -40,6 +40,16 @@ from services.spapi_reports import (
     poll_vendor_report,
     request_vendor_report,
 )
+from services.vendor_rt_sales_ledger import (
+    claim_next_missing_hour as ledger_claim_next_missing_hour,
+    compute_required_hours as ledger_compute_required_hours,
+    ensure_hours_exist as ledger_ensure_hours_exist,
+    iso_hour_floor as ledger_iso_hour_floor,
+    mark_applied as ledger_mark_applied,
+    mark_downloaded as ledger_mark_downloaded,
+    mark_failed as ledger_mark_failed,
+    set_report_id as ledger_set_report_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,15 +277,7 @@ MAX_HOURLY_REPORTS_PER_FILL_DAY = int(
 
 # Hour ledger configuration
 LEDGER_SAFETY_LAG_MINUTES = int(os.getenv("VENDOR_RT_LEDGER_SAFETY_LAG_MINUTES", "90"))
-LEDGER_COOLDOWN_MINUTES = int(os.getenv("VENDOR_RT_LEDGER_COOLDOWN_MINUTES", "45"))
-LEDGER_MAX_HOURS_PER_CYCLE = int(os.getenv("VENDOR_RT_LEDGER_MAX_HOURS", "4"))
 LEDGER_DEFAULT_BACKFILL_HOURS = int(os.getenv("VENDOR_RT_LEDGER_DEFAULT_BACKFILL_HOURS", "24"))
-LEDGER_TABLE_NAME = "vendor_rt_sales_hour_ledger"
-LEDGER_STATUS_MISSING = "MISSING"
-LEDGER_STATUS_REQUESTED = "REQUESTED"
-LEDGER_STATUS_DOWNLOADED = "DOWNLOADED"
-LEDGER_STATUS_APPLIED = "APPLIED"
-LEDGER_STATUS_FAILED = "FAILED"
 
 # ====================================================================
 # AUDIT CONFIGURATION
@@ -849,98 +851,50 @@ def _ledger_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_vendor_rt_sales_hour_ledger_table() -> None:
-    sql = f"""
-    CREATE TABLE IF NOT EXISTS {LEDGER_TABLE_NAME} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        marketplace_id TEXT NOT NULL,
-        hour_start_utc TEXT NOT NULL,
-        status TEXT NOT NULL,
-        report_id TEXT,
-        requested_at TEXT,
-        downloaded_at TEXT,
-        applied_at TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT,
-        cooldown_until TEXT,
-        UNIQUE(marketplace_id, hour_start_utc)
-    )
-    """
-    execute_write(sql)
-    execute_write(
-        f"""
-        CREATE INDEX IF NOT EXISTS idx_rt_sales_hour_status
-        ON {LEDGER_TABLE_NAME} (marketplace_id, status, hour_start_utc)
-        """
-    )
+def _ledger_safe_cutoff(now_utc: Optional[datetime] = None) -> datetime:
+    now_utc = now_utc or _ledger_now()
+    return _normalize_utc_datetime(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
 
 
-def _ledger_insert_range(conn, marketplace_id: str, start_hour: datetime, end_hour: datetime) -> int:
-    if end_hour <= start_hour:
-        return 0
-    inserted = 0
-    current = _floor_to_hour(start_hour)
-    end_hour = _floor_to_hour(end_hour)
-    while current < end_hour:
-        hour_iso = _utc_iso(current)
-        cur = conn.execute(
-            f"""
-            INSERT INTO {LEDGER_TABLE_NAME} (marketplace_id, hour_start_utc, status, attempt_count)
-            VALUES (?, ?, ?, 0)
-            ON CONFLICT(marketplace_id, hour_start_utc) DO NOTHING
-            """,
-            (marketplace_id, hour_iso, LEDGER_STATUS_MISSING),
-        )
-        if cur.rowcount:
-            inserted += 1
+def _hour_iso_range(start_dt: datetime, end_dt: datetime) -> List[str]:
+    hours: List[str] = []
+    current = _floor_to_hour(start_dt)
+    end_dt = _floor_to_hour(end_dt)
+    while current < end_dt:
+        hours.append(current.isoformat())
         current += timedelta(hours=1)
-    return inserted
+    return hours
 
 
 def enqueue_vendor_rt_sales_hours(marketplace_id: str, start_utc: datetime, end_utc: datetime) -> int:
     """
-    Insert ledger rows for the provided UTC range (hour granularity).
+    Ensure ledger rows exist for the provided UTC range (hour granularity).
     """
-    ensure_vendor_rt_sales_hour_ledger_table()
     normalized_start = _floor_to_hour(start_utc)
     normalized_end = _floor_to_hour(end_utc)
     if normalized_end <= normalized_start:
         return 0
-    with get_db_connection() as conn:
-        inserted = _ledger_insert_range(conn, marketplace_id, normalized_start, normalized_end)
-        conn.commit()
+    hours = _hour_iso_range(normalized_start, normalized_end)
+    inserted = ledger_ensure_hours_exist(marketplace_id, hours)
     if inserted:
         logger.info(
             "[RtSalesLedger] plan marketplace=%s hours=%d window=[%s -> %s)",
             marketplace_id,
             inserted,
-            _utc_iso(normalized_start),
-            _utc_iso(normalized_end),
+            normalized_start.isoformat(),
+            normalized_end.isoformat(),
         )
     return inserted
 
 
 def enqueue_vendor_rt_sales_specific_hours(marketplace_id: str, hour_starts_utc: List[datetime]) -> int:
     """
-    Insert ledger rows for specific hour start timestamps.
+    Ensure ledger rows exist for specific hour start timestamps.
     """
-    ensure_vendor_rt_sales_hour_ledger_table()
     if not hour_starts_utc:
         return 0
-    with get_db_connection() as conn:
-        inserted = 0
-        for dt in hour_starts_utc:
-            cur = conn.execute(
-                f"""
-                INSERT INTO {LEDGER_TABLE_NAME} (marketplace_id, hour_start_utc, status, attempt_count)
-                VALUES (?, ?, ?, 0)
-                ON CONFLICT(marketplace_id, hour_start_utc) DO NOTHING
-                """,
-                (marketplace_id, _utc_iso(dt), LEDGER_STATUS_MISSING),
-            )
-            if cur.rowcount:
-                inserted += 1
-        conn.commit()
+    iso_hours = [ledger_iso_hour_floor(dt) for dt in hour_starts_utc]
+    inserted = ledger_ensure_hours_exist(marketplace_id, iso_hours)
     if inserted:
         logger.info(
             "[RtSalesLedger] plan marketplace=%s hours=%d (manual enqueue)",
@@ -948,203 +902,6 @@ def enqueue_vendor_rt_sales_specific_hours(marketplace_id: str, hour_starts_utc:
             inserted,
         )
     return inserted
-
-
-def _ledger_seed_until(marketplace_id: str, target_end: datetime) -> None:
-    """
-    Ensure ledger rows exist up to target_end.
-    """
-    ensure_vendor_rt_sales_hour_ledger_table()
-    normalized_end = _floor_to_hour(target_end)
-    with get_db_connection() as conn:
-        last_row = conn.execute(
-            f"""
-            SELECT hour_start_utc FROM {LEDGER_TABLE_NAME}
-            WHERE marketplace_id = ?
-            ORDER BY hour_start_utc DESC
-            LIMIT 1
-            """,
-            (marketplace_id,),
-        ).fetchone()
-        if last_row and last_row["hour_start_utc"]:
-            start_hour = _parse_iso_to_utc(last_row["hour_start_utc"]) + timedelta(hours=1)
-        else:
-            state_row = conn.execute(
-                """
-                SELECT last_ingested_end_utc FROM vendor_rt_sales_state
-                WHERE marketplace_id = ?
-                """,
-                (marketplace_id,),
-            ).fetchone()
-            if state_row and state_row["last_ingested_end_utc"]:
-                start_hour = _parse_iso_to_utc(state_row["last_ingested_end_utc"])
-            else:
-                start_hour = normalized_end - timedelta(hours=LEDGER_DEFAULT_BACKFILL_HOURS)
-        inserted = _ledger_insert_range(conn, marketplace_id, start_hour, normalized_end)
-        if inserted:
-            logger.info(
-                "[RtSalesLedger] plan marketplace=%s hours=%d seed-start=%s seed-end=%s",
-                marketplace_id,
-                inserted,
-                _utc_iso(_floor_to_hour(start_hour)),
-                _utc_iso(normalized_end),
-            )
-        conn.commit()
-
-
-def _ledger_mark_requested(marketplace_id: str, hour_iso: str) -> bool:
-    ensure_vendor_rt_sales_hour_ledger_table()
-    now_iso = _utc_iso(_ledger_now())
-    with get_db_connection() as conn:
-        cur = conn.execute(
-            f"""
-            UPDATE {LEDGER_TABLE_NAME}
-            SET status = ?, requested_at = ?, attempt_count = attempt_count + 1,
-                last_error = NULL, cooldown_until = NULL, report_id = NULL
-            WHERE marketplace_id = ?
-              AND hour_start_utc = ?
-              AND status IN (?, ?)
-            """,
-            (
-                LEDGER_STATUS_REQUESTED,
-                now_iso,
-                marketplace_id,
-                hour_iso,
-                LEDGER_STATUS_MISSING,
-                LEDGER_STATUS_FAILED,
-            ),
-        )
-        conn.commit()
-        return cur.rowcount == 1
-
-
-def _ledger_set_report_id(marketplace_id: str, hour_iso: str, report_id: str) -> None:
-    with get_db_connection() as conn:
-        conn.execute(
-            f"""
-            UPDATE {LEDGER_TABLE_NAME}
-            SET report_id = ?
-            WHERE marketplace_id = ? AND hour_start_utc = ?
-            """,
-            (report_id, marketplace_id, hour_iso),
-        )
-        conn.commit()
-
-
-def _ledger_mark_downloaded(marketplace_id: str, hour_iso: str) -> None:
-    now_iso = _utc_iso(_ledger_now())
-    with get_db_connection() as conn:
-        conn.execute(
-            f"""
-            UPDATE {LEDGER_TABLE_NAME}
-            SET status = ?, downloaded_at = ?
-            WHERE marketplace_id = ? AND hour_start_utc = ?
-            """,
-            (LEDGER_STATUS_DOWNLOADED, now_iso, marketplace_id, hour_iso),
-        )
-        conn.commit()
-
-
-def _ledger_mark_applied(marketplace_id: str, hour_iso: str) -> None:
-    now_iso = _utc_iso(_ledger_now())
-    with get_db_connection() as conn:
-        conn.execute(
-            f"""
-            UPDATE {LEDGER_TABLE_NAME}
-            SET status = ?, applied_at = ?, last_error = NULL, cooldown_until = NULL
-            WHERE marketplace_id = ? AND hour_start_utc = ?
-            """,
-            (LEDGER_STATUS_APPLIED, now_iso, marketplace_id, hour_iso),
-        )
-        conn.commit()
-
-
-def _ledger_mark_failed(
-    marketplace_id: str,
-    hour_iso: str,
-    error_message: str,
-    *,
-    cooldown_minutes: int = LEDGER_COOLDOWN_MINUTES,
-) -> None:
-    cooldown_until = _ledger_now() + timedelta(minutes=cooldown_minutes)
-    with get_db_connection() as conn:
-        conn.execute(
-            f"""
-            UPDATE {LEDGER_TABLE_NAME}
-            SET status = ?, last_error = ?, cooldown_until = ?
-            WHERE marketplace_id = ? AND hour_start_utc = ?
-            """,
-            (
-                LEDGER_STATUS_FAILED,
-                (error_message or "")[:500],
-                _utc_iso(cooldown_until),
-                marketplace_id,
-                hour_iso,
-            ),
-        )
-        conn.commit()
-    logger.warning(
-        "[RtSalesLedger] fail hour=%s err=%s cooldown_until=%s",
-        hour_iso,
-        error_message,
-        _utc_iso(cooldown_until),
-    )
-
-
-def _ledger_safe_cutoff(now_utc: Optional[datetime] = None) -> datetime:
-    now_utc = now_utc or _ledger_now()
-    return _normalize_utc_datetime(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
-
-
-def _ledger_plan_hours(
-    marketplace_id: str,
-    *,
-    max_hours: int,
-    now_utc: Optional[datetime] = None,
-) -> List[str]:
-    ensure_vendor_rt_sales_hour_ledger_table()
-    now_utc = now_utc or _ledger_now()
-    safe_cutoff = _ledger_safe_cutoff(now_utc)
-    _ledger_seed_until(marketplace_id, safe_cutoff)
-    cutoff_iso = _utc_iso(safe_cutoff)
-    with get_db_connection() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT hour_start_utc, status, cooldown_until
-            FROM {LEDGER_TABLE_NAME}
-            WHERE marketplace_id = ?
-              AND hour_start_utc < ?
-              AND status IN (?, ?)
-            ORDER BY hour_start_utc ASC
-            """,
-            (
-                marketplace_id,
-                cutoff_iso,
-                LEDGER_STATUS_MISSING,
-                LEDGER_STATUS_FAILED,
-            ),
-        ).fetchall()
-    planned: List[str] = []
-    for row in rows:
-        if len(planned) >= max_hours:
-            break
-        status = row["status"]
-        cooldown_until = row["cooldown_until"]
-        if status == LEDGER_STATUS_FAILED and cooldown_until:
-            try:
-                cooldown_dt = _parse_iso_to_utc(cooldown_until)
-            except Exception:
-                cooldown_dt = None
-            if cooldown_dt and cooldown_dt > now_utc:
-                logger.info(
-                    "[RtSalesLedger] skip hour=%s status=%s cooldown_until=%s",
-                    row["hour_start_utc"],
-                    status,
-                    cooldown_until,
-                )
-                continue
-        planned.append(row["hour_start_utc"])
-    return planned
 
 
 def _execute_vendor_rt_sales_report(
@@ -1159,82 +916,63 @@ def _execute_vendor_rt_sales_report(
     normalized_end = _normalize_utc_datetime(end_utc)
     hour_label = ledger_hour_iso or f"{normalized_start.isoformat()}->{normalized_end.isoformat()}"
 
-    try:
-        _ensure_spapi_call_allowed(f"ledger_hour {hour_label}")
+    _ensure_spapi_call_allowed(f"ledger_hour {hour_label}")
+    logger.info(
+        "%s Requesting RT report for [%s, %s) (%s)",
+        LOG_PREFIX_API,
+        normalized_start.isoformat(),
+        normalized_end.isoformat(),
+        marketplace_id,
+    )
+    report_id = request_vendor_report(
+        report_type="GET_VENDOR_REAL_TIME_SALES_REPORT",
+        data_start=normalized_start,
+        data_end=normalized_end,
+        extra_options={"currencyCode": currency_code},
+    )
+    if ledger_hour_iso:
+        ledger_set_report_id(marketplace_id, ledger_hour_iso, report_id)
+    report_data = poll_vendor_report(report_id)
+    document_id = report_data.get("reportDocumentId")
+    if not document_id:
+        raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
+    content, _ = download_vendor_report_document(document_id)
+    if ledger_hour_iso:
+        ledger_mark_downloaded(marketplace_id, ledger_hour_iso, report_id)
+    if isinstance(content, bytes):
+        payload = json.loads(content.decode("utf-8"))
+    elif isinstance(content, str):
+        payload = json.loads(content)
+    else:
+        payload = content
+
+    summary = ingest_realtime_sales_report(
+        payload,
+        marketplace_id=marketplace_id,
+        currency_code=currency_code,
+    )
+    _record_audit_hours_for_window(
+        normalized_start,
+        normalized_end,
+        marketplace_id,
+        summary.get("hour_starts", []),
+    )
+    result = {
+        "report_id": report_id,
+        "start_utc": _utc_iso(normalized_start),
+        "end_utc": _utc_iso(normalized_end),
+        "marketplace_id": marketplace_id,
+        "summary": summary,
+    }
+
+    if ledger_hour_iso:
+        ledger_mark_applied(marketplace_id, ledger_hour_iso)
         logger.info(
-            "%s Requesting RT report for [%s, %s) (%s)",
-            LOG_PREFIX_API,
-            normalized_start.isoformat(),
-            normalized_end.isoformat(),
-            marketplace_id,
+            "[RtSalesLedger] apply hour=%s rows=%s",
+            ledger_hour_iso,
+            summary.get("rows", 0),
         )
-        report_id = request_vendor_report(
-            report_type="GET_VENDOR_REAL_TIME_SALES_REPORT",
-            data_start=normalized_start,
-            data_end=normalized_end,
-            extra_options={"currencyCode": currency_code},
-        )
-        if ledger_hour_iso:
-            _ledger_set_report_id(marketplace_id, ledger_hour_iso, report_id)
-            logger.info(
-                "[RtSalesLedger] request hour=%s status=%s report_id=%s",
-                ledger_hour_iso,
-                LEDGER_STATUS_REQUESTED,
-                report_id,
-            )
-        report_data = poll_vendor_report(report_id)
-        document_id = report_data.get("reportDocumentId")
-        if not document_id:
-            raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
-        content, _ = download_vendor_report_document(document_id)
-        if ledger_hour_iso:
-            _ledger_mark_downloaded(marketplace_id, ledger_hour_iso)
-        if isinstance(content, bytes):
-            payload = json.loads(content.decode("utf-8"))
-        elif isinstance(content, str):
-            payload = json.loads(content)
-        else:
-            payload = content
-
-        summary = ingest_realtime_sales_report(
-            payload,
-            marketplace_id=marketplace_id,
-            currency_code=currency_code,
-        )
-        _record_audit_hours_for_window(
-            normalized_start,
-            normalized_end,
-            marketplace_id,
-            summary.get("hour_starts", []),
-        )
-        result = {
-            "report_id": report_id,
-            "start_utc": _utc_iso(normalized_start),
-            "end_utc": _utc_iso(normalized_end),
-            "marketplace_id": marketplace_id,
-            "summary": summary,
-        }
-
-        if ledger_hour_iso:
-            _ledger_mark_applied(marketplace_id, ledger_hour_iso)
-            logger.info(
-                "[RtSalesLedger] apply hour=%s rows=%s",
-                ledger_hour_iso,
-                summary.get("rows", 0),
-            )
-        return result
-    except VendorRtCooldownBlock as exc:
-        if ledger_hour_iso:
-            _ledger_mark_failed(marketplace_id, ledger_hour_iso, str(exc))
-        raise
-    except SpApiQuotaError as exc:
-        if ledger_hour_iso:
-            _ledger_mark_failed(marketplace_id, ledger_hour_iso, str(exc))
-        raise
-    except Exception as exc:
-        if ledger_hour_iso:
-            _ledger_mark_failed(marketplace_id, ledger_hour_iso, str(exc))
-        raise
+    return result
 
 
 def process_rt_sales_hour_ledger(
@@ -1244,75 +982,64 @@ def process_rt_sales_hour_ledger(
     now_utc: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
-    Process queued ledger hours by requesting SP-API reports sequentially.
+    Process a single ledger hour by requesting the matching SP-API report.
     """
-    if max_hours is None:
-        max_hours = LEDGER_MAX_HOURS_PER_CYCLE
+    _ = max_hours  # legacy parameter; ledger runner now processes one hour per invocation
     now_utc = now_utc or _ledger_now()
-    hours = _ledger_plan_hours(
-        marketplace_id,
-        max_hours=max_hours,
-        now_utc=now_utc,
-    )
-    if not hours:
-        return {"requested": 0, "applied": 0, "rows": 0, "hours": []}
+    safe_end = _ledger_safe_cutoff(now_utc)
+    hours = ledger_compute_required_hours(safe_end, LEDGER_DEFAULT_BACKFILL_HOURS)
+    ledger_ensure_hours_exist(marketplace_id, hours)
 
-    requested = 0
-    applied = 0
-    total_rows = 0
-    total_asins = 0
-    total_summary_hours = 0
-    processed_hours: List[str] = []
-
-    for hour_iso in hours:
-        hour_start = _parse_iso_to_utc(hour_iso)
-        if not _ledger_mark_requested(marketplace_id, hour_iso):
-            logger.info(
-                "[RtSalesLedger] skip hour=%s status changed before request",
-                hour_iso,
-            )
-            continue
-        try:
-            result = _execute_vendor_rt_sales_report(
-                hour_start,
-                hour_start + timedelta(hours=1),
-                marketplace_id,
-                ledger_hour_iso=hour_iso,
-            )
-            requested += 1
-            applied += 1
-            processed_hours.append(hour_iso)
-            summary = result.get("summary") if isinstance(result, dict) else {}
-            if summary:
-                total_rows += summary.get("rows", 0)
-                total_asins += summary.get("asins", 0)
-                total_summary_hours += summary.get("hours", 0)
-        except VendorRtCooldownBlock:
-            break
-        except SpApiQuotaError as exc:
-            start_quota_cooldown(_ledger_now())
-            logger.error(
-                "[RtSalesLedger] quota stop hour=%s error=%s",
-                hour_iso,
-                exc,
-            )
-            raise
-        except Exception as exc:
-            logger.error(
-                "[RtSalesLedger] fail hour=%s err=%s",
-                hour_iso,
-                exc,
-            )
-            continue
-
-    return {
-        "requested": requested,
-        "applied": applied,
-        "rows": total_rows,
-        "asins": total_asins,
-        "report_hours": total_summary_hours,
-        "hours": processed_hours,
+    summary = {
+        "ok": True,
+        "requested": 0,
+        "applied": 0,
+        "rows": 0,
+        "asins": 0,
+        "report_hours": 0,
+        "hours": [],
     }
+
+    claimed = ledger_claim_next_missing_hour(marketplace_id, now_utc)
+    if not claimed:
+        summary["message"] = "no work"
+        return summary
+
+    hour_iso = claimed.get("hour_utc")
+    attempt_count = int(claimed.get("attempt_count") or 0)
+    cooldown_minutes = min(60, 5 * max(1, attempt_count))
+    start_dt = _parse_iso_to_utc(hour_iso)
+    end_dt = start_dt + timedelta(hours=1)
+
+    try:
+        result = _execute_vendor_rt_sales_report(
+            start_dt,
+            end_dt,
+            marketplace_id,
+            ledger_hour_iso=hour_iso,
+        )
+        summary["requested"] = 1
+        summary["applied"] = 1
+        summary["hours"] = [hour_iso]
+        if isinstance(result, dict):
+            payload = result.get("summary") or {}
+            summary["rows"] = payload.get("rows", 0)
+            summary["asins"] = payload.get("asins", 0)
+            summary["report_hours"] = payload.get("hours", 0)
+        return summary
+    except VendorRtCooldownBlock as exc:
+        ledger_mark_failed(marketplace_id, hour_iso, str(exc), cooldown_minutes=cooldown_minutes)
+        summary.update({"ok": False, "error": str(exc), "error_type": "cooldown"})
+        return summary
+    except SpApiQuotaError as exc:
+        start_quota_cooldown(now_utc)
+        ledger_mark_failed(marketplace_id, hour_iso, str(exc), cooldown_minutes=cooldown_minutes)
+        summary.update({"ok": False, "error": str(exc), "error_type": "quota"})
+        return summary
+    except Exception as exc:
+        ledger_mark_failed(marketplace_id, hour_iso, str(exc), cooldown_minutes=cooldown_minutes)
+        summary.update({"ok": False, "error": str(exc), "error_type": "error"})
+        return summary
 
 
 def build_local_hour_window(date_str: str, hour: int) -> Tuple[datetime, datetime]:
@@ -1559,25 +1286,32 @@ def run_fill_day_repair_cycle(
         return
 
     enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
-    try:
-        summary = process_rt_sales_hour_ledger(
-            marketplace_id,
-            max_hours=len(hour_starts),
-        )
-    except VendorRtCooldownBlock as exc:
-        logger.warning(
-            f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
+    summary = process_rt_sales_hour_ledger(
+        marketplace_id,
+        max_hours=len(hour_starts),
+    )
+    if not summary.get("ok", True):
+        error_msg = summary.get("error") or "unknown error"
+        error_type = summary.get("error_type")
+        if error_type == "cooldown":
+            logger.warning(
+                f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
+                date_str,
+                error_msg,
+            )
+            return
+        if error_type == "quota":
+            logger.warning(
+                f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
+                date_str,
+                error_msg,
+            )
+            return
+        logger.error(
+            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s failed: %s",
             date_str,
-            exc,
+            error_msg,
         )
-        return
-    except SpApiQuotaError as exc:
-        logger.warning(
-            f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
-            date_str,
-            exc,
-        )
-        start_quota_cooldown(datetime.now(timezone.utc))
         return
     logger.info(
         f"{LOG_PREFIX_FILL_DAY} Fill Day run %s -> requested=%d applied=%d remaining_missing=%d",
@@ -2111,6 +1845,14 @@ def backfill_realtime_sales_for_gap(
 
     enqueue_vendor_rt_sales_hours(marketplace_id, start_utc, end_utc_clamped)
     summary = process_rt_sales_hour_ledger(marketplace_id)
+    if not summary.get("ok", True):
+        logger.warning(
+            "%s Ledger processing failed for %s: %s",
+            LOG_PREFIX_API,
+            marketplace_id,
+            summary.get("error") or "unknown error",
+        )
+        return (0, 0, 0)
     return (
         summary.get("rows", 0),
         summary.get("asins", 0),

@@ -74,3 +74,32 @@ def test_mark_failed_sets_cooldown(ledger_db):
     retry_dt = datetime.fromisoformat(row["next_retry_utc"])
     updated_dt = datetime.fromisoformat(row["updated_at_utc"])
     assert retry_dt >= updated_dt + timedelta(minutes=15) - timedelta(seconds=1)
+
+
+def test_claim_sequence_advances_after_apply(ledger_db):
+    marketplace = "A1"
+    base_hour = datetime(2025, 12, 17, 4, tzinfo=timezone.utc)
+    hours = [(base_hour + timedelta(hours=offset)).isoformat() for offset in range(3)]
+    ledger.ensure_hours_exist(marketplace, hours)
+
+    first = ledger.claim_next_missing_hour(marketplace, base_hour + timedelta(hours=5))
+    assert first is not None
+    ledger.mark_applied(marketplace, first["hour_utc"])
+
+    second = ledger.claim_next_missing_hour(marketplace, base_hour + timedelta(hours=6))
+    assert second is not None
+    assert second["hour_utc"] != first["hour_utc"]
+
+
+def test_set_report_id_persists_without_status_change(ledger_db):
+    marketplace = "A1"
+    hour = "2025-12-17T04:00:00+00:00"
+    ledger.ensure_hours_exist(marketplace, [hour])
+    claimed = ledger.claim_next_missing_hour(marketplace, datetime(2025, 12, 17, 5, tzinfo=timezone.utc))
+    assert claimed is not None
+    assert claimed["status"] == ledger.STATUS_REQUESTED
+
+    ledger.set_report_id(marketplace, hour, "RPT-123")
+    row = ledger.list_ledger_rows(marketplace, 1)[0]
+    assert row["status"] == ledger.STATUS_REQUESTED
+    assert row["report_id"] == "RPT-123"
