@@ -152,3 +152,17 @@ def test_sync_and_rebuild_allow_empty_body(tmp_path, monkeypatch):
         assert resp_rebuild.status_code == 200
         data_rebuild = resp_rebuild.json()
         assert data_rebuild["status"] == "ok"
+
+
+def test_sync_accepts_valid_created_after(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        resp_sync = client.post("/api/vendor-pos/sync", json={"createdAfter": "2025-12-01T00:00:00Z"})
+        assert resp_sync.status_code == 200
+        data_sync = resp_sync.json()
+        assert data_sync["status"] == "ok"
+
+
+def test_sync_rejects_invalid_created_after(tmp_path, monkeypatch):
+    with _vendor_po_test_client(tmp_path, monkeypatch) as client:
+        resp_sync = client.post("/api/vendor-pos/sync", json={"createdAfter": "not-a-date"})
+        assert resp_sync.status_code == 422

@@ -191,7 +191,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from auth.spapi_auth import SpApiAuth
 
@@ -421,8 +421,42 @@ def default_created_after(days: int = 60) -> str:
     return dt.isoformat() + "Z"
 
 
+def _isoformat_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 class VendorPOSyncRequest(BaseModel):
-    createdAfter: Optional[str] = None
+    createdAfter: Optional[datetime] = Field(default=None)
+
+    @field_validator("createdAfter", mode="before")
+    @classmethod
+    def _validate_created_after(cls, value: Any) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(text)
+            except ValueError as exc:
+                raise ValueError("createdAfter must be an ISO-8601 datetime") from exc
+        else:
+            raise ValueError("createdAfter must be an ISO-8601 datetime")
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.replace(microsecond=0)
 
 
 # Ensure DB exists at import time
@@ -1342,7 +1376,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
     Fetch Vendor POs from SP-API for a window and persist to SQLite (canonical store).
     """
     requested_created_after = payload.createdAfter if payload else None
-    created_after = requested_created_after or default_created_after()
+    created_after = _isoformat_utc(requested_created_after) if requested_created_after else default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     owner = f"sync-{uuid.uuid4()}"
     acquired, state = acquire_vendor_po_lock(owner)
@@ -1392,7 +1426,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
 @app.post("/api/vendor-pos/rebuild")
 def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
     """
-    Full rebuild: fetch all POs since 2025-10-01 and refresh SQLite snapshot.
+    Full rebuild: fetch Vendor POs for the default rolling window and refresh SQLite snapshot.
     """
     _ = payload  # body is optional; request may send {} but is unused
     created_after = default_created_after()
