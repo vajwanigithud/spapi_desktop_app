@@ -76,6 +76,7 @@
 
 import asyncio
 import csv
+import importlib.util
 import json
 import logging
 import os
@@ -143,10 +144,7 @@ from services.vendor_notifications import (
     get_recent_notifications,
     process_vendor_notification,
 )
-from services.vendor_po_lock import (
-    acquire_vendor_po_lock,
-    release_vendor_po_lock,
-)
+from services.vendor_po_lock import acquire_vendor_po_lock, release_vendor_po_lock
 from services.vendor_po_status_store import (
     get_vendor_po_status_payload,
     record_vendor_po_run_failure,
@@ -175,13 +173,7 @@ from services.vendor_po_store import (
     get_vendor_po_lines as store_get_vendor_po_lines,
 )
 
-try:
-    import reportlab
-
-    REPORTLAB_AVAILABLE = True
-    del reportlab
-except ImportError:
-    REPORTLAB_AVAILABLE = False
+REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
 import requests
 import uvicorn
@@ -920,6 +912,7 @@ def parse_po_date(po: Dict[str, Any]) -> datetime:
 
 def enrich_items_with_catalog(po_list):
     looked_up = set()
+    updated = False  # noqa: F841
     spapi_cache = spapi_catalog_status()
     for po in po_list:
         details = po.get("orderDetails") or {}
@@ -1152,6 +1145,13 @@ def fetch_po_status_totals(po_number: str) -> Dict[str, int]:
         items = po.get("itemStatus") or po.get("items") or []
         for item in items:
             # Normalize quantities
+            ordered_amt = 0  # noqa: F841
+            oq_wrapper = item.get("orderedQuantity", {})
+            if isinstance(oq_wrapper, dict):
+                if "amount" in oq_wrapper:
+                    ordered_amt = _parse_qty(oq_wrapper)  # noqa: F841
+                elif isinstance(oq_wrapper.get("orderedQuantity"), dict):
+                    ordered_amt = _parse_qty(oq_wrapper.get("orderedQuantity"))  # noqa: F841
 
             ack_obj = item.get("acknowledgementStatus") or {}
             accepted_amt = _parse_qty(ack_obj.get("acceptedQuantity"))
