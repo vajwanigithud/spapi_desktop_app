@@ -158,6 +158,29 @@ def _load_sales_30d_map(marketplace_id: Optional[str]) -> Dict[str, int]:
     return sales_map
 
 
+def load_sales_30d_map(marketplace_id: Optional[str]) -> Dict[str, int]:
+    """
+    Public helper for joining sales_30d totals into other realtime inventory views.
+    """
+    return _load_sales_30d_map(marketplace_id)
+
+
+def decorate_items_with_sales(
+    items: List[Dict[str, Any]],
+    sales_map: Dict[str, int],
+) -> None:
+    for item in items or []:
+        asin = str(item.get("asin") or "").strip()
+        if not asin:
+            item["sales_30d"] = 0
+            continue
+        sales_value = sales_map.get(asin) or sales_map.get(asin.upper())
+        try:
+            item["sales_30d"] = int(sales_value)
+        except Exception:
+            item["sales_30d"] = 0
+
+
 def _get_catalog_asin_count() -> int:
     try:
         with get_db_connection() as conn:
@@ -551,4 +574,6 @@ __all__ = [
     "get_cached_realtime_inventory_snapshot",
     "refresh_realtime_inventory_snapshot",
     "is_snapshot_stale",
+    "load_sales_30d_map",
+    "decorate_items_with_sales",
 ]

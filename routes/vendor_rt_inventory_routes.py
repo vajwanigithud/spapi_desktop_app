@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Response
 
-from services.vendor_inventory_realtime import SALES_30D_LOOKBACK_DAYS
+from services.vendor_inventory_realtime import decorate_items_with_sales, load_sales_30d_map
 from services.vendor_rt_inventory_state import (
     DEFAULT_CATALOG_DB_PATH,
     get_checkpoint,
@@ -81,58 +81,6 @@ def _load_catalog_metadata(asins: List[str], db_path: Path) -> Dict[str, Dict[st
     return catalog
 
 
-def _load_sales_30d_map(
-    asins: List[str],
-    marketplace_id: str,
-    db_path: Path,
-) -> Dict[str, Optional[int]]:
-    """
-    Load sales_30d totals from vendor_realtime_sales cache for the given ASINs.
-    Safe fallback: if table/DB missing, returns empty map and endpoint still works.
-    """
-    if not asins:
-        return {}
-
-    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=SALES_30D_LOOKBACK_DAYS)).isoformat()
-    sales_map: Dict[str, Optional[int]] = {}
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            for chunk in _chunked(asins):
-                placeholders = ",".join(["?"] * len(chunk))
-                query = """
-                    SELECT asin, SUM(ordered_units) AS total_units
-                    FROM vendor_realtime_sales
-                    WHERE hour_start_utc >= ?
-                """
-                params: List[Any] = [cutoff_iso]
-
-                if marketplace_id:
-                    query += " AND marketplace_id = ?"
-                    params.append(marketplace_id)
-
-                query += f" AND asin IN ({placeholders}) GROUP BY asin"
-                params.extend(chunk)
-
-                rows = conn.execute(query, tuple(params)).fetchall()
-                for row in rows:
-                    asin = (row["asin"] or "").strip().upper()
-                    if not asin:
-                        continue
-                    try:
-                        sales_map[asin] = int(row["total_units"] or 0)
-                    except Exception:
-                        sales_map[asin] = None
-        finally:
-            conn.close()
-    except Exception as exc:
-        LOGGER.warning("Failed to load sales_30d map: %s", exc)
-
-    return sales_map
-
-
 def _decorate_inventory_items(
     items: List[Dict[str, Any]],
     marketplace_id: str,
@@ -146,13 +94,17 @@ def _decorate_inventory_items(
         }
     )
     catalog_map = _load_catalog_metadata(asin_list, db_path)
-    sales_map = _load_sales_30d_map(asin_list, marketplace_id, db_path)
+    try:
+        sales_map = load_sales_30d_map(marketplace_id)
+    except Exception as exc:
+        LOGGER.warning("Failed to load sales_30d map: %s", exc)
+        sales_map = {}
+    decorate_items_with_sales(items, sales_map)
     for item in items:
         asin = (item.get("asin") or "").strip().upper()
         meta = catalog_map.get(asin) or {}
         item["title"] = meta.get("title")
         item["image_url"] = meta.get("image_url")
-        item["sales_30d"] = sales_map.get(asin)
     return items
 
 
@@ -223,13 +175,16 @@ def get_vendor_rt_inventory(
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
     refresh_meta = get_refresh_metadata(marketplace_id, db_path=db_path)
-    as_of_meta = _compute_as_of_fields(snapshot.get("as_of"))
+    raw_as_of = snapshot.get("as_of")
+    as_of_meta = _compute_as_of_fields(raw_as_of)
+    canonical_as_of = as_of_meta["as_of"] or raw_as_of
 
     return {
         "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of": as_of_meta["as_of"],
-        "as_of_utc": as_of_meta["as_of"],
+        "as_of_raw": raw_as_of,
+        "as_of": canonical_as_of,
+        "as_of_utc": canonical_as_of,
         "as_of_uae": as_of_meta["as_of_uae"],
         "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],
@@ -263,12 +218,15 @@ def refresh_vendor_rt_inventory(
         response.status_code = 202
 
     snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
-    as_of_meta = _compute_as_of_fields(snapshot.get("as_of"))
+    raw_as_of = snapshot.get("as_of")
+    as_of_meta = _compute_as_of_fields(raw_as_of)
+    canonical_as_of = as_of_meta["as_of"] or raw_as_of
     return {
         "ok": True,
         "marketplace_id": marketplace_id,
-        "as_of": as_of_meta["as_of"],
-        "as_of_utc": as_of_meta["as_of"],
+        "as_of_raw": raw_as_of,
+        "as_of": canonical_as_of,
+        "as_of_utc": canonical_as_of,
         "as_of_uae": as_of_meta["as_of_uae"],
         "stale_hours": as_of_meta["stale_hours"],
         "items": snapshot["items"],
