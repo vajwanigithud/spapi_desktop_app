@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# DB-FIRST: SQLite is the single source of truth.
+# JSON files are debug/export only and must not be used for live state.
+
 from services import db as db_service
 from services.json_cache import DEFAULT_VENDOR_POS_CACHE, load_vendor_pos_cache
 
@@ -163,6 +166,10 @@ def bootstrap_headers_from_cache(cache_path: Optional[Path] = None) -> Dict[str,
         LOGGER.warning("[VendorPOStore] Failed to check header count: %s", exc)
         return stats
 
+    LOGGER.warning(
+        "[VendorPOStore][DB-FIRST] Reading vendor_pos_cache JSON from %s because SQLite headers are empty",
+        cache_path,
+    )
     try:
         data = load_vendor_pos_cache(cache_path, raise_on_error=True)
     except Exception as exc:
