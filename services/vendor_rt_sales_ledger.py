@@ -98,13 +98,13 @@ def ensure_vendor_rt_sales_ledger_table(conn: sqlite3.Connection) -> None:
             FROM {legacy_table}
             """
         )
+        conn.execute(f"DROP TABLE {legacy_table}")
     else:
         logger.warning(
             "[RtSalesLedger] Skipping legacy ledger copy; missing required columns: %s",
             column_names,
         )
 
-    conn.execute(f"DROP TABLE {legacy_table}")
     _create_ledger_table(conn)
     conn.commit()
 

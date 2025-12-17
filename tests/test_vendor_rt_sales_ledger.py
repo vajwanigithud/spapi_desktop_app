@@ -147,9 +147,15 @@ def test_ensure_table_migrates_legacy_schema(tmp_path, monkeypatch):
     conn.commit()
     ledger.ensure_vendor_rt_sales_ledger_table(conn)
     info = conn.execute("PRAGMA table_info(vendor_rt_sales_hour_ledger)").fetchall()
-    conn.close()
-
     assert any(col["name"] == "hour_utc" for col in info)
+    legacy_exists = conn.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='vendor_rt_sales_hour_ledger_old'
+        """
+    ).fetchone()
+    conn.close()
+    assert legacy_exists is None
 
     @contextlib.contextmanager
     def _conn_ctx():
