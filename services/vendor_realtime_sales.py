@@ -1184,9 +1184,9 @@ def _execute_vendor_rt_sales_report(
         document_id = report_data.get("reportDocumentId")
         if not document_id:
             raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
+        content, _ = download_vendor_report_document(document_id)
         if ledger_hour_iso:
             _ledger_mark_downloaded(marketplace_id, ledger_hour_iso)
-        content, _ = download_vendor_report_document(document_id)
         if isinstance(content, bytes):
             payload = json.loads(content.decode("utf-8"))
         elif isinstance(content, str):
@@ -1205,6 +1205,14 @@ def _execute_vendor_rt_sales_report(
             marketplace_id,
             summary.get("hour_starts", []),
         )
+        result = {
+            "report_id": report_id,
+            "start_utc": _utc_iso(normalized_start),
+            "end_utc": _utc_iso(normalized_end),
+            "marketplace_id": marketplace_id,
+            "summary": summary,
+        }
+
         if ledger_hour_iso:
             _ledger_mark_applied(marketplace_id, ledger_hour_iso)
             logger.info(
@@ -1212,7 +1220,7 @@ def _execute_vendor_rt_sales_report(
                 ledger_hour_iso,
                 summary.get("rows", 0),
             )
-        return summary
+        return result
     except VendorRtCooldownBlock as exc:
         if ledger_hour_iso:
             _ledger_mark_failed(marketplace_id, ledger_hour_iso, str(exc))
@@ -1263,7 +1271,7 @@ def process_rt_sales_hour_ledger(
             )
             continue
         try:
-            summary = _execute_vendor_rt_sales_report(
+            result = _execute_vendor_rt_sales_report(
                 hour_start,
                 hour_start + timedelta(hours=1),
                 marketplace_id,
@@ -1272,6 +1280,7 @@ def process_rt_sales_hour_ledger(
             requested += 1
             applied += 1
             processed_hours.append(hour_iso)
+            summary = result.get("summary") if isinstance(result, dict) else {}
             if summary:
                 total_rows += summary.get("rows", 0)
                 total_asins += summary.get("asins", 0)
@@ -1342,12 +1351,13 @@ def request_vendor_rt_report(
         marketplace_id,
         currency_code=currency_code,
     )
+    summary = result.get("summary") if isinstance(result, dict) else {}
     return {
-        "report_id": None,
-        "start_utc": _utc_iso(_normalize_utc_datetime(start_utc)),
-        "end_utc": _utc_iso(_normalize_utc_datetime(end_utc)),
+        "report_id": result.get("report_id"),
+        "start_utc": result.get("start_utc", _utc_iso(_normalize_utc_datetime(start_utc))),
+        "end_utc": result.get("end_utc", _utc_iso(_normalize_utc_datetime(end_utc))),
         "marketplace_id": marketplace_id,
-        "ingest_summary": result,
+        "ingest_summary": summary,
     }
 
 
