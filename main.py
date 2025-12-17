@@ -145,26 +145,7 @@ from services.vendor_notifications import (
 )
 from services.vendor_po_lock import (
     acquire_vendor_po_lock,
-    heartbeat_vendor_po_lock,
     release_vendor_po_lock,
-)
-from services.vendor_po_store import (
-    aggregate_line_totals,
-    bootstrap_headers_from_cache,
-    ensure_vendor_po_schema,
-    export_vendor_pos_snapshot,
-    get_rejected_vendor_po_lines,
-    get_vendor_po as store_get_vendor_po,
-    get_vendor_po_line_totals_for_po,
-    get_vendor_po_lines as store_get_vendor_po_lines,
-    get_vendor_po_list,
-    get_vendor_po_sync_state,
-    get_vendor_pos_by_numbers,
-    replace_vendor_po_lines,
-    update_header_raw_payload,
-    update_header_totals_from_lines,
-    upsert_vendor_po_headers,
-    count_vendor_po_lines,
 )
 from services.vendor_po_status_store import (
     get_vendor_po_status_payload,
@@ -172,15 +153,33 @@ from services.vendor_po_status_store import (
     record_vendor_po_run_start,
     record_vendor_po_run_success,
 )
+from services.vendor_po_store import (
+    bootstrap_headers_from_cache,
+    count_vendor_po_lines,
+    ensure_vendor_po_schema,
+    export_vendor_pos_snapshot,
+    get_rejected_vendor_po_lines,
+    get_vendor_po_line_totals_for_po,
+    get_vendor_po_list,
+    get_vendor_po_sync_state,
+    get_vendor_pos_by_numbers,
+    replace_vendor_po_lines,
+    update_header_raw_payload,
+    update_header_totals_from_lines,
+    upsert_vendor_po_headers,
+)
+from services.vendor_po_store import (
+    get_vendor_po as store_get_vendor_po,
+)
+from services.vendor_po_store import (
+    get_vendor_po_lines as store_get_vendor_po_lines,
+)
 
 try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.lib.utils import ImageReader
-    from reportlab.pdfgen import canvas
-    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    import reportlab
+
     REPORTLAB_AVAILABLE = True
+    del reportlab
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
@@ -921,7 +920,6 @@ def parse_po_date(po: Dict[str, Any]) -> datetime:
 
 def enrich_items_with_catalog(po_list):
     looked_up = set()
-    updated = False
     spapi_cache = spapi_catalog_status()
     for po in po_list:
         details = po.get("orderDetails") or {}
@@ -1154,13 +1152,6 @@ def fetch_po_status_totals(po_number: str) -> Dict[str, int]:
         items = po.get("itemStatus") or po.get("items") or []
         for item in items:
             # Normalize quantities
-            ordered_amt = 0
-            oq_wrapper = item.get("orderedQuantity", {})
-            if isinstance(oq_wrapper, dict):
-                if "amount" in oq_wrapper:
-                    ordered_amt = _parse_qty(oq_wrapper)
-                elif isinstance(oq_wrapper.get("orderedQuantity"), dict):
-                    ordered_amt = _parse_qty(oq_wrapper.get("orderedQuantity"))
 
             ack_obj = item.get("acknowledgementStatus") or {}
             accepted_amt = _parse_qty(ack_obj.get("acceptedQuantity"))
