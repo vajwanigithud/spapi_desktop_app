@@ -542,18 +542,17 @@ def run_vendor_rt_sales_startup_backfill():
             with get_db_connection() as conn:
                 last_end = get_last_ingested_end_utc(conn, marketplace_id)
 
+            start_window = safe_now - timedelta(hours=24) if last_end is None else max(last_end, earliest_allowed)
             if last_end is None:
-                start_window = safe_now - timedelta(hours=24)
                 logger.info(f"[RTSalesStartupBackfill] First time setup, backfilling from {start_window}")
+            elif last_end < earliest_allowed:
+                logger.info(f"[RTSalesStartupBackfill] Last ingested {last_end} is too old, starting from {start_window}")
             else:
-                start_window = max(last_end, earliest_allowed)
-                if last_end < earliest_allowed:
-                    logger.info(f"[RTSalesStartupBackfill] Last ingested {last_end} is too old, starting from {start_window}")
-                else:
-                    logger.info(f"[RTSalesStartupBackfill] Backfilling gap from {last_end}")
-            
+                logger.info(f"[RTSalesStartupBackfill] Backfilling gap from {last_end}")
+
             if start_window < safe_now:
                 logger.info(f"[RTSalesStartupBackfill] Backfilling [{start_window}, {safe_now})")
+                refresh_rt_sales_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
                 rows, asins, hours = backfill_realtime_sales_for_gap(
                     spapi_client=None,  # Will use global spapi_client
                     marketplace_id=marketplace_id,
@@ -630,161 +629,169 @@ def vendor_rt_sales_auto_sync_loop():
             time.sleep(interval_seconds)
             continue
 
-        if not start_backfill():
-            logger.warning("[RTSalesAutoSync] Failed to acquire backfill lock; another cycle is active")
-            time.sleep(interval_seconds)
-            continue
+        backfill_acquired = False
+        worker_lock_acquired = False
 
         try:
-            if not acquire_rt_sales_worker_lock(marketplace_id, worker_owner, ttl_seconds=lock_ttl_seconds):
-                logger.info("[RTSalesAutoSync] Worker lock busy for %s; skipping this cycle", marketplace_id)
+            if not start_backfill():
+                logger.warning("[RTSalesAutoSync] Failed to acquire backfill lock; another cycle is active")
                 time.sleep(interval_seconds)
                 continue
 
+            backfill_acquired = True
+
+            if not acquire_rt_sales_worker_lock(marketplace_id, worker_owner, ttl_seconds=lock_ttl_seconds):
+                logger.info("[RTSalesAutoSync] Worker lock busy for %s; skipping this cycle", marketplace_id)
+                end_backfill()
+                backfill_acquired = False
+                time.sleep(interval_seconds)
+                continue
+
+            worker_lock_acquired = True
+            skip_cycle = False
+
+            def _refresh_worker_lock():
+                refresh_rt_sales_worker_lock(marketplace_id, worker_owner, ttl_seconds=lock_ttl_seconds)
+
+            with get_db_connection() as conn:
+                last_end = get_last_ingested_end_utc(conn, marketplace_id)
+
+            if last_end is None:
+                start_window = now_utc - timedelta(hours=24)
+                logger.info(
+                    f"[RTSalesAutoSync] No state found, backfilling last 24h [{start_window.isoformat()}, {now_utc.isoformat()})"
+                )
+            elif now_utc - last_end > timedelta(hours=2):
+                start_window = last_end
+                logger.info(
+                    f"[RTSalesAutoSync] Gap detected ({(now_utc - last_end).total_seconds() / 3600:.1f}h), "
+                    f"backfilling [{start_window.isoformat()}, {now_utc.isoformat()})"
+                )
+            else:
+                start_window = now_utc - timedelta(hours=3)
+                logger.info(
+                    f"[RTSalesAutoSync] Normal sync, refreshing last 3h [{start_window.isoformat()}, {now_utc.isoformat()})"
+                )
+
             try:
-                skip_cycle = False
-
-                def _refresh_worker_lock():
-                    refresh_rt_sales_worker_lock(marketplace_id, worker_owner, ttl_seconds=lock_ttl_seconds)
-
-                with get_db_connection() as conn:
-                    last_end = get_last_ingested_end_utc(conn, marketplace_id)
-
-                if last_end is None:
-                    start_window = now_utc - timedelta(hours=24)
-                    logger.info(
-                        f"[RTSalesAutoSync] No state found, backfilling last 24h [{start_window.isoformat()}, {now_utc.isoformat()})"
-                    )
-                elif now_utc - last_end > timedelta(hours=2):
-                    start_window = last_end
-                    logger.info(
-                        f"[RTSalesAutoSync] Gap detected ({(now_utc - last_end).total_seconds() / 3600:.1f}h), "
-                        f"backfilling [{start_window.isoformat()}, {now_utc.isoformat()})"
-                    )
-                else:
-                    start_window = now_utc - timedelta(hours=3)
-                    logger.info(
-                        f"[RTSalesAutoSync] Normal sync, refreshing last 3h [{start_window.isoformat()}, {now_utc.isoformat()})"
-                    )
-
-                try:
-                    _refresh_worker_lock()
-                    rows, asins, hours = backfill_realtime_sales_for_gap(
-                        spapi_client=None,
-                        marketplace_id=marketplace_id,
-                        start_utc=start_window,
-                        end_utc=now_utc,
-                    )
-                    logger.info(
-                        f"[RTSalesAutoSync] Cycle complete: {rows} rows, {asins} unique ASINs, {hours} hours processed"
-                    )
-                except SpApiQuotaError as e:
-                    logger.error(f"[RTSalesAutoSync] QuotaExceeded; aborting remaining backfills/audits this cycle: {e}")
-                    start_quota_cooldown(datetime.now(timezone.utc))
-                    skip_cycle = True
-                except Exception as e:
-                    logger.error(f"[RTSalesAutoSync] Backfill failed: {e}", exc_info=True)
-                    skip_cycle = True
-                finally:
-                    _refresh_worker_lock()
-
-                if not skip_cycle and ENABLE_VENDOR_RT_SALES_DAILY_AUDIT:
-                    try:
-                        with get_db_connection() as conn:
-                            state = get_vendor_rt_sales_state(conn, marketplace_id)
-                            should_run, today_str = should_run_rt_sales_daily_audit(conn)
-
-                        if should_run:
-                            audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
-                            audit_start = audit_end - timedelta(hours=24)
-                            logger.info(
-                                f"[RTSalesAutoSync] Running daily audit [{audit_start.isoformat()}, {audit_end.isoformat()}) (uae_date={today_str})"
-                            )
-                            try:
-                                _refresh_worker_lock()
-                                audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
-                                    spapi_client=None,
-                                    start_utc=audit_start,
-                                    end_utc=audit_end,
-                                    marketplace_id=marketplace_id,
-                                    label="daily",
-                                )
-                                with get_db_connection() as conn:
-                                    update_daily_audit_state(marketplace_id, audit_end)
-                                    mark_rt_sales_daily_audit_ran(conn, today_str)
-                                logger.info(
-                                    f"[RTSalesAutoSync] Daily audit done: {audit_rows} rows, {audit_asins} ASINs, {audit_hours} hours"
-                                )
-                            except SpApiQuotaError as e:
-                                logger.error(f"[RTSalesAutoSync] QuotaExceeded during daily audit; aborting remaining audits this cycle: {e}")
-                                start_quota_cooldown(datetime.now(timezone.utc))
-                                skip_cycle = True
-                            except Exception as e:
-                                logger.error(f"[RTSalesAutoSync] Daily audit failed: {e}", exc_info=True)
-                                skip_cycle = True
-                            finally:
-                                _refresh_worker_lock()
-                        else:
-                            logger.info(f"[RTSalesAutoSync] Skipping daily audit for uae_date={today_str} (already ran today)")
-                    except Exception as e:
-                        logger.error(f"[RTSalesAutoSync] Daily audit error: {e}", exc_info=True)
-
-                if not skip_cycle and ENABLE_VENDOR_RT_SALES_WEEKLY_AUDIT:
-                    try:
-                        with get_db_connection() as conn:
-                            state = get_vendor_rt_sales_state(conn, marketplace_id)
-
-                        last_weekly_audit = state.get("last_weekly_audit_utc")
-                        audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
-                        audit_start = audit_end - timedelta(days=7)
-
-                        should_run_weekly = False
-                        if last_weekly_audit is None:
-                            should_run_weekly = True
-                        else:
-                            try:
-                                from datetime import datetime as dt_type
-
-                                last_audit_dt = dt_type.fromisoformat(last_weekly_audit.replace("Z", "+00:00"))
-                                if audit_start > last_audit_dt:
-                                    should_run_weekly = True
-                            except Exception as e:
-                                logger.warning(f"[RTSalesAutoSync] Failed to parse last_weekly_audit_utc: {e}")
-                                should_run_weekly = True
-
-                        if should_run_weekly:
-                            logger.info(f"[RTSalesAutoSync] Running weekly audit [{audit_start.isoformat()}, {audit_end.isoformat()})")
-                            try:
-                                _refresh_worker_lock()
-                                audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
-                                    spapi_client=None,
-                                    start_utc=audit_start,
-                                    end_utc=audit_end,
-                                    marketplace_id=marketplace_id,
-                                    label="weekly",
-                                )
-                                update_weekly_audit_state(marketplace_id, audit_end)
-                                logger.info(
-                                    "[RTSalesAutoSync] Weekly audit done: %s rows, %s ASINs, %s hours" % (audit_rows, audit_asins, audit_hours)
-                                )
-                            except SpApiQuotaError as e:
-                                logger.error(f"[RTSalesAutoSync] QuotaExceeded during weekly audit; aborting remaining audits this cycle: {e}")
-                                start_quota_cooldown(datetime.now(timezone.utc))
-                                skip_cycle = True
-                            except Exception as e:
-                                logger.error(f"[RTSalesAutoSync] Weekly audit failed: {e}", exc_info=True)
-                                skip_cycle = True
-                            finally:
-                                _refresh_worker_lock()
-                    except Exception as e:
-                        logger.error(f"[RTSalesAutoSync] Weekly audit error: {e}", exc_info=True)
-
+                _refresh_worker_lock()
+                rows, asins, hours = backfill_realtime_sales_for_gap(
+                    spapi_client=None,
+                    marketplace_id=marketplace_id,
+                    start_utc=start_window,
+                    end_utc=now_utc,
+                )
+                logger.info(
+                    f"[RTSalesAutoSync] Cycle complete: {rows} rows, {asins} unique ASINs, {hours} hours processed"
+                )
+            except SpApiQuotaError as e:
+                logger.error(f"[RTSalesAutoSync] QuotaExceeded; aborting remaining backfills/audits this cycle: {e}")
+                start_quota_cooldown(datetime.now(timezone.utc))
+                skip_cycle = True
+            except Exception as e:
+                logger.error(f"[RTSalesAutoSync] Backfill failed: {e}", exc_info=True)
+                skip_cycle = True
             finally:
-                release_rt_sales_worker_lock(marketplace_id, worker_owner)
+                _refresh_worker_lock()
+
+            if not skip_cycle and ENABLE_VENDOR_RT_SALES_DAILY_AUDIT:
+                try:
+                    with get_db_connection() as conn:
+                        state = get_vendor_rt_sales_state(conn, marketplace_id)
+                        should_run, today_str = should_run_rt_sales_daily_audit(conn)
+
+                    if should_run:
+                        audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
+                        audit_start = audit_end - timedelta(hours=24)
+                        logger.info(
+                            f"[RTSalesAutoSync] Running daily audit [{audit_start.isoformat()}, {audit_end.isoformat()}) (uae_date={today_str})"
+                        )
+                        try:
+                            _refresh_worker_lock()
+                            audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
+                                spapi_client=None,
+                                start_utc=audit_start,
+                                end_utc=audit_end,
+                                marketplace_id=marketplace_id,
+                                label="daily",
+                            )
+                            with get_db_connection() as conn:
+                                update_daily_audit_state(marketplace_id, audit_end)
+                                mark_rt_sales_daily_audit_ran(conn, today_str)
+                            logger.info(
+                                f"[RTSalesAutoSync] Daily audit done: {audit_rows} rows, {audit_asins} ASINs, {audit_hours} hours"
+                            )
+                        except SpApiQuotaError as e:
+                            logger.error(f"[RTSalesAutoSync] QuotaExceeded during daily audit; aborting remaining audits this cycle: {e}")
+                            start_quota_cooldown(datetime.now(timezone.utc))
+                            skip_cycle = True
+                        except Exception as e:
+                            logger.error(f"[RTSalesAutoSync] Daily audit failed: {e}", exc_info=True)
+                            skip_cycle = True
+                        finally:
+                            _refresh_worker_lock()
+                    else:
+                        logger.info(f"[RTSalesAutoSync] Skipping daily audit for uae_date={today_str} (already ran today)")
+                except Exception as e:
+                    logger.error(f"[RTSalesAutoSync] Daily audit error: {e}", exc_info=True)
+
+            if not skip_cycle and ENABLE_VENDOR_RT_SALES_WEEKLY_AUDIT:
+                try:
+                    with get_db_connection() as conn:
+                        state = get_vendor_rt_sales_state(conn, marketplace_id)
+
+                    last_weekly_audit = state.get("last_weekly_audit_utc")
+                    audit_end = now_utc.replace(minute=0, second=0, microsecond=0)
+                    audit_start = audit_end - timedelta(days=7)
+
+                    should_run_weekly = False
+                    if last_weekly_audit is None:
+                        should_run_weekly = True
+                    else:
+                        try:
+                            from datetime import datetime as dt_type
+
+                            last_audit_dt = dt_type.fromisoformat(last_weekly_audit.replace("Z", "+00:00"))
+                            if audit_start > last_audit_dt:
+                                should_run_weekly = True
+                        except Exception as e:
+                            logger.warning(f"[RTSalesAutoSync] Failed to parse last_weekly_audit_utc: {e}")
+                            should_run_weekly = True
+
+                    if should_run_weekly:
+                        logger.info(f"[RTSalesAutoSync] Running weekly audit [{audit_start.isoformat()}, {audit_end.isoformat()})")
+                        try:
+                            _refresh_worker_lock()
+                            audit_rows, audit_asins, audit_hours = run_realtime_sales_audit_window(
+                                spapi_client=None,
+                                start_utc=audit_start,
+                                end_utc=audit_end,
+                                marketplace_id=marketplace_id,
+                                label="weekly",
+                            )
+                            update_weekly_audit_state(marketplace_id, audit_end)
+                            logger.info(
+                                "[RTSalesAutoSync] Weekly audit done: %s rows, %s ASINs, %s hours" % (audit_rows, audit_asins, audit_hours)
+                            )
+                        except SpApiQuotaError as e:
+                            logger.error(f"[RTSalesAutoSync] QuotaExceeded during weekly audit; aborting remaining audits this cycle: {e}")
+                            start_quota_cooldown(datetime.now(timezone.utc))
+                            skip_cycle = True
+                        except Exception as e:
+                            logger.error(f"[RTSalesAutoSync] Weekly audit failed: {e}", exc_info=True)
+                            skip_cycle = True
+                        finally:
+                            _refresh_worker_lock()
+                except Exception as e:
+                    logger.error(f"[RTSalesAutoSync] Weekly audit error: {e}", exc_info=True)
+
         except Exception as e:
             logger.error(f"[RTSalesAutoSync] Cycle failed: {e}", exc_info=True)
         finally:
-            end_backfill()
+            if worker_lock_acquired:
+                release_rt_sales_worker_lock(marketplace_id, worker_owner)
+            if backfill_acquired:
+                end_backfill()
 
         logger.debug(f"[RTSalesAutoSync] Next sync in {VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES} minutes")
         time.sleep(interval_seconds)
