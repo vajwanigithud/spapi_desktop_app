@@ -4375,6 +4375,13 @@
       return '';
     }
 
+    function getSales30dValue(row) {
+      const value = row?.sales_30d;
+      if (value === null || value === undefined) return 0;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : 0;
+    }
+
     function parseInventoryTimestamp(row) {
       if (!row) return null;
       const fields = [
@@ -4561,6 +4568,9 @@
         } else if (invSortColumn === 'sellable') {
           aVal = getSellableUnits(a);
           bVal = getSellableUnits(b);
+        } else if (invSortColumn === 'sales30d') {
+          aVal = getSales30dValue(a);
+          bVal = getSales30dValue(b);
         }
 
         if (typeof aVal === 'string') {
@@ -4589,11 +4599,13 @@
           <th class="inv-image-col">Image</th>
           <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
           <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
+          <th onclick="sortInventoryTableBy('sales30d')">Last 30d Sales ${arrow('sales30d')}</th>
         </tr>
       `;
 
       // Accumulators for totals
       let totalSellable = 0;
+      let totalSales30d = 0;
 
       // Build rows HTML
       let bodyHtml = '';
@@ -4609,6 +4621,8 @@
         const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
         const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
         totalSellable += sellable;
+        const sales30dValue = getSales30dValue(r);
+        totalSales30d += sales30dValue;
 
         // Color coding
         let rowClass = '';
@@ -4634,6 +4648,7 @@
             <td class="inv-image-col">${imgHtml}</td>
             <td class="inv-title-col">${escapeHtml(title)}</td>
             <td class="text-right">${sellable}</td>
+            <td class="text-right">${sales30dValue}</td>
           </tr>
         `;
       });
@@ -4645,6 +4660,7 @@
       footerRow.innerHTML = `
         <td colspan="3"><strong>Totals (${rows.length} ASINs)</strong></td>
         <td class="text-right"><strong>${totalSellable}</strong></td>
+        <td class="text-right"><strong>${totalSales30d}</strong></td>
       `;
       footEl.appendChild(footerRow);
     }
@@ -4691,6 +4707,7 @@
         'ASIN',
         'Title',
         'SellableUnits',
+        'sales_30d',
       ];
 
       const lines = [];
@@ -4701,10 +4718,12 @@
         const title = getInventoryDisplayTitle(r).replace(/"/g, '""');
 
         const sellable = resolveSellable(r);
+        const sales30dValue = getSales30dValue(r);
         const row = [
           asin,
           `"${title}"`,
           sellable,
+          sales30dValue,
         ];
 
         lines.push(row.join(','));
