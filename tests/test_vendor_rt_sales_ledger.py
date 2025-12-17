@@ -89,3 +89,17 @@ def test_claim_sequence_advances_after_apply(ledger_db):
     second = ledger.claim_next_missing_hour(marketplace, base_hour + timedelta(hours=6))
     assert second is not None
     assert second["hour_utc"] != first["hour_utc"]
+
+
+def test_set_report_id_persists_without_status_change(ledger_db):
+    marketplace = "A1"
+    hour = "2025-12-17T04:00:00+00:00"
+    ledger.ensure_hours_exist(marketplace, [hour])
+    claimed = ledger.claim_next_missing_hour(marketplace, datetime(2025, 12, 17, 5, tzinfo=timezone.utc))
+    assert claimed is not None
+    assert claimed["status"] == ledger.STATUS_REQUESTED
+
+    ledger.set_report_id(marketplace, hour, "RPT-123")
+    row = ledger.list_ledger_rows(marketplace, 1)[0]
+    assert row["status"] == ledger.STATUS_REQUESTED
+    assert row["report_id"] == "RPT-123"

@@ -48,6 +48,7 @@ from services.vendor_rt_sales_ledger import (
     mark_applied as ledger_mark_applied,
     mark_downloaded as ledger_mark_downloaded,
     mark_failed as ledger_mark_failed,
+    set_report_id as ledger_set_report_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -929,6 +930,8 @@ def _execute_vendor_rt_sales_report(
         data_end=normalized_end,
         extra_options={"currencyCode": currency_code},
     )
+    if ledger_hour_iso:
+        ledger_set_report_id(marketplace_id, ledger_hour_iso, report_id)
     report_data = poll_vendor_report(report_id)
     document_id = report_data.get("reportDocumentId")
     if not document_id:
@@ -997,7 +1000,7 @@ def process_rt_sales_hour_ledger(
         "hours": [],
     }
 
-    claimed = ledger_claim_next_missing_hour(marketplace_id, safe_end)
+    claimed = ledger_claim_next_missing_hour(marketplace_id, now_utc)
     if not claimed:
         summary["message"] = "no work"
         return summary

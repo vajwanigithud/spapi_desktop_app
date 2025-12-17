@@ -209,6 +209,23 @@ def mark_failed(
         conn.commit()
 
 
+def set_report_id(marketplace_id: str, hour_utc: str, report_id: str) -> None:
+    if not marketplace_id or not hour_utc or not report_id:
+        return
+    now_iso = _utc_now_iso()
+    with get_db_connection() as conn:
+        ensure_vendor_rt_sales_ledger_table(conn)
+        conn.execute(
+            f"""
+            UPDATE {LEDGER_TABLE}
+            SET report_id = ?, updated_at_utc = ?
+            WHERE marketplace_id = ? AND hour_utc = ?
+            """,
+            (report_id, now_iso, marketplace_id, hour_utc),
+        )
+        conn.commit()
+
+
 def list_ledger_rows(marketplace_id: str, limit: int = 200) -> List[Dict[str, Any]]:
     if limit <= 0:
         return []
