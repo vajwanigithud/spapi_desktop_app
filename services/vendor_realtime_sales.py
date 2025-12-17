@@ -8,6 +8,8 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 - Aggregation and querying for UI
 - Support for flexible lookback windows and view-by modes (ASIN / Time)
 """
+# DB-FIRST: SQLite is the single source of truth.
+# JSON files are debug/export only and must not be used for live state.
 
 import json
 import logging

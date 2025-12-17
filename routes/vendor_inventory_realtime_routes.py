@@ -1,4 +1,6 @@
 """Real-time vendor inventory API routes (Prompt 1 backend scaffolding)."""
+# DB-FIRST: SQLite is the single source of truth.
+# JSON files are debug/export only and must not be used for live state.
 
 from __future__ import annotations
 

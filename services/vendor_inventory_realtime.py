@@ -6,6 +6,8 @@ stores the raw rows + metadata on disk, and exposes helpers to read the
 cached snapshot along with freshness info. It is intentionally isolated
 from the weekly inventory logic so Prompt 1 can stand alone.
 """
+# DB-FIRST: SQLite is the single source of truth.
+# JSON files are debug/export only and must not be used for live state.
 
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from services.catalog_service import (
     seed_catalog_universe,
     spapi_catalog_status,
 )
-from services.db import get_db_connection
+from services.db import ensure_app_kv_table, get_app_kv, get_db_connection, set_app_kv
 from services.spapi_reports import (
     download_vendor_report_document,
     poll_vendor_report,
@@ -31,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE_PATH = ROOT / "vendor_realtime_inventory_snapshot.json"
+SNAPSHOT_DB_KEY = "vendor_rt_inventory_snapshot"
 DEFAULT_LOOKBACK_HOURS = 24
 STALE_THRESHOLD_HOURS = 24
 MIN_REFRESH_INTERVAL_MINUTES = 30
@@ -73,30 +76,35 @@ def _blank_snapshot() -> Dict[str, Any]:
     }
 
 
+def _coerce_snapshot_dict(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return _blank_snapshot()
+    snapshot = dict(data)
+    snapshot.setdefault("items", [])
+    snapshot.setdefault("unique_count", len(snapshot["items"]))
+    snapshot.setdefault("duplicates_dropped", 0)
+    snapshot.setdefault("raw_row_count", 0)
+    snapshot.setdefault("raw_nonempty_asin_count", 0)
+    snapshot.setdefault("raw_unique_asin_count", 0)
+    snapshot.setdefault("collapsed_unique_asin_count", snapshot.get("unique_count", len(snapshot["items"])))
+    snapshot.setdefault("raw_sellable_sum_raw", 0)
+    snapshot.setdefault("normalized_sellable_sum", 0)
+    snapshot.setdefault("realtime_sellable_asins", len(snapshot["items"]))
+    snapshot.setdefault("realtime_sellable_units", snapshot.get("normalized_sellable_sum", 0))
+    snapshot.setdefault("catalog_asin_count", 0)
+    snapshot.setdefault("coverage_ratio", 0.0)
+    snapshot.setdefault("inventory_scope", "realtime_inventory_snapshot")
+    snapshot.setdefault("coverage_label", "Realtime coverage (ASINs present in snapshot vs catalog baseline)")
+    snapshot.setdefault("inventory_scope_explanation", "")
+    return snapshot
+
+
 def _read_snapshot(cache_path: Path) -> Dict[str, Any]:
     if not cache_path.exists():
         return _blank_snapshot()
     try:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return _blank_snapshot()
-        data.setdefault("items", [])
-        data.setdefault("unique_count", len(data["items"]))
-        data.setdefault("duplicates_dropped", 0)
-        data.setdefault("raw_row_count", 0)
-        data.setdefault("raw_nonempty_asin_count", 0)
-        data.setdefault("raw_unique_asin_count", 0)
-        data.setdefault("collapsed_unique_asin_count", data.get("unique_count", len(data["items"])))
-        data.setdefault("raw_sellable_sum_raw", 0)
-        data.setdefault("normalized_sellable_sum", 0)
-        data.setdefault("realtime_sellable_asins", len(data["items"]))
-        data.setdefault("realtime_sellable_units", data.get("normalized_sellable_sum", 0))
-        data.setdefault("catalog_asin_count", 0)
-        data.setdefault("coverage_ratio", 0.0)
-        data.setdefault("inventory_scope", "realtime_inventory_snapshot")
-        data.setdefault("coverage_label", "Realtime coverage (ASINs present in snapshot vs catalog baseline)")
-        data.setdefault("inventory_scope_explanation", "")
-        return data
+        return _coerce_snapshot_dict(data)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[VendorRtInventory] Failed to read cache %s: %s", cache_path, exc)
         return _blank_snapshot()
@@ -108,6 +116,31 @@ def _write_snapshot(cache_path: Path, payload: Dict[str, Any]) -> None:
         cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[VendorRtInventory] Failed to write cache %s: %s", cache_path, exc)
+
+
+def _load_snapshot_from_db() -> Dict[str, Any]:
+    ensure_app_kv_table()
+    try:
+        with get_db_connection() as conn:
+            raw = get_app_kv(conn, SNAPSHOT_DB_KEY)
+    except Exception as exc:
+        logger.error("[VendorRtInventory] Failed to read snapshot from SQLite: %s", exc)
+        return _blank_snapshot()
+    if not raw:
+        return _blank_snapshot()
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        logger.warning("[VendorRtInventory] Invalid snapshot payload from SQLite: %s", exc)
+        return _blank_snapshot()
+    return _coerce_snapshot_dict(data)
+
+
+def _persist_snapshot_to_db(payload: Dict[str, Any]) -> None:
+    ensure_app_kv_table()
+    serialized = json.dumps(payload, ensure_ascii=False)
+    with get_db_connection() as conn:
+        set_app_kv(conn, SNAPSHOT_DB_KEY, serialized)
 
 
 def _load_sales_30d_map(marketplace_id: Optional[str]) -> Dict[str, int]:
@@ -439,9 +472,26 @@ def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THR
 
 
 def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) -> Dict[str, Any]:
+    snapshot = _load_snapshot_from_db()
+    if snapshot.get("generated_at"):
+        return _decorate_snapshot(snapshot)
+
     path = cache_path or DEFAULT_CACHE_PATH
-    snapshot = _read_snapshot(path)
-    return _decorate_snapshot(snapshot)
+    if path.exists():
+        logger.warning(
+            "[VendorRtInventory][DB-FIRST] JSON snapshot read from %s to backfill empty SQLite state",
+            path,
+        )
+        fallback = _read_snapshot(path)
+        if fallback.get("generated_at"):
+            try:
+                _persist_snapshot_to_db(fallback)
+            except Exception as exc:
+                logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
+                return _decorate_snapshot(_blank_snapshot())
+            return _decorate_snapshot(fallback)
+
+    return _decorate_snapshot(_blank_snapshot())
 
 
 def refresh_realtime_inventory_snapshot(
@@ -460,7 +510,7 @@ def refresh_realtime_inventory_snapshot(
 
     now = datetime.now(timezone.utc)
     path = cache_path or DEFAULT_CACHE_PATH
-    cached_snapshot = _decorate_snapshot(_read_snapshot(path))
+    cached_snapshot = _decorate_snapshot(_load_snapshot_from_db())
 
     # Throttle SP-API report creation if we fetched within the last window.
     generated_at = _parse_datetime(cached_snapshot.get("generated_at"))
@@ -565,6 +615,7 @@ def refresh_realtime_inventory_snapshot(
     snapshot = _decorate_snapshot(snapshot)
     snapshot["refresh_skipped"] = False
 
+    _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
     return snapshot
 
