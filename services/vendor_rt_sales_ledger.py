@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 LEDGER_TABLE = "vendor_rt_sales_hour_ledger"
 LEDGER_INDEX = "idx_vendor_rt_sales_hour_ledger_status"
+LOCK_TABLE = "vendor_rt_sales_worker_lock"
 STATUS_MISSING = "MISSING"
 STATUS_REQUESTED = "REQUESTED"
 STATUS_DOWNLOADED = "DOWNLOADED"
@@ -123,6 +124,15 @@ def _floor_to_hour(dt: datetime) -> datetime:
 
 def iso_hour_floor(dt: datetime) -> str:
     return _floor_to_hour(dt).isoformat()
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def compute_required_hours(end_utc: datetime, lookback_hours: int) -> List[str]:
@@ -308,3 +318,116 @@ def list_ledger_rows(marketplace_id: str, limit: int = 200) -> List[Dict[str, An
             (marketplace_id, int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+# ----------------------------------------------------------------------
+# Worker lock helpers (global RT sales worker coordination)
+# ----------------------------------------------------------------------
+def _ensure_worker_lock_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {LOCK_TABLE} (
+            marketplace_id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL,
+            updated_at_utc TEXT NOT NULL
+        )
+        """
+    )
+
+
+def acquire_worker_lock(marketplace_id: str, owner: str, ttl_seconds: int = 900) -> bool:
+    if not marketplace_id or not owner:
+        return False
+    now = datetime.now(timezone.utc)
+    now_iso = now.replace(microsecond=0).isoformat()
+    expires_iso = (now + timedelta(seconds=max(ttl_seconds, 1))).replace(microsecond=0).isoformat()
+    with get_db_connection() as conn:
+        _ensure_worker_lock_table(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            f"SELECT owner, expires_at FROM {LOCK_TABLE} WHERE marketplace_id = ?",
+            (marketplace_id,),
+        ).fetchone()
+        if not row:
+            conn.execute(
+                f"""
+                INSERT INTO {LOCK_TABLE} (marketplace_id, owner, expires_at, created_at_utc, updated_at_utc)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (marketplace_id, owner, expires_iso, now_iso, now_iso),
+            )
+            conn.commit()
+            logger.info("[RtSalesWorkerLock] acquired %s owner=%s expires=%s", marketplace_id, owner, expires_iso)
+            return True
+
+        existing_owner = row["owner"]
+        expires_at = _parse_iso_datetime(row["expires_at"])
+        if existing_owner == owner or not expires_at or expires_at <= now:
+            if existing_owner != owner:
+                logger.info(
+                    "[RtSalesWorkerLock] stealing expired lock for %s owner=%s (previous=%s expires=%s)",
+                    marketplace_id,
+                    owner,
+                    existing_owner,
+                    row["expires_at"],
+                )
+            conn.execute(
+                f"""
+                UPDATE {LOCK_TABLE}
+                SET owner = ?, expires_at = ?, updated_at_utc = ?
+                WHERE marketplace_id = ?
+                """,
+                (owner, expires_iso, now_iso, marketplace_id),
+            )
+            conn.commit()
+            logger.info("[RtSalesWorkerLock] acquired %s owner=%s expires=%s", marketplace_id, owner, expires_iso)
+            return True
+
+        conn.commit()
+        logger.info(
+            "[RtSalesWorkerLock] owner=%s could not acquire %s (held by %s until %s)",
+            owner,
+            marketplace_id,
+            existing_owner,
+            row["expires_at"],
+        )
+        return False
+
+
+def refresh_worker_lock(marketplace_id: str, owner: str, ttl_seconds: int = 900) -> bool:
+    if not marketplace_id or not owner:
+        return False
+    now = datetime.now(timezone.utc)
+    now_iso = now.replace(microsecond=0).isoformat()
+    expires_iso = (now + timedelta(seconds=max(ttl_seconds, 1))).replace(microsecond=0).isoformat()
+    with get_db_connection() as conn:
+        _ensure_worker_lock_table(conn)
+        cur = conn.execute(
+            f"""
+            UPDATE {LOCK_TABLE}
+            SET expires_at = ?, updated_at_utc = ?
+            WHERE marketplace_id = ? AND owner = ?
+            """,
+            (expires_iso, now_iso, marketplace_id, owner),
+        )
+        conn.commit()
+        refreshed = cur.rowcount > 0
+        if refreshed:
+            logger.debug("[RtSalesWorkerLock] refreshed %s owner=%s expires=%s", marketplace_id, owner, expires_iso)
+        return refreshed
+
+
+def release_worker_lock(marketplace_id: str, owner: str) -> None:
+    if not marketplace_id or not owner:
+        return
+    with get_db_connection() as conn:
+        _ensure_worker_lock_table(conn)
+        cur = conn.execute(
+            f"DELETE FROM {LOCK_TABLE} WHERE marketplace_id = ? AND owner = ?",
+            (marketplace_id, owner),
+        )
+        conn.commit()
+    if cur.rowcount:
+        logger.info("[RtSalesWorkerLock] released %s owner=%s", marketplace_id, owner)

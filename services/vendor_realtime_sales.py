@@ -41,6 +41,7 @@ from services.spapi_reports import (
     request_vendor_report,
 )
 from services.vendor_rt_sales_ledger import (
+    acquire_worker_lock as ledger_acquire_worker_lock,
     claim_next_missing_hour as ledger_claim_next_missing_hour,
     compute_required_hours as ledger_compute_required_hours,
     ensure_hours_exist as ledger_ensure_hours_exist,
@@ -48,6 +49,8 @@ from services.vendor_rt_sales_ledger import (
     mark_applied as ledger_mark_applied,
     mark_downloaded as ledger_mark_downloaded,
     mark_failed as ledger_mark_failed,
+    refresh_worker_lock as ledger_refresh_worker_lock,
+    release_worker_lock as ledger_release_worker_lock,
     set_report_id as ledger_set_report_id,
 )
 
@@ -1285,41 +1288,50 @@ def run_fill_day_repair_cycle(
         logger.info(f"{LOG_PREFIX_FILL_DAY} No valid hours to enqueue for %s", date_str)
         return
 
-    enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
-    summary = process_rt_sales_hour_ledger(
-        marketplace_id,
-        max_hours=len(hour_starts),
-    )
-    if not summary.get("ok", True):
-        error_msg = summary.get("error") or "unknown error"
-        error_type = summary.get("error_type")
-        if error_type == "cooldown":
-            logger.warning(
-                f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
-                date_str,
-                error_msg,
-            )
-            return
-        if error_type == "quota":
-            logger.warning(
-                f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
-                date_str,
-                error_msg,
-            )
-            return
-        logger.error(
-            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s failed: %s",
-            date_str,
-            error_msg,
-        )
+    lock_owner = f"fill-day:{date_str}:{os.getpid()}:{datetime.now(timezone.utc).isoformat()}"
+    lock_ttl = 1800
+    if not ledger_acquire_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl):
+        logger.info(f"{LOG_PREFIX_FILL_DAY} Worker lock busy for %s; skipping Fill Day run", marketplace_id)
         return
-    logger.info(
-        f"{LOG_PREFIX_FILL_DAY} Fill Day run %s -> requested=%d applied=%d remaining_missing=%d",
-        date_str,
-        summary.get("requested", 0),
-        summary.get("applied", 0),
-        max(0, total_missing - summary.get("applied", 0)),
-    )
+    try:
+        enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+        summary = process_rt_sales_hour_ledger(
+            marketplace_id,
+            max_hours=len(hour_starts),
+        )
+        if not summary.get("ok", True):
+            error_msg = summary.get("error") or "unknown error"
+            error_type = summary.get("error_type")
+            if error_type == "cooldown":
+                logger.warning(
+                    f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
+                    date_str,
+                    error_msg,
+                )
+                return
+            if error_type == "quota":
+                logger.warning(
+                    f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
+                    date_str,
+                    error_msg,
+                )
+                return
+            logger.error(
+                f"{LOG_PREFIX_FILL_DAY} Fill Day run %s failed: %s",
+                date_str,
+                error_msg,
+            )
+            return
+        ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+        logger.info(
+            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s -> requested=%d applied=%d remaining_missing=%d",
+            date_str,
+            summary.get("requested", 0),
+            summary.get("applied", 0),
+            max(0, total_missing - summary.get("applied", 0)),
+        )
+    finally:
+        ledger_release_worker_lock(marketplace_id, lock_owner)
 def repair_missing_hour(
     start_utc: datetime,
     end_utc: datetime,
