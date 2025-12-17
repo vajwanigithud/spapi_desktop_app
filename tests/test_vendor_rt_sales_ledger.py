@@ -169,3 +169,33 @@ def test_ensure_table_migrates_legacy_schema(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "get_db_connection", _conn_ctx)
     inserted = ledger.ensure_hours_exist("A1", ["2025-12-17T05:00:00+00:00"])
     assert inserted == 1
+
+
+def test_worker_lock_acquire_refresh_release(tmp_path, monkeypatch):
+    db_path = tmp_path / "lock.db"
+
+    @contextlib.contextmanager
+    def _conn_ctx():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(ledger, "get_db_connection", _conn_ctx)
+
+    assert ledger.acquire_worker_lock("A1", "owner1", ttl_seconds=5)
+    assert not ledger.acquire_worker_lock("A1", "owner2", ttl_seconds=5)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE vendor_rt_sales_worker_lock SET expires_at = ? WHERE marketplace_id = ?",
+            ("2000-01-01T00:00:00+00:00", "A1"),
+        )
+        conn.commit()
+
+    assert ledger.acquire_worker_lock("A1", "owner2", ttl_seconds=5)
+    assert ledger.refresh_worker_lock("A1", "owner2", ttl_seconds=5)
+    ledger.release_worker_lock("A1", "owner2")
+    assert ledger.acquire_worker_lock("A1", "owner3", ttl_seconds=5)
