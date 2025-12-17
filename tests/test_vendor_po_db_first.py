@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from services import db as db_service
 from services import vendor_po_store as store_module
 from services.vendor_po_lock import acquire_vendor_po_lock, release_vendor_po_lock

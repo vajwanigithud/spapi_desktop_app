@@ -25,8 +25,6 @@ def consolidate_picklist(
     if not selected:
         return {"summary": {"numPos": 0, "totalUnits": 0, "totalLines": 0, "warning": "No matching POs"}, "items": []}
 
-    oos_state = load_oos_state_fn()
-    oos_keys = set(oos_state.keys()) if isinstance(oos_state, dict) else set()
 
     catalog = spapi_catalog_status_fn()
 
@@ -146,8 +144,8 @@ def generate_picklist_pdf(po_numbers: List[str], items: List[Dict[str, Any]], su
             Table,
             TableStyle,
         )
-    except ImportError:
-        raise HTTPException(status_code=500, detail="reportlab is required for PDF generation")
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="reportlab is required for PDF generation") from exc
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(
