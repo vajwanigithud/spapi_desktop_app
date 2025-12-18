@@ -1,240 +1,31 @@
+"""Legacy vendor RT inventory routes (compatibility wrappers)."""
+
 from __future__ import annotations
 
-import logging
-import sqlite3
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from fastapi import APIRouter, FastAPI
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Response
-
-from services.vendor_inventory_realtime import decorate_items_with_sales, load_sales_30d_map
-from services.vendor_rt_inventory_state import (
-    DEFAULT_CATALOG_DB_PATH,
-    get_checkpoint,
-    get_refresh_metadata,
-    get_state_max_end_time,
-    get_state_rows,
-    parse_end_time,
+from routes.vendor_inventory_realtime_routes import (
+    get_realtime_inventory_snapshot as realtime_snapshot_handler,
+    refresh_realtime_inventory as realtime_refresh_handler,
 )
-from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
 
 router = APIRouter()
-LOGGER = logging.getLogger(__name__)
-
-DEFAULT_MARKETPLACE_ID = "A2VIGQ35RCS4UG"
-UAE_TZ = timezone(timedelta(hours=4))
-
-
-def _resolve_db_path(raw: Optional[str]) -> Path:
-    return Path(raw or DEFAULT_CATALOG_DB_PATH)
-
-
-def _chunked(seq: Sequence[str], size: int = 400) -> Iterable[Sequence[str]]:
-    for idx in range(0, len(seq), size):
-        yield seq[idx : idx + size]
-
-
-def _load_catalog_metadata(asins: List[str], db_path: Path) -> Dict[str, Dict[str, Optional[str]]]:
-    """
-    Load catalog metadata (title + image_url) for ASINs in batches.
-
-    NOTE: This assumes a cached catalog table exists. If it doesn't, we fail safely
-    and return an empty map.
-    """
-    if not asins:
-        return {}
-
-    catalog: Dict[str, Dict[str, Optional[str]]] = {}
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            # Default assumption used in earlier attempts. If your actual table differs,
-            # we can adjust after you confirm the schema.
-            table = "spapi_catalog"
-            col_asin = "asin"
-            col_title = "title"
-            col_image = "image"
-
-            for chunk in _chunked(asins):
-                placeholders = ",".join(["?"] * len(chunk))
-                query = f"""
-                    SELECT {col_asin} AS asin, {col_title} AS title, {col_image} AS image
-                    FROM {table}
-                    WHERE {col_asin} IN ({placeholders})
-                """
-                rows = conn.execute(query, tuple(chunk)).fetchall()
-                for row in rows:
-                    asin = (row["asin"] or "").strip().upper()
-                    if not asin:
-                        continue
-                    catalog[asin] = {
-                        "title": row["title"],
-                        "image_url": row["image"],
-                    }
-        finally:
-            conn.close()
-    except Exception as exc:
-        LOGGER.warning("Failed to load catalog metadata: %s", exc)
-
-    return catalog
-
-
-def _decorate_inventory_items(
-    items: List[Dict[str, Any]],
-    marketplace_id: str,
-    db_path: Path,
-) -> List[Dict[str, Any]]:
-    asin_list = sorted(
-        {
-            (item.get("asin") or "").strip().upper()
-            for item in items
-            if isinstance(item, dict) and item.get("asin")
-        }
-    )
-    catalog_map = _load_catalog_metadata(asin_list, db_path)
-    try:
-        sales_map = load_sales_30d_map(marketplace_id)
-    except Exception as exc:
-        LOGGER.warning("Failed to load sales_30d map: %s", exc)
-        sales_map = {}
-    decorate_items_with_sales(items, sales_map)
-    for item in items:
-        asin = (item.get("asin") or "").strip().upper()
-        meta = catalog_map.get(asin) or {}
-        item["title"] = meta.get("title")
-        item["image_url"] = meta.get("image_url")
-    return items
-
-
-def _load_inventory_snapshot(
-    marketplace_id: str,
-    limit: Optional[int],
-    db_path: Path,
-) -> Dict[str, Any]:
-    as_of = get_checkpoint(marketplace_id, db_path=db_path)
-    if not as_of:
-        as_of = get_state_max_end_time(marketplace_id, db_path=db_path)
-    items = get_state_rows(marketplace_id, limit, db_path)
-    _decorate_inventory_items(items, marketplace_id, db_path)
-    return {"as_of": as_of, "items": items}
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _parse_iso_to_utc(value: Optional[str]) -> Optional[datetime]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    candidate = text
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    elif candidate.endswith("+00") and not candidate.endswith("+00:00"):
-        candidate = candidate + ":00"
-    try:
-        dt = datetime.fromisoformat(candidate)
-    except Exception:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt
-
-
-def _compute_as_of_fields(as_of_raw: Optional[str]) -> Dict[str, Optional[Any]]:
-    normalized = parse_end_time(as_of_raw) if as_of_raw else None
-    as_of_iso = normalized or as_of_raw
-    as_of_dt = _parse_iso_to_utc(as_of_iso)
-    as_of_uae = None
-    stale_hours = None
-    if as_of_dt is not None:
-        as_of_iso = as_of_dt.isoformat()
-        as_of_uae = as_of_dt.astimezone(UAE_TZ).strftime("%Y-%m-%d %H:%M UAE")
-        delta = _now_utc() - as_of_dt
-        stale_hours = round(max(delta.total_seconds() / 3600.0, 0.0), 2)
-    return {
-        "as_of": as_of_iso,
-        "as_of_uae": as_of_uae,
-        "stale_hours": stale_hours,
-    }
 
 
 @router.get("/api/vendor/rt-inventory")
-def get_vendor_rt_inventory(
-    marketplace_id: str = Query(DEFAULT_MARKETPLACE_ID),
-    limit: Optional[int] = Query(None, ge=1),
-    db: Optional[str] = Query(default=str(DEFAULT_CATALOG_DB_PATH)),
-) -> Dict[str, Any]:
-    db_path = _resolve_db_path(db)
-
-    snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
-    refresh_meta = get_refresh_metadata(marketplace_id, db_path=db_path)
-    raw_as_of = snapshot.get("as_of")
-    as_of_meta = _compute_as_of_fields(raw_as_of)
-    canonical_as_of = as_of_meta["as_of"] or raw_as_of
-
-    return {
-        "ok": True,
-        "marketplace_id": marketplace_id,
-        "as_of_raw": raw_as_of,
-        "as_of": canonical_as_of,
-        "as_of_utc": canonical_as_of,
-        "as_of_uae": as_of_meta["as_of_uae"],
-        "stale_hours": as_of_meta["stale_hours"],
-        "items": snapshot["items"],
-        "source": "cache",
-        "status": "ok",
-        "refresh_in_progress": bool(refresh_meta.get("in_progress")),
-        "refresh": refresh_meta,
-    }
+def get_vendor_rt_inventory():
+    """
+    Legacy endpoint that now delegates to the DB-first realtime snapshot handler.
+    """
+    return realtime_snapshot_handler()
 
 
 @router.post("/api/vendor/rt-inventory/refresh")
-def refresh_vendor_rt_inventory(
-    response: Response,
-    marketplace_id: str = Query(DEFAULT_MARKETPLACE_ID),
-    hours: int = Query(2, ge=1, le=24),
-    limit: Optional[int] = Query(None, ge=1),
-    db: Optional[str] = Query(default=str(DEFAULT_CATALOG_DB_PATH)),
-) -> Dict[str, Any]:
-    db_path = _resolve_db_path(db)
-    try:
-        refresh_result = refresh_vendor_rt_inventory_singleflight(
-            marketplace_id,
-            db_path=db_path,
-            hours=hours,
-        )
-    except Exception as exc:
-        LOGGER.error("Failed to refresh vendor RT inventory: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to refresh vendor RT inventory") from exc
-
-    if refresh_result["status"] == "refresh_in_progress":
-        response.status_code = 202
-
-    snapshot = _load_inventory_snapshot(marketplace_id, limit, db_path)
-    raw_as_of = snapshot.get("as_of")
-    as_of_meta = _compute_as_of_fields(raw_as_of)
-    canonical_as_of = as_of_meta["as_of"] or raw_as_of
-    return {
-        "ok": True,
-        "marketplace_id": marketplace_id,
-        "as_of_raw": raw_as_of,
-        "as_of": canonical_as_of,
-        "as_of_utc": canonical_as_of,
-        "as_of_uae": as_of_meta["as_of_uae"],
-        "stale_hours": as_of_meta["stale_hours"],
-        "items": snapshot["items"],
-        "source": refresh_result.get("source", "cache"),
-        "status": refresh_result["status"],
-        "refresh_in_progress": bool(refresh_result["refresh"].get("in_progress")),
-        "refresh": refresh_result["refresh"],
-    }
+def refresh_vendor_rt_inventory():
+    """
+    Legacy refresh endpoint. Delegates to the DB-first realtime refresh handler.
+    """
+    return realtime_refresh_handler()
 
 
 def register_vendor_rt_inventory_routes(app: FastAPI) -> None:

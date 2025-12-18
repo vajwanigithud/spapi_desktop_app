@@ -6,111 +6,124 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from routes import vendor_rt_inventory_routes as routes
+from routes import vendor_inventory_realtime_routes as realtime_routes
+from routes import vendor_rt_inventory_routes as legacy_routes
+from services.spapi_reports import SpApiQuotaError
 
 
-def _build_app():
+def _build_app(include_legacy: bool = False) -> FastAPI:
     app = FastAPI()
-    app.include_router(routes.router)
+    app.include_router(realtime_routes.router)
+    if include_legacy:
+        app.include_router(legacy_routes.router)
     return app
 
 
-def _mock_inventory_state(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    items: list[dict],
-    as_of: str | None,
-    sales_map: dict | Exception | None = None,
-) -> None:
-    monkeypatch.setattr(routes, "get_state_rows", lambda *_, **__: items)
-    monkeypatch.setattr(routes, "get_checkpoint", lambda *_, **__: as_of)
-    monkeypatch.setattr(routes, "get_state_max_end_time", lambda *_, **__: None)
-    monkeypatch.setattr(routes, "_load_catalog_metadata", lambda *_, **__: {})
-    if isinstance(sales_map, Exception):
-        def _boom(*args, **kwargs):
-            raise sales_map
-        monkeypatch.setattr(routes, "load_sales_30d_map", _boom)
-    else:
-        monkeypatch.setattr(routes, "load_sales_30d_map", lambda *_, **__: sales_map or {})
-
-
-def test_rt_inventory_endpoint_includes_as_of_fields(monkeypatch):
-    app = _build_app()
-    _mock_inventory_state(
-        monkeypatch,
-        items=[{"asin": "ASIN1", "sellable": 7}],
-        as_of="2025-12-17T10:00:00+00:00",
-    )
-    monkeypatch.setattr(routes, "get_refresh_metadata", lambda *_, **__: {"in_progress": False})
-    monkeypatch.setattr(
-        routes,
-        "_now_utc",
-        lambda: datetime(2025, 12, 17, 12, 0, tzinfo=timezone.utc),
-    )
-
-    client = TestClient(app)
-    resp = client.get("/api/vendor/rt-inventory")
-    assert resp.status_code == 200
-    data = resp.json()
-
-    assert data["ok"] is True
-    assert data["as_of_raw"] == "2025-12-17T10:00:00+00:00"
-    assert data["as_of"] == "2025-12-17T10:00:00+00:00"
-    assert data["as_of_utc"] == "2025-12-17T10:00:00+00:00"
-    assert data["as_of_uae"].startswith("2025-12-17")
-    assert pytest.approx(data["stale_hours"], rel=1e-3) == 2.0
-    assert data["items"][0]["asin"] == "ASIN1"
-
-
-def test_rt_inventory_handles_missing_as_of(monkeypatch):
-    app = _build_app()
-    _mock_inventory_state(monkeypatch, items=[], as_of=None)
-    monkeypatch.setattr(routes, "get_refresh_metadata", lambda *_, **__: {"in_progress": False})
-
-    client = TestClient(app)
-    resp = client.get("/api/vendor/rt-inventory")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["as_of_raw"] is None
-    assert data["as_of"] is None
-    assert data["as_of_utc"] is None
-    assert data["as_of_uae"] is None
-    assert data["stale_hours"] is None
-
-
-def test_rt_inventory_includes_sales_30d(monkeypatch):
-    app = _build_app()
-    _mock_inventory_state(
-        monkeypatch,
-        items=[
-            {"asin": "ASIN_A", "sellable": 5},
-            {"asin": "ASIN_B", "sellable": 1},
+def _sample_snapshot():
+    now_iso = datetime(2025, 12, 17, 10, 0, tzinfo=timezone.utc).isoformat()
+    return {
+        "generated_at": now_iso,
+        "report_start_time": now_iso,
+        "report_end_time": now_iso,
+        "items": [
+            {"asin": "B0TEST001", "sellable": 5},
+            {"asin": "B0TEST002", "sellable": 3},
         ],
-        as_of="2025-12-17T10:00:00+00:00",
-        sales_map={"ASIN_A": 12},
-    )
-    monkeypatch.setattr(routes, "get_refresh_metadata", lambda *_, **__: {"in_progress": False})
+        "age_seconds": 120,
+        "age_hours": 0.03,
+        "is_stale": False,
+        "unique_count": 2,
+        "raw_row_count": 2,
+        "raw_nonempty_asin_count": 2,
+        "raw_unique_asin_count": 2,
+        "collapsed_unique_asin_count": 2,
+        "normalized_sellable_sum": 8,
+        "realtime_sellable_asins": 2,
+        "realtime_sellable_units": 8,
+        "catalog_asin_count": 0,
+        "coverage_ratio": 0.0,
+    }
 
-    client = TestClient(app)
-    resp = client.get("/api/vendor/rt-inventory")
-    assert resp.status_code == 200
-    items = resp.json()["items"]
-    sales = {row["asin"]: row.get("sales_30d") for row in items}
-    assert sales["ASIN_A"] == 12
-    assert sales["ASIN_B"] == 0
 
-
-def test_rt_inventory_sales_30d_loader_failure(monkeypatch):
+def test_realtime_snapshot_endpoint_includes_catalog_and_sales(monkeypatch: pytest.MonkeyPatch):
     app = _build_app()
-    _mock_inventory_state(
-        monkeypatch,
-        items=[{"asin": "ASIN_X", "sellable": 3}],
-        as_of="2025-12-17T10:00:00+00:00",
-        sales_map=RuntimeError("boom"),
+    snapshot = _sample_snapshot()
+
+    monkeypatch.setattr(
+        realtime_routes,
+        "get_cached_realtime_inventory_snapshot",
+        lambda: dict(snapshot),
     )
-    monkeypatch.setattr(routes, "get_refresh_metadata", lambda *_, **__: {"in_progress": False})
+    monkeypatch.setattr(
+        realtime_routes,
+        "_load_catalog_metadata",
+        lambda asins: {"B0TEST001": {"title": "Widget", "image_url": "https://img/1"}},
+    )
+    monkeypatch.setattr(
+        realtime_routes,
+        "load_sales_30d_map",
+        lambda *_: {"B0TEST001": 12, "B0TEST002": 0},
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/vendor-inventory/realtime/snapshot")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["status"] == "ok"
+    assert data["as_of"]
+    assert data["as_of_uae"]
+    assert data["items"][0]["title"] == "Widget"
+    assert data["items"][0]["image_url"] == "https://img/1"
+    sales_map = {item["asin"]: item["sales_30d"] for item in data["items"]}
+    assert sales_map["B0TEST001"] == 12
+    assert sales_map["B0TEST002"] == 0
+
+
+def test_refresh_endpoint_handles_quota_error(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app()
+
+    def _boom(*_args, **_kwargs):
+        raise SpApiQuotaError("cooldown")
+
+    monkeypatch.setattr(
+        realtime_routes,
+        "refresh_realtime_inventory_snapshot",
+        _boom,
+    )
+
+    client = TestClient(app)
+    resp = client.post("/api/vendor-inventory/realtime/refresh")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "quota_error"
+    assert "cooldown" in data["error"]
+
+
+def test_legacy_endpoint_delegates_to_realtime_snapshot(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(include_legacy=True)
+    snapshot = _sample_snapshot()
+    snapshot["items"][0]["title"] = "LegacyWidget"
+
+    monkeypatch.setattr(
+        realtime_routes,
+        "get_cached_realtime_inventory_snapshot",
+        lambda: dict(snapshot),
+    )
+    monkeypatch.setattr(
+        realtime_routes,
+        "_load_catalog_metadata",
+        lambda *_: {},
+    )
+    monkeypatch.setattr(
+        realtime_routes,
+        "load_sales_30d_map",
+        lambda *_: {},
+    )
 
     client = TestClient(app)
     resp = client.get("/api/vendor/rt-inventory")
     assert resp.status_code == 200
-    assert resp.json()["items"][0]["sales_30d"] == 0
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["items"][0]["title"] == "LegacyWidget"
