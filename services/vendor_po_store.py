@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -475,6 +476,55 @@ def get_vendor_po_line_totals_for_po(po_number: str) -> Dict[str, int]:
     return totals.get(po_number, {})
 
 
+def get_vendor_po_line_amount_total(po_number: str) -> Dict[str, Any]:
+    """
+    Sum accepted_qty * net_cost_amount for a PO using DB line data.
+    Returns {"ok": bool, "line_total": float, "currency": Optional[str], ...}
+    """
+    ensure_vendor_po_schema()
+    if not po_number:
+        return {"ok": True, "line_total": 0.0, "currency": None}
+    with db_service.get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT accepted_qty, net_cost_amount, net_cost_currency
+            FROM {LINE_TABLE}
+            WHERE po_number = ?
+            """,
+            (po_number,),
+        ).fetchall()
+
+    currencies_seen: set[str] = set()
+    total = Decimal("0.00")
+    for row in rows or []:
+        accepted_qty = _to_int(row["accepted_qty"])
+        net_cost_amount = row["net_cost_amount"]
+        currency_code = (row["net_cost_currency"] or "").strip()
+        if currency_code:
+            currencies_seen.add(currency_code)
+        if not accepted_qty or net_cost_amount is None:
+            continue
+        try:
+            line_total = Decimal(str(net_cost_amount)) * Decimal(accepted_qty)
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        total += line_total
+
+    if len(currencies_seen) > 1:
+        return {
+            "ok": False,
+            "error": "mixed_currencies",
+            "currencies": sorted(currencies_seen),
+        }
+
+    currency = next(iter(currencies_seen), None)
+    return {
+        "ok": True,
+        "line_total": float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "currency": currency,
+    }
+
+
 def count_vendor_po_lines() -> int:
     ensure_vendor_po_schema()
     with db_service.get_db_connection() as conn:
@@ -507,6 +557,72 @@ def get_rejected_vendor_po_lines(po_numbers: Sequence[str]) -> List[Dict[str, An
     with db_service.get_db_connection() as conn:
         rows = conn.execute(sql, tuple(po_numbers)).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_vendor_po_ledger(po_number: str) -> List[Dict[str, Any]]:
+    ensure_vendor_po_schema()
+    if not po_number:
+        return []
+    with db_service.get_db_connection() as conn:
+        header = conn.execute(
+            f"""
+            SELECT po_number, last_changed_at, last_synced_at, last_source
+            FROM {HEADER_TABLE}
+            WHERE po_number = ?
+            """,
+            (po_number,),
+        ).fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT asin, vendor_sku, item_sequence_number,
+                   accepted_qty, received_qty, cancelled_qty, pending_qty,
+                   last_updated_at, ship_to_location
+            FROM {LINE_TABLE}
+            WHERE po_number = ?
+            ORDER BY item_sequence_number
+            """,
+            (po_number,),
+        ).fetchall()
+
+    events: List[Dict[str, Any]] = []
+    if header:
+        events.append(
+            {
+                "timestamp": header["last_changed_at"] or header["last_synced_at"],
+                "event": "PO_SYNCED",
+                "asin": None,
+                "old_qty": None,
+                "new_qty": None,
+                "source": header["last_source"] or "vendor_po_header",
+            }
+        )
+
+    for row in rows or []:
+        asin = row["asin"] or row["vendor_sku"] or row["item_sequence_number"]
+        timestamp = row["last_updated_at"] or (header["last_changed_at"] if header else None)
+        source = row["ship_to_location"] or "vendor_po_lines"
+
+        def _append(event: str, qty_value: Any) -> None:
+            qty = _to_int(qty_value)
+            if qty <= 0:
+                return
+            events.append(
+                {
+                    "timestamp": timestamp,
+                    "event": event,
+                    "asin": asin,
+                    "old_qty": 0,
+                    "new_qty": qty,
+                    "source": source,
+                }
+            )
+
+        _append("LINE_ACCEPTED", row["accepted_qty"])
+        _append("LINE_RECEIVED", row["received_qty"])
+        _append("LINE_CANCELLED", row["cancelled_qty"])
+
+    events.sort(key=lambda e: (e["timestamp"] or "", e["event"] or ""))
+    return events
 
 
 def update_header_totals_from_lines(
