@@ -2101,10 +2101,7 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
             }
         else:
             line_total_value = _pick_money_amount(line_amount_summary.get("line_total"))
-            reconciliation = compute_amount_reconciliation(
-                line_total_value,
-                accepted_total_value,
-            )
+            reconciliation = compute_amount_reconciliation(line_total_value, accepted_total_value)
             reconciliation["ok"] = True
             reconciliation["line_total"] = line_total_value
             reconciliation["accepted_total"] = accepted_total_value
