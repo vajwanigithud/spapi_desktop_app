@@ -4610,7 +4610,7 @@
         setInventoryStatus('Loading real-time inventory…');
       }
       inventoryFetchInFlight = true;
-      const request = fetch('/api/vendor/rt-inventory')
+      const request = fetch('/api/vendor-inventory/realtime/snapshot')
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
@@ -4676,7 +4676,7 @@
         setInventoryStatus(force ? 'Force refreshing real-time snapshot…' : 'Refreshing real-time inventory…');
       }
 
-      fetch(force ? '/api/vendor/rt-inventory/refresh?force=1' : '/api/vendor/rt-inventory/refresh', {
+      fetch('/api/vendor-inventory/realtime/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
