@@ -1337,6 +1337,27 @@ def _compute_accepted_line_amounts(items: List[Dict[str, Any]]) -> tuple:
     return items, po_total, currency_code
 
 
+def _coerce_money_amount(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(Decimal(str(value)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _pick_money_amount(*values: Any, allow_zero: bool = True) -> float:
+    for value in values:
+        coerced = _coerce_money_amount(value)
+        if coerced is not None:
+            if not allow_zero and abs(coerced) < 1e-9:
+                continue
+            return coerced
+    return 0.0
+
+
 def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
     """
     Enrich each PO with total_received_qty and total_pending_qty from purchaseOrdersStatus endpoint.
@@ -1921,7 +1942,6 @@ def get_vendor_pos(
         if dt == datetime.min or dt >= cutoff:
             filtered.append(po)
     filtered.sort(key=parse_po_date, reverse=True)
-    filtered.sort(key=parse_po_date, reverse=True)
 
     line_totals_map: Dict[str, Dict[str, Any]] = {}
     po_numbers = [po.get("purchaseOrderNumber") for po in filtered if po.get("purchaseOrderNumber")]
@@ -2061,13 +2081,13 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         line_amount_summary = get_vendor_po_line_amount_total(po_number)
     except Exception as exc:
         logger.warning(f"[VendorPO] Failed to compute line totals for reconciliation on PO {po_number}: {exc}")
-    accepted_total_value = (
-        po.get("accepted_total_amount")
-        or po.get("total_accepted_cost")
-        or po.get("totalAcceptedCostAmount")
-        or po.get("total_accepted_cost_amount")
-        or po.get("totalAcceptedCost")
-        or 0.0
+    accepted_total_value = _pick_money_amount(
+        po.get("accepted_total_amount"),
+        po.get("total_accepted_cost"),
+        po.get("totalAcceptedCostAmount"),
+        po.get("total_accepted_cost_amount"),
+        po.get("totalAcceptedCost"),
+        allow_zero=False,
     )
     try:
         if not line_amount_summary.get("ok", True):
@@ -2080,11 +2100,11 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
                 "currencies": line_amount_summary.get("currencies"),
             }
         else:
-            reconciliation = compute_amount_reconciliation(
-                line_amount_summary.get("line_total", 0.0),
-                accepted_total_value,
-            )
+            line_total_value = _pick_money_amount(line_amount_summary.get("line_total"))
+            reconciliation = compute_amount_reconciliation(line_total_value, accepted_total_value)
             reconciliation["ok"] = True
+            reconciliation["line_total"] = line_total_value
+            reconciliation["accepted_total"] = accepted_total_value
             reconciliation["currency"] = line_amount_summary.get("currency") or po.get("accepted_total_currency") or "AED"
             po["amount_reconciliation"] = reconciliation
     except Exception as exc:
