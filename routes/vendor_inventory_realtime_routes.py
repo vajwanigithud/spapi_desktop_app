@@ -211,6 +211,48 @@ def _build_snapshot_payload() -> Dict[str, Any]:
     return _format_snapshot_response(snapshot)
 
 
+def _build_health_payload() -> Dict[str, Any]:
+    snapshot = get_cached_realtime_inventory_snapshot()
+    snapshot.setdefault("marketplace_id", DEFAULT_MARKETPLACE_ID)
+    computed = _compute_as_of_fields(snapshot)
+    as_of_utc = computed["as_of"]
+    as_of_uae = computed["as_of_uae"]
+    age_seconds = snapshot.get("age_seconds")
+    if age_seconds is None and as_of_utc:
+        as_of_dt = _parse_iso_to_utc(as_of_utc)
+        if as_of_dt:
+            age_seconds = int(max((datetime.now(timezone.utc) - as_of_dt).total_seconds(), 0))
+    age_hours = snapshot.get("age_hours")
+    if age_hours is None and age_seconds is not None:
+        age_hours = round(age_seconds / 3600.0, 2)
+    if age_hours is None:
+        age_hours = computed["stale_hours"]
+
+    unique_asins = snapshot.get("unique_count")
+    if not isinstance(unique_asins, int):
+        items = snapshot.get("items") or []
+        unique_asins = len(items)
+
+    has_snapshot = bool(snapshot.get("generated_at"))
+
+    payload: Dict[str, Any] = {
+        "ok": has_snapshot,
+        "marketplace_id": snapshot.get("marketplace_id", DEFAULT_MARKETPLACE_ID),
+        "as_of_utc": as_of_utc,
+        "as_of_uae": as_of_uae,
+        "age_seconds": age_seconds,
+        "age_hours": age_hours,
+        "is_stale": bool(snapshot.get("is_stale", True)),
+        "unique_asins": unique_asins,
+    }
+    if not has_snapshot:
+        payload["reason"] = "no_snapshot"
+        payload["is_stale"] = True
+        payload["age_seconds"] = None
+        payload["age_hours"] = None
+    return payload
+
+
 def _refresh_snapshot_payload() -> Dict[str, Any]:
     marketplace_id = DEFAULT_MARKETPLACE_ID
     snapshot = refresh_realtime_inventory_snapshot(marketplace_id)
@@ -224,6 +266,18 @@ def get_realtime_inventory_snapshot() -> Dict[str, Any]:
     Return the cached GET_VENDOR_REAL_TIME_INVENTORY_REPORT snapshot + freshness metadata.
     """
     return _build_snapshot_payload()
+
+
+@router.get(
+    "/health",
+    summary="Realtime snapshot health",
+    description="Returns freshness metadata for the realtime inventory snapshot without loading the full item payload.",
+)
+def get_realtime_inventory_health() -> Dict[str, Any]:
+    """
+    Lightweight health check for realtime inventory freshness.
+    """
+    return _build_health_payload()
 
 
 @router.post("/refresh")
