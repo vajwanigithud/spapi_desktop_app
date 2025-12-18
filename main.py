@@ -1080,7 +1080,7 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}")
         
         if resp.status_code >= 400:
-            print(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
+            logger.error(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
             raise HTTPException(status_code=resp.status_code, detail=f"Vendor PO fetch failed: {resp.text}")
         data = resp.json()
         items = extract_purchase_orders(data) or []
@@ -1091,18 +1091,19 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
                     payload_preview = _json.dumps(data.get("payload"), ensure_ascii=False)[:500]
                 except Exception:
                     payload_preview = str(data.get("payload"))[:500]
-                print(f"Vendor PO fetch returned empty page: status {resp.status_code}, payload preview: {payload_preview}")
+                logger.info(f"Vendor PO fetch returned empty page: status {resp.status_code}, payload preview: {payload_preview}")
             else:
-                print(
-                    f"Vendor PO fetch returned empty page: status {resp.status_code}, "
-                    f"top-level keys: {list(data.keys()) if isinstance(data, dict) else type(data)}"
+                logger.info(
+                    "Vendor PO fetch returned empty page: status %s, top-level keys: %s",
+                    resp.status_code,
+                    list(data.keys()) if isinstance(data, dict) else type(data),
                 )
         all_pos.extend(items)
         next_token = data.get("nextToken") if isinstance(data, dict) else None
         if not next_token:
             break
         page += 1
-    print(f"Fetched {len(all_pos)} POs from {created_after} to {created_before}")
+    logger.info("Fetched %d POs from %s to %s", len(all_pos), created_after, created_before)
     return all_pos
 
 
@@ -1955,11 +1956,15 @@ def get_vendor_pos(
 
         try:
             po_totals = line_totals_map.get(po_num) if po_num else None
-            po["po_status"] = compute_po_status(po, po_totals)
+            status, reason = compute_po_status(po, po_totals)
+            po["po_status"] = status
+            po["po_status_reason"] = reason
         except Exception as exc:
             logger.warning(f"[VendorPO] Failed to compute po_status for {po_num}: {exc}")
-            po["po_status"] = compute_po_status(po, {})
-    print(f"[vendor-pos] filtered POs (>= 2025-10-01): {len(filtered)}")
+            fallback_status, fallback_reason = compute_po_status(po, {})
+            po["po_status"] = fallback_status
+            po["po_status_reason"] = fallback_reason
+    logger.info("[vendor-pos] filtered POs (>= 2025-10-01): %d", len(filtered))
     if enrich:
         enrich_items_with_catalog(filtered)
 
@@ -2011,10 +2016,14 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         logger.warning(f"[VendorPO] Failed to load DB totals for PO {po_number}: {exc}")
         line_totals = {}
     try:
-        po["po_status"] = compute_po_status(po, line_totals)
+        status, reason = compute_po_status(po, line_totals)
+        po["po_status"] = status
+        po["po_status_reason"] = reason
     except Exception as exc:
         logger.warning(f"[VendorPO] Failed to compute po_status for detail {po_number}: {exc}")
-        po["po_status"] = compute_po_status(po, {})
+        fallback_status, fallback_reason = compute_po_status(po, {})
+        po["po_status"] = fallback_status
+        po["po_status_reason"] = fallback_reason
 
     # Ensure detail exists for modal display
     if not po.get("orderDetails", {}).get("items"):
@@ -2043,7 +2052,11 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         po["accepted_total_amount"] = 0.0
         po["accepted_total_currency"] = "AED"
 
-    line_amount_summary = {"line_total": 0.0, "currency": po.get("accepted_total_currency") or "AED"}
+    line_amount_summary: Dict[str, Any] = {
+        "ok": True,
+        "line_total": 0.0,
+        "currency": po.get("accepted_total_currency") or None,
+    }
     try:
         line_amount_summary = get_vendor_po_line_amount_total(po_number)
     except Exception as exc:
@@ -2057,19 +2070,35 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         or 0.0
     )
     try:
-        po["amount_reconciliation"] = compute_amount_reconciliation(
-            line_amount_summary.get("line_total", 0.0),
-            accepted_total_value,
-        )
+        if not line_amount_summary.get("ok", True):
+            po["amount_reconciliation"] = {
+                "ok": False,
+                "line_total": None,
+                "accepted_total": accepted_total_value,
+                "delta": None,
+                "error": line_amount_summary.get("error"),
+                "currencies": line_amount_summary.get("currencies"),
+            }
+        else:
+            reconciliation = compute_amount_reconciliation(
+                line_amount_summary.get("line_total", 0.0),
+                accepted_total_value,
+            )
+            reconciliation["ok"] = True
+            reconciliation["currency"] = line_amount_summary.get("currency") or po.get("accepted_total_currency") or "AED"
+            po["amount_reconciliation"] = reconciliation
     except Exception as exc:
         logger.warning(f"[VendorPO] Failed to compute amount reconciliation for PO {po_number}: %s", exc)
-        po["amount_reconciliation"] = compute_amount_reconciliation(0.0, accepted_total_value)
+        fallback = compute_amount_reconciliation(0.0, accepted_total_value)
+        fallback["ok"] = True
+        fallback["currency"] = po.get("accepted_total_currency") or "AED"
+        po["amount_reconciliation"] = fallback
 
     if enrich:
         try:
             enrich_items_with_catalog([po])
         except Exception as exc:
-            print(f"Error enriching PO {po_number}: {exc}")
+            logger.error("Error enriching PO %s: %s", po_number, exc)
 
     items_for_modal = po.get("orderDetails", {}).get("items", []) or []
     if items_for_modal:
@@ -2087,13 +2116,19 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
 @app.get("/api/vendor-pos/{po_number}/ledger")
 def get_vendor_po_history(po_number: str):
     """
-    Return synthesized ledger events for a PO (read-only audit trail).
+    Return synthesized ledger events for a PO (read-only snapshot events).
     """
     ensure_vendor_po_schema()
     if not po_number:
         raise HTTPException(status_code=400, detail="po_number required")
     rows = get_vendor_po_ledger(po_number)
-    return {"ok": True, "po_number": po_number, "rows": rows or []}
+    return {
+        "ok": True,
+        "po_number": po_number,
+        "ledger_type": "snapshot_synth",
+        "note": "Events represent the current DB snapshot (not a time-series history).",
+        "rows": rows or [],
+    }
 
 
 @app.get("/api/vendor-pos/reconcile/{po_number}")

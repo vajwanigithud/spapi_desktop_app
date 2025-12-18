@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services import db as db_service
+from services.db import get_db_connection
 from services.vendor_po_store import (
     ensure_vendor_po_schema,
     replace_vendor_po_lines,
@@ -71,6 +72,113 @@ def _seed_sample_po():
     )
 
 
+def _seed_missing_accepted_po():
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    po_payload = {
+        "purchaseOrderNumber": "PO-MISSING",
+        "purchaseOrderDate": "2025-12-05T00:00:00Z",
+        "requestedQty": 12,
+        "acceptedQty": 0,
+        "receivedQty": 0,
+        "cancelledQty": 0,
+        "remainingQty": 5,
+        "orderDetails": {"items": []},
+    }
+    upsert_vendor_po_headers([po_payload], source="tests", source_detail="seed", synced_at=now)
+    replace_vendor_po_lines(
+        "PO-MISSING",
+        [
+            {
+                "item_sequence_number": "1",
+                "asin": "B0MISSING",
+                "vendor_sku": "SKU-MISS",
+                "barcode": "",
+                "title": "Missing Accepted Line",
+                "image": "",
+                "ordered_qty": 12,
+                "accepted_qty": 0,
+                "received_qty": 0,
+                "cancelled_qty": 0,
+                "pending_qty": 5,
+                "shortage_qty": 0,
+                "net_cost_amount": 4.0,
+                "net_cost_currency": "AED",
+                "list_price_amount": 0.0,
+                "list_price_currency": "AED",
+                "last_updated_at": now,
+                "raw": {},
+                "ship_to_location": "DXB1",
+            }
+        ],
+    )
+    with get_db_connection() as conn:
+        conn.execute("UPDATE vendor_po_header SET accepted_qty = NULL WHERE po_number = 'PO-MISSING'")
+        conn.execute("UPDATE vendor_po_header SET remaining_qty = NULL WHERE po_number = 'PO-MISSING'")
+        conn.commit()
+
+
+def _seed_mixed_currency_po():
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    po_payload = {
+        "purchaseOrderNumber": "PO-MIXED",
+        "purchaseOrderDate": "2025-12-07T00:00:00Z",
+        "requestedQty": 10,
+        "acceptedQty": 10,
+        "receivedQty": 0,
+        "cancelledQty": 0,
+        "remainingQty": 10,
+        "orderDetails": {"items": []},
+    }
+    upsert_vendor_po_headers([po_payload], source="tests", source_detail="seed", synced_at=now)
+    replace_vendor_po_lines(
+        "PO-MIXED",
+        [
+            {
+                "item_sequence_number": "1",
+                "asin": "B0MIXED1",
+                "vendor_sku": "SKU-MIX-1",
+                "barcode": "",
+                "title": "Line AED",
+                "image": "",
+                "ordered_qty": 5,
+                "accepted_qty": 5,
+                "received_qty": 0,
+                "cancelled_qty": 0,
+                "pending_qty": 5,
+                "shortage_qty": 0,
+                "net_cost_amount": 6.0,
+                "net_cost_currency": "AED",
+                "list_price_amount": 0.0,
+                "list_price_currency": "AED",
+                "last_updated_at": now,
+                "raw": {},
+                "ship_to_location": "DXB1",
+            },
+            {
+                "item_sequence_number": "2",
+                "asin": "B0MIXED2",
+                "vendor_sku": "SKU-MIX-2",
+                "barcode": "",
+                "title": "Line USD",
+                "image": "",
+                "ordered_qty": 5,
+                "accepted_qty": 5,
+                "received_qty": 0,
+                "cancelled_qty": 0,
+                "pending_qty": 5,
+                "shortage_qty": 0,
+                "net_cost_amount": 2.0,
+                "net_cost_currency": "USD",
+                "list_price_amount": 0.0,
+                "list_price_currency": "USD",
+                "last_updated_at": now,
+                "raw": {},
+                "ship_to_location": "DXB1",
+            },
+        ],
+    )
+
+
 @pytest.fixture
 def vendor_po_client(tmp_path, monkeypatch):
     _setup_tmp_db(tmp_path, monkeypatch)
@@ -88,13 +196,19 @@ def vendor_po_client(tmp_path, monkeypatch):
 
 def test_compute_po_status_variants():
     header = {"acceptedQty": 0, "receivedQty": 0, "cancelledQty": 0, "remainingQty": 0}
-    assert compute_po_status(header, {}) == "CANCELLED"
+    status, reason = compute_po_status(header, {})
+    assert status == "CANCELLED"
+    assert reason == "accepted_zero"
 
     header_open = {"acceptedQty": 20, "receivedQty": 10, "cancelledQty": 0, "remainingQty": 10}
-    assert compute_po_status(header_open, {}) == "OPEN"
+    status, reason = compute_po_status(header_open, {})
+    assert status == "OPEN"
+    assert reason == "remaining_positive"
 
     header_closed = {"acceptedQty": 15, "receivedQty": 15, "cancelledQty": 0, "remainingQty": 0}
-    assert compute_po_status(header_closed, {}) == "CLOSED"
+    status, reason = compute_po_status(header_closed, {})
+    assert status == "CLOSED"
+    assert reason == "remaining_zero"
 
 
 def test_amount_reconciliation_delta_rounds():
@@ -104,18 +218,48 @@ def test_amount_reconciliation_delta_rounds():
     assert result["delta"] == pytest.approx(2.35)
 
 
+def test_po_status_missing_accepted_infers_open():
+    header = {"requestedQty": 20, "acceptedQty": None, "receivedQty": 0, "cancelledQty": 0}
+    totals = {"pending_qty": 5}
+    status, reason = compute_po_status(header, totals)
+    assert status == "OPEN"
+    assert reason == "remaining_positive"
+
+
 def test_vendor_po_detail_and_ledger(vendor_po_client):
     detail_resp = vendor_po_client.get("/api/vendor-pos/PO-TEST-1")
     assert detail_resp.status_code == 200
     item = detail_resp.json()["item"]
     assert item["po_status"] == "OPEN"
+    assert item["po_status_reason"] == "remaining_positive"
     recon = item["amount_reconciliation"]
     assert recon["line_total"] == pytest.approx(50.0)
     assert recon["delta"] == pytest.approx(0.0)
+    assert recon["ok"] is True
 
     ledger_resp = vendor_po_client.get("/api/vendor-pos/PO-TEST-1/ledger")
     assert ledger_resp.status_code == 200
     payload = ledger_resp.json()
     assert payload["ok"] is True
     assert payload["po_number"] == "PO-TEST-1"
+    assert payload["ledger_type"] == "snapshot_synth"
     assert len(payload["rows"]) >= 1
+
+
+def test_missing_accepted_status_reason_field(vendor_po_client):
+    _seed_missing_accepted_po()
+    resp = vendor_po_client.get("/api/vendor-pos/PO-MISSING")
+    assert resp.status_code == 200
+    payload = resp.json()["item"]
+    assert payload["po_status"] == "OPEN"
+    assert payload["po_status_reason"] == "remaining_positive"
+
+
+def test_amount_reconciliation_mixed_currency_warning(vendor_po_client):
+    _seed_mixed_currency_po()
+    resp = vendor_po_client.get("/api/vendor-pos/PO-MIXED")
+    assert resp.status_code == 200
+    recon = resp.json()["item"]["amount_reconciliation"]
+    assert recon["ok"] is False
+    assert recon["error"] == "mixed_currencies"
+    assert recon["delta"] is None

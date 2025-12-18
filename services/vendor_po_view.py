@@ -2,62 +2,79 @@
 # JSON files are debug/export only and must not be used for live state.
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
-def _to_int(value: Any) -> int:
+def _to_int(value: Any) -> Optional[int]:
     if value is None:
-        return 0
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
     try:
-        if isinstance(value, str) and not value.strip():
-            return 0
         return int(float(value))
     except Exception:
-        return 0
+        return None
 
 
-def _pick_int(*values: Any) -> int:
+def _pick_first_int(*values: Any) -> Optional[int]:
     for value in values:
-        if value is not None:
-            return _to_int(value)
-    return 0
+        parsed = _to_int(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
-def compute_po_status(header: Dict[str, Any], totals: Optional[Dict[str, Any]] = None) -> str:
+def compute_po_status(header: Dict[str, Any], totals: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
     """
     Determine PO lifecycle state (OPEN / CLOSED / CANCELLED) based on header + line totals.
+    Returns (status, reason) where reason is one of accepted_zero|remaining_positive|remaining_zero.
     """
     totals = totals or {}
-    accepted = _pick_int(
-        totals.get("accepted_qty"),
+    accepted_header = _pick_first_int(
         header.get("acceptedQty"),
         header.get("accepted_qty"),
     )
-    received = _pick_int(
-        totals.get("received_qty"),
+    accepted_totals = _pick_first_int(totals.get("accepted_qty"))
+    accepted = accepted_header if accepted_header is not None else accepted_totals
+
+    received = _pick_first_int(
         header.get("receivedQty"),
         header.get("received_qty"),
-    )
-    cancelled = _pick_int(
-        totals.get("cancelled_qty"),
+        totals.get("received_qty"),
+    ) or 0
+    cancelled = _pick_first_int(
         header.get("cancelledQty"),
         header.get("cancelled_qty"),
-    )
-    pending = _pick_int(
-        totals.get("pending_qty"),
+        totals.get("cancelled_qty"),
+    ) or 0
+    pending = _pick_first_int(
         header.get("remainingQty"),
         header.get("remaining_qty"),
+        totals.get("pending_qty"),
+    )
+    ordered = _pick_first_int(
+        header.get("requestedQty"),
+        header.get("requested_qty"),
+        totals.get("requested_qty"),
     )
 
-    remaining = pending if pending else max(0, accepted - received - cancelled)
+    if accepted_header is not None and accepted_header == 0:
+        return "CANCELLED", "accepted_zero"
 
-    if accepted <= 0:
-        return "CANCELLED"
-    if cancelled >= accepted and remaining <= 0:
-        return "CANCELLED"
+    if pending is not None:
+        remaining = max(0, pending)
+        if remaining > 0:
+            return "OPEN", "remaining_positive"
+        return "CLOSED", "remaining_zero"
+
+    base = accepted if accepted is not None else ordered
+    if base is None:
+        return "CLOSED", "remaining_zero"
+
+    remaining = max(0, base - received - cancelled)
     if remaining > 0:
-        return "OPEN"
-    return "CLOSED"
+        return "OPEN", "remaining_positive"
+    return "CLOSED", "remaining_zero"
 
 
 def _to_decimal(value: Any) -> Decimal:

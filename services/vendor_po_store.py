@@ -479,11 +479,11 @@ def get_vendor_po_line_totals_for_po(po_number: str) -> Dict[str, int]:
 def get_vendor_po_line_amount_total(po_number: str) -> Dict[str, Any]:
     """
     Sum accepted_qty * net_cost_amount for a PO using DB line data.
-    Returns {"line_total": float, "currency": str}
+    Returns {"ok": bool, "line_total": float, "currency": Optional[str], ...}
     """
     ensure_vendor_po_schema()
     if not po_number:
-        return {"line_total": 0.0, "currency": "AED"}
+        return {"ok": True, "line_total": 0.0, "currency": None}
     with db_service.get_db_connection() as conn:
         rows = conn.execute(
             f"""
@@ -494,14 +494,15 @@ def get_vendor_po_line_amount_total(po_number: str) -> Dict[str, Any]:
             (po_number,),
         ).fetchall()
 
-    currency = "AED"
+    currencies_seen: set[str] = set()
     total = Decimal("0.00")
     for row in rows or []:
         accepted_qty = _to_int(row["accepted_qty"])
         net_cost_amount = row["net_cost_amount"]
-        if row["net_cost_currency"]:
-            currency = row["net_cost_currency"]
-        if accepted_qty <= 0 or net_cost_amount is None:
+        currency_code = (row["net_cost_currency"] or "").strip()
+        if currency_code:
+            currencies_seen.add(currency_code)
+        if not accepted_qty or net_cost_amount is None:
             continue
         try:
             line_total = Decimal(str(net_cost_amount)) * Decimal(accepted_qty)
@@ -509,9 +510,18 @@ def get_vendor_po_line_amount_total(po_number: str) -> Dict[str, Any]:
             continue
         total += line_total
 
+    if len(currencies_seen) > 1:
+        return {
+            "ok": False,
+            "error": "mixed_currencies",
+            "currencies": sorted(currencies_seen),
+        }
+
+    currency = next(iter(currencies_seen), None)
     return {
+        "ok": True,
         "line_total": float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-        "currency": currency or "AED",
+        "currency": currency,
     }
 
 

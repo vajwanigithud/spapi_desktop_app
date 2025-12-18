@@ -92,6 +92,13 @@
     .po-history-table { width:100%; border-collapse:collapse; }
     .po-history-table th, .po-history-table td { font-size:13px; }
     .po-history-table th { background:#f8fafc; position:sticky; top:0; }
+    .po-history-note {
+      padding:10px 12px;
+      background:#f1f5f9;
+      border-bottom:1px solid var(--border);
+      font-size:13px;
+      color:#0f172a;
+    }
     /* Vendor PO tab: larger, clearer text without changing layout spacing */
     #pos-tab { font-size:14px; }
     #pos-tab table { font-size:14px; }
@@ -1803,21 +1810,33 @@
       const amountRecon = enrichedPo.amount_reconciliation || null;
       let moneyFooter = "";
       if (amountRecon) {
-        const currency = enrichedPo.accepted_total_currency || enrichedPo.total_accepted_cost_currency || "AED";
-        const lineTotalLabel = formatMoney(amountRecon.line_total, currency);
-        const acceptedTotalLabel = formatMoney(amountRecon.accepted_total, currency);
-        const deltaValue = Number(amountRecon.delta) || 0;
-        const deltaLabel = formatMoney(deltaValue, currency);
-        const deltaOk = Math.abs(deltaValue) < 0.01;
-        const deltaClass = deltaOk ? "po-money-delta-ok" : "po-money-delta-warn";
-        const deltaIcon = deltaOk ? "✅" : "⚠️";
-        moneyFooter = `
-          <div class="po-money-footer">
-            <div class="po-money-row"><span>Line Total (Σ qty × unit cost):</span><span>${lineTotalLabel}</span></div>
-            <div class="po-money-row"><span>Accepted Total (Vendor Central):</span><span>${acceptedTotalLabel}</span></div>
-            <div class="po-money-row"><span>Difference:</span><span class="${deltaClass}">${deltaLabel} ${deltaIcon}</span></div>
-          </div>
-        `;
+        if (amountRecon.ok === false) {
+          const err = escapeHtml(amountRecon.error || "Line totals unavailable");
+          const currencies = Array.isArray(amountRecon.currencies) && amountRecon.currencies.length
+            ? ` (${amountRecon.currencies.join(", ")})`
+            : "";
+          moneyFooter = `
+            <div class="po-money-footer">
+              <div class="po-money-row"><span>Line totals unavailable:</span><span class="po-money-delta-warn">${err}${escapeHtml(currencies)}</span></div>
+            </div>
+          `;
+        } else {
+          const currency = amountRecon.currency || enrichedPo.accepted_total_currency || enrichedPo.total_accepted_cost_currency || "AED";
+          const lineTotalLabel = formatMoney(amountRecon.line_total, currency);
+          const acceptedTotalLabel = formatMoney(amountRecon.accepted_total, currency);
+          const deltaValue = Number(amountRecon.delta) || 0;
+          const deltaLabel = formatMoney(deltaValue, currency);
+          const deltaOk = Math.abs(deltaValue) < 0.01;
+          const deltaClass = deltaOk ? "po-money-delta-ok" : "po-money-delta-warn";
+          const deltaIcon = deltaOk ? "✅" : "⚠️";
+          moneyFooter = `
+            <div class="po-money-footer">
+              <div class="po-money-row"><span>Line Total (Σ qty × unit cost):</span><span>${lineTotalLabel}</span></div>
+              <div class="po-money-row"><span>Accepted Total (Vendor Central):</span><span>${acceptedTotalLabel}</span></div>
+              <div class="po-money-row"><span>Difference:</span><span class="${deltaClass}">${deltaLabel} ${deltaIcon}</span></div>
+            </div>
+          `;
+        }
       }
 
       const titleChip = statusChip ? `<span style="margin-left:8px;">${statusChip}</span>` : "";
@@ -1900,7 +1919,10 @@
             <td>${source}</td>
           </tr>`;
         }).join("");
+        const note = escapeHtml(data.note || "Snapshot events from DB (not change log).");
+        const ledgerType = escapeHtml(data.ledger_type || "snapshot");
         body.innerHTML = `
+          <div class="po-history-note"><strong>${ledgerType}</strong> — ${note}</div>
           <div style="overflow:auto; max-height:70vh;">
             <table class="po-history-table">
               <thead>
