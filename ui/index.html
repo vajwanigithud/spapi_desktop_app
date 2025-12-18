@@ -54,6 +54,44 @@
     tr.po-status-preparing { background-color: #fef9c3; }
     tr.po-status-appointment { background-color: #e0f2fe; }
     tr.po-status-delivered { background-color: #dcfce7; }
+    .po-status-chip {
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:700;
+      letter-spacing:0.03em;
+      background:#e2e8f0;
+      color:#0f172a;
+    }
+    .po-status-chip.po-status-open { background:#dcfce7; color:#166534; }
+    .po-status-chip.po-status-closed { background:#dbeafe; color:#1d4ed8; }
+    .po-status-chip.po-status-cancelled { background:#fee2e2; color:#b91c1c; }
+    .po-money-footer {
+      border-top:1px solid var(--border);
+      margin-top:10px;
+      padding-top:10px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      font-size:14px;
+    }
+    .po-money-row {
+      display:flex;
+      justify-content:space-between;
+      font-weight:600;
+    }
+    .po-money-row span:last-child { font-variant-numeric: tabular-nums; }
+    .po-money-delta-ok { color:#15803d; font-weight:700; }
+    .po-money-delta-warn { color:#b91c1c; font-weight:700; }
+    .modal header .modal-actions { display:flex; gap:8px; align-items:center; }
+    #po-history-modal .modal { max-width:800px; }
+    #po-history-body { padding:0; }
+    .po-history-table { width:100%; border-collapse:collapse; }
+    .po-history-table th, .po-history-table td { font-size:13px; }
+    .po-history-table th { background:#f8fafc; position:sticky; top:0; }
     /* Vendor PO tab: larger, clearer text without changing layout spacing */
     #pos-tab { font-size:14px; }
     #pos-tab table { font-size:14px; }
@@ -983,7 +1021,10 @@
     <div class="modal">
       <header>
         <div id="modal-title">PO Items</div>
-        <button class="btn" style="background:#111827" onclick="closeModal()">Close</button>
+        <div class="modal-actions">
+          <button class="btn btn-outline-secondary" id="modal-history-btn" style="display:none; background:#fff; color:#111827; border:1px solid var(--border);" onclick="openModalHistory()">View History</button>
+          <button class="btn" style="background:#111827" onclick="closeModal()">Close</button>
+        </div>
       </header>
       <div class="modal-body" id="modal-body"></div>
     </div>
@@ -1008,6 +1049,17 @@
         <button class="btn" style="background:#111827" onclick="closePoLinesModal()">Close</button>
       </header>
       <div class="modal-body" id="po-lines-modal-body" style="padding:0;"></div>
+    </div>
+  </div>
+
+  <!-- PO Ledger Modal -->
+  <div class="backdrop" id="po-history-modal">
+    <div class="modal" style="max-width:900px;">
+      <header>
+        <div id="po-history-title">PO History</div>
+        <button class="btn" style="background:#111827" onclick="closePoHistory()">Close</button>
+      </header>
+      <div class="modal-body" id="po-history-body" style="padding:0;"></div>
     </div>
   </div>
 
@@ -1482,6 +1534,7 @@
           ? `<span style="margin-left:6px; padding:2px 6px; border-radius:6px; background:#fef3c7; color:#92400e; font-size:11px;" title="Last notification: ${escapeHtml(flags.last_notification_summary || "")} at ${formatTs(flags.last_notification_ts || "")}${flags.needs_refresh ? ' • Needs refresh' : ''}">${flags.needs_refresh ? "Update Ready" : "Updated"}</span>`
           : "";
         const isChecked = selectedPoNumbers.includes(poNumber);
+        const poStatusChip = renderPoStatusChip(po.po_status);
 
         const poItemsCount = Number(po.poItemsCount) || 0;
         const requestedQty = formatQtyWithUnits(po.requestedQty);
@@ -1527,7 +1580,13 @@
 
         tr.innerHTML = `
       <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
-      <td><div style="display:flex; align-items:center; gap:6px;">${poNumber}${notifBadge}</div></td>
+      <td>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <span>${poNumber}</span>
+          ${poStatusChip ? `<span>${poStatusChip}</span>` : ""}
+          ${notifBadge}
+        </div>
+      </td>
       <td style="text-align:center;">${poItemsCount}</td>
       <td>${fmtDate(getPoDate(po))}</td>
       <td style="text-align:center;">${requestedQty}</td>
@@ -1608,11 +1667,18 @@
       const modal = document.getElementById("modal");
       const body = document.getElementById("modal-body");
       const titleEl = document.getElementById("modal-title");
+      const historyBtn = document.getElementById("modal-history-btn");
 
       const poNumber = po.purchaseOrderNumber || po.poNumber || "";
       if (!poNumber) {
         console.error("No purchaseOrderNumber on PO", po);
         return;
+      }
+      modal.dataset.poNumber = poNumber;
+      if (historyBtn) {
+        historyBtn.style.display = "inline-flex";
+        historyBtn.disabled = false;
+        historyBtn.dataset.poNumber = poNumber;
       }
 
       let enrichedPo = po;
@@ -1631,6 +1697,8 @@
         console.error("Failed to fetch enriched PO", e);
       }
 
+      const poStatus = (enrichedPo.po_status || po.po_status || "").toUpperCase();
+      const statusChip = renderPoStatusChip(poStatus);
       const d = enrichedPo.orderDetails || {};
       const items = d.items || [];
       const notifFlags = enrichedPo.notificationFlags || {};
@@ -1732,8 +1800,28 @@
         <td style="text-align: right;">Accepted Total:</td>
         <td style="text-align: right; font-weight: 700;">${formattedTotal}</td>
       </tr>`;
+      const amountRecon = enrichedPo.amount_reconciliation || null;
+      let moneyFooter = "";
+      if (amountRecon) {
+        const currency = enrichedPo.accepted_total_currency || enrichedPo.total_accepted_cost_currency || "AED";
+        const lineTotalLabel = formatMoney(amountRecon.line_total, currency);
+        const acceptedTotalLabel = formatMoney(amountRecon.accepted_total, currency);
+        const deltaValue = Number(amountRecon.delta) || 0;
+        const deltaLabel = formatMoney(deltaValue, currency);
+        const deltaOk = Math.abs(deltaValue) < 0.01;
+        const deltaClass = deltaOk ? "po-money-delta-ok" : "po-money-delta-warn";
+        const deltaIcon = deltaOk ? "✅" : "⚠️";
+        moneyFooter = `
+          <div class="po-money-footer">
+            <div class="po-money-row"><span>Line Total (Σ qty × unit cost):</span><span>${lineTotalLabel}</span></div>
+            <div class="po-money-row"><span>Accepted Total (Vendor Central):</span><span>${acceptedTotalLabel}</span></div>
+            <div class="po-money-row"><span>Difference:</span><span class="${deltaClass}">${deltaLabel} ${deltaIcon}</span></div>
+          </div>
+        `;
+      }
 
-      titleEl.textContent = `PO ${poNumber} Items`;
+      const titleChip = statusChip ? `<span style="margin-left:8px;">${statusChip}</span>` : "";
+      titleEl.innerHTML = `PO ${escapeHtml(poNumber)} Items${titleChip}`;
       body.innerHTML = `
         <div style="overflow:auto; max-height:70vh;">
           ${notifLine}
@@ -1754,6 +1842,7 @@
             </thead>
             <tbody>${rows || '<tr><td colspan="10" class="empty">No items</td></tr>'}${rows ? summaryRow : ''}</tbody>
           </table>
+          ${moneyFooter}
         </div>
       `;
       modal.style.display = "flex";
@@ -1761,7 +1850,80 @@
     }
 
     function closeModal() {
-      document.getElementById("modal").style.display = "none";
+      const modalEl = document.getElementById("modal");
+      modalEl.style.display = "none";
+      delete modalEl.dataset.poNumber;
+      const historyBtn = document.getElementById("modal-history-btn");
+      if (historyBtn) {
+        historyBtn.style.display = "none";
+        historyBtn.dataset.poNumber = "";
+      }
+    }
+
+    function openModalHistory() {
+      const modalEl = document.getElementById("modal");
+      const poNumber = modalEl?.dataset?.poNumber || document.getElementById("modal-history-btn")?.dataset?.poNumber;
+      if (!poNumber) return;
+      openPoHistory(poNumber);
+    }
+
+    async function openPoHistory(poNumber) {
+      if (!poNumber) return;
+      const historyModal = document.getElementById("po-history-modal");
+      const body = document.getElementById("po-history-body");
+      const title = document.getElementById("po-history-title");
+      if (title) title.textContent = `PO ${poNumber} History`;
+      body.innerHTML = '<div class="empty" style="padding:16px;">Loading history…</div>';
+      historyModal.style.display = "flex";
+      try {
+        const resp = await fetch(`/api/vendor-pos/${encodeURIComponent(poNumber)}/ledger`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        if (!rows.length) {
+          body.innerHTML = '<div class="empty" style="padding:16px;">No ledger events yet.</div>';
+          return;
+        }
+        const tableRows = rows.map(ev => {
+          const time = formatUaeTime(ev.timestamp) || "—";
+          const event = escapeHtml(ev.event || "");
+          const asin = escapeHtml(ev.asin || "");
+          const change = (ev.old_qty !== undefined && ev.old_qty !== null) || (ev.new_qty !== undefined && ev.new_qty !== null)
+            ? `${ev.old_qty ?? 0} → ${ev.new_qty ?? 0}`
+            : "";
+          const source = escapeHtml(ev.source || "");
+          return `<tr>
+            <td>${time}</td>
+            <td>${event}</td>
+            <td>${asin}</td>
+            <td>${escapeHtml(change)}</td>
+            <td>${source}</td>
+          </tr>`;
+        }).join("");
+        body.innerHTML = `
+          <div style="overflow:auto; max-height:70vh;">
+            <table class="po-history-table">
+              <thead>
+                <tr>
+                  <th style="width:160px;">Time (UAE)</th>
+                  <th style="width:160px;">Event</th>
+                  <th style="width:140px;">ASIN / SKU</th>
+                  <th style="width:140px;">Change</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>${tableRows}</tbody>
+            </table>
+          </div>
+        `;
+      } catch (err) {
+        console.error("Failed to load PO ledger", err);
+        body.innerHTML = '<div class="empty" style="padding:16px;">Failed to load ledger history.</div>';
+      }
+    }
+
+    function closePoHistory() {
+      document.getElementById("po-history-modal").style.display = "none";
     }
 
     async function populateMissingImages(items) {
@@ -2330,6 +2492,27 @@
       return (cur ? cur + " " : "") + n.toFixed(2);
     }
 
+    function formatMoney(value, currency = "AED") {
+      const n = Number(value);
+      const safe = Number.isFinite(n) ? n : 0;
+      return `${currency} ${safe.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function renderPoStatusChip(status) {
+      let normalized = "";
+      if (typeof status === "string") {
+        normalized = status.trim().toUpperCase();
+      }
+      if (!normalized) normalized = "OPEN";
+      const map = {
+        "OPEN": { icon: "🟢", cls: "po-status-open" },
+        "CLOSED": { icon: "🔵", cls: "po-status-closed" },
+        "CANCELLED": { icon: "🔴", cls: "po-status-cancelled" },
+      };
+      const meta = map[normalized] || map.OPEN;
+      return `<span class="po-status-chip ${meta.cls}">${meta.icon} ${normalized}</span>`;
+    }
+
     function fmtDate(iso) {
       if (!iso) return "";
       const d = new Date(iso);
@@ -2349,6 +2532,19 @@
       const dd = String(d.getDate()).padStart(2, "0");
       const hh = String(d.getHours()).padStart(2, "0");
       const mi = String(d.getMinutes()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+    }
+
+    function formatUaeTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return ts;
+      const uae = new Date(d.getTime() + 4 * 60 * 60 * 1000);
+      const yyyy = uae.getUTCFullYear();
+      const mm = String(uae.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(uae.getUTCDate()).padStart(2, "0");
+      const hh = String(uae.getUTCHours()).padStart(2, "0");
+      const mi = String(uae.getUTCMinutes()).padStart(2, "0");
       return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
     }
 

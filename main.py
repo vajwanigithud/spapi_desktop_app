@@ -153,12 +153,15 @@ from services.vendor_po_status_store import (
     record_vendor_po_run_success,
 )
 from services.vendor_po_store import (
+    aggregate_line_totals,
     bootstrap_headers_from_cache,
     count_vendor_po_lines,
     ensure_vendor_po_schema,
     export_vendor_pos_snapshot,
     get_rejected_vendor_po_lines,
     get_vendor_po as store_get_vendor_po,
+    get_vendor_po_ledger,
+    get_vendor_po_line_amount_total,
     get_vendor_po_line_totals_for_po,
     get_vendor_po_lines as store_get_vendor_po_lines,
     get_vendor_po_list,
@@ -169,6 +172,7 @@ from services.vendor_po_store import (
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
 )
+from services.vendor_po_view import compute_amount_reconciliation, compute_po_status
 from services.vendor_rt_sales_ledger import (
     acquire_worker_lock as acquire_rt_sales_worker_lock,
     refresh_worker_lock as refresh_rt_sales_worker_lock,
@@ -1917,6 +1921,16 @@ def get_vendor_pos(
             filtered.append(po)
     filtered.sort(key=parse_po_date, reverse=True)
     filtered.sort(key=parse_po_date, reverse=True)
+
+    line_totals_map: Dict[str, Dict[str, Any]] = {}
+    po_numbers = [po.get("purchaseOrderNumber") for po in filtered if po.get("purchaseOrderNumber")]
+    if po_numbers:
+        try:
+            line_totals_map = aggregate_line_totals(po_numbers)
+        except Exception as exc:
+            logger.warning("[VendorPO] Failed to aggregate line totals for status chips: %s", exc)
+            line_totals_map = {}
+
     tracker = load_po_tracker()
     for po in filtered:
         po_num = po.get("purchaseOrderNumber")
@@ -1938,6 +1952,13 @@ def get_vendor_pos(
             po["notificationFlags"] = flags
         except Exception as exc:
             logger.warning(f"[VendorPO] Failed to attach notification flags for {po_num}: {exc}")
+
+        try:
+            po_totals = line_totals_map.get(po_num) if po_num else None
+            po["po_status"] = compute_po_status(po, po_totals)
+        except Exception as exc:
+            logger.warning(f"[VendorPO] Failed to compute po_status for {po_num}: {exc}")
+            po["po_status"] = compute_po_status(po, {})
     print(f"[vendor-pos] filtered POs (>= 2025-10-01): {len(filtered)}")
     if enrich:
         enrich_items_with_catalog(filtered)
@@ -1983,6 +2004,18 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
 
     used_db_lines, _ = _hydrate_po_with_db_lines(po)
 
+    line_totals: Dict[str, Any] = {}
+    try:
+        line_totals = get_vendor_po_line_totals_for_po(po_number)
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to load DB totals for PO {po_number}: {exc}")
+        line_totals = {}
+    try:
+        po["po_status"] = compute_po_status(po, line_totals)
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to compute po_status for detail {po_number}: {exc}")
+        po["po_status"] = compute_po_status(po, {})
+
     # Ensure detail exists for modal display
     if not po.get("orderDetails", {}).get("items"):
         try:
@@ -2010,6 +2043,28 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
         po["accepted_total_amount"] = 0.0
         po["accepted_total_currency"] = "AED"
 
+    line_amount_summary = {"line_total": 0.0, "currency": po.get("accepted_total_currency") or "AED"}
+    try:
+        line_amount_summary = get_vendor_po_line_amount_total(po_number)
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to compute line totals for reconciliation on PO {po_number}: {exc}")
+    accepted_total_value = (
+        po.get("accepted_total_amount")
+        or po.get("total_accepted_cost")
+        or po.get("totalAcceptedCostAmount")
+        or po.get("total_accepted_cost_amount")
+        or po.get("totalAcceptedCost")
+        or 0.0
+    )
+    try:
+        po["amount_reconciliation"] = compute_amount_reconciliation(
+            line_amount_summary.get("line_total", 0.0),
+            accepted_total_value,
+        )
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to compute amount reconciliation for PO {po_number}: %s", exc)
+        po["amount_reconciliation"] = compute_amount_reconciliation(0.0, accepted_total_value)
+
     if enrich:
         try:
             enrich_items_with_catalog([po])
@@ -2027,6 +2082,18 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     po["notificationFlags"] = flags
     po["sync_state"] = get_vendor_po_sync_state()
     return {"item": po}
+
+
+@app.get("/api/vendor-pos/{po_number}/ledger")
+def get_vendor_po_history(po_number: str):
+    """
+    Return synthesized ledger events for a PO (read-only audit trail).
+    """
+    ensure_vendor_po_schema()
+    if not po_number:
+        raise HTTPException(status_code=400, detail="po_number required")
+    rows = get_vendor_po_ledger(po_number)
+    return {"ok": True, "po_number": po_number, "rows": rows or []}
 
 
 @app.get("/api/vendor-pos/reconcile/{po_number}")
