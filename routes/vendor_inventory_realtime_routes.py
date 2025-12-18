@@ -215,7 +215,7 @@ def _build_health_payload() -> Dict[str, Any]:
     snapshot = get_cached_realtime_inventory_snapshot()
     snapshot.setdefault("marketplace_id", DEFAULT_MARKETPLACE_ID)
     computed = _compute_as_of_fields(snapshot)
-    as_of_utc = computed["as_of"]
+    as_of_utc = computed.get("as_of") or snapshot.get("as_of_utc") or snapshot.get("as_of")
     as_of_uae = computed["as_of_uae"]
     age_seconds = snapshot.get("age_seconds")
     if age_seconds is None and as_of_utc:
