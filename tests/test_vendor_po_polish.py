@@ -218,6 +218,14 @@ def test_amount_reconciliation_delta_rounds():
     assert result["delta"] == pytest.approx(2.35)
 
 
+def test_amount_reconciliation_handles_string_header_value(vendor_po_client):
+    import main as main_module
+
+    accepted_total_value = main_module._pick_money_amount(None, "75.5")
+    recon = compute_amount_reconciliation(50.0, accepted_total_value)
+    assert recon["delta"] == pytest.approx(-25.5)
+
+
 def test_po_status_missing_accepted_infers_open():
     header = {"requestedQty": 20, "acceptedQty": None, "receivedQty": 0, "cancelledQty": 0}
     totals = {"pending_qty": 5}
