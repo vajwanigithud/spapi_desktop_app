@@ -22,7 +22,14 @@ from services.catalog_service import (
     seed_catalog_universe,
     spapi_catalog_status,
 )
-from services.db import ensure_app_kv_table, get_app_kv, get_db_connection, set_app_kv
+from services.db import (
+    ensure_app_kv_table,
+    ensure_vendor_inventory_table,
+    get_app_kv,
+    get_db_connection,
+    replace_vendor_inventory_snapshot,
+    set_app_kv,
+)
 from services.spapi_reports import (
     download_vendor_report_document,
     poll_vendor_report,
@@ -463,6 +470,99 @@ def _decorate_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
+def _materialize_rows_for_vendor_inventory(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    marketplace_id = (snapshot.get("marketplace_id") or "").strip()
+    report_start = _parse_datetime(snapshot.get("report_start_time"))
+    report_end = _parse_datetime(snapshot.get("report_end_time"))
+    generated_at = snapshot.get("generated_at") or _iso(datetime.now(timezone.utc))
+    rows: List[Dict[str, Any]] = []
+    for item in snapshot.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        asin = (item.get("asin") or "").strip()
+        if not asin:
+            continue
+        start_dt = _parse_datetime(
+            item.get("startTime")
+            or item.get("startDateTime")
+            or item.get("startDate")
+            or report_start
+        )
+        end_dt = _parse_datetime(
+            item.get("endTime")
+            or item.get("endDateTime")
+            or item.get("endDate")
+            or report_end
+        )
+        sellable_units = item.get("sellable")
+        try:
+            sellable_units = int(sellable_units or 0)
+        except Exception:
+            sellable_units = 0
+        rows.append(
+            {
+                "marketplace_id": marketplace_id,
+                "asin": asin,
+                "start_date": _iso(start_dt) or snapshot.get("report_start_time") or generated_at,
+                "end_date": _iso(end_dt) or snapshot.get("report_end_time") or generated_at,
+                "sellable_onhand_units": sellable_units,
+                "sellable_onhand_cost": 0.0,
+                "unsellable_onhand_units": 0,
+                "unsellable_onhand_cost": 0.0,
+                "aged90plus_sellable_units": 0,
+                "aged90plus_sellable_cost": 0.0,
+                "unhealthy_units": 0,
+                "unhealthy_cost": 0.0,
+                "net_received_units": 0,
+                "net_received_cost": 0.0,
+                "open_po_units": 0,
+                "unfilled_customer_ordered_units": 0,
+                "vendor_confirmation_rate": None,
+                "sell_through_rate": None,
+                "updated_at": generated_at,
+            }
+        )
+    return rows
+
+
+def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> int:
+    """
+    Replace vendor_inventory_asin rows using realtime snapshot items.
+    Returns number of rows written.
+    """
+    marketplace_id = (snapshot.get("marketplace_id") or "").strip()
+    if not marketplace_id:
+        logger.warning("[VendorRtInventory] Materialization skipped (%s): missing marketplace_id", source)
+        return 0
+    rows = _materialize_rows_for_vendor_inventory(snapshot)
+    if not rows:
+        logger.info(
+            "[VendorRtInventory] Materialization skipped (%s): no items to persist for %s",
+            source,
+            marketplace_id,
+        )
+        return 0
+    try:
+        ensure_vendor_inventory_table()
+        with get_db_connection() as conn:
+            replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
+        logger.info(
+            "[VendorRtInventory] Materialized realtime snapshot (%s) into vendor_inventory_asin: %s rows",
+            source,
+            len(rows),
+        )
+        return len(rows)
+    except Exception as exc:
+        logger.error(
+            "[VendorRtInventory] Failed to materialize snapshot (%s) for %s: %s",
+            source,
+            marketplace_id,
+            exc,
+            exc_info=True,
+        )
+        return 0
+
+
 def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THRESHOLD_HOURS) -> bool:
     generated_at = _parse_datetime(snapshot.get("generated_at"))
     if not generated_at:
@@ -474,7 +574,13 @@ def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THR
 def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) -> Dict[str, Any]:
     snapshot = _load_snapshot_from_db()
     if snapshot.get("generated_at"):
-        return _decorate_snapshot(snapshot)
+        logger.info(
+            "[VendorRtInventory] Loaded realtime snapshot from SQLite (generated_at=%s)",
+            snapshot.get("generated_at"),
+        )
+        decorated = _decorate_snapshot(snapshot)
+        materialize_vendor_inventory_snapshot(decorated, source="db_snapshot_load")
+        return decorated
 
     path = cache_path or DEFAULT_CACHE_PATH
     if path.exists():
@@ -488,27 +594,11 @@ def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) ->
                 _persist_snapshot_to_db(json_snapshot)
             except Exception as exc:
                 logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
-            return _decorate_snapshot(json_snapshot)
+            decorated = _decorate_snapshot(json_snapshot)
+            materialize_vendor_inventory_snapshot(decorated, source="json_bootstrap")
+            return decorated
 
-    return _decorate_snapshot(_blank_snapshot())
-    if snapshot.get("generated_at"):
-        return _decorate_snapshot(snapshot)
-
-    path = cache_path or DEFAULT_CACHE_PATH
-    if path.exists():
-        logger.warning(
-            "[VendorRtInventory][DB-FIRST] JSON snapshot read from %s to backfill empty SQLite state",
-            path,
-        )
-        fallback = _read_snapshot(path)
-        if fallback.get("generated_at"):
-            try:
-                _persist_snapshot_to_db(fallback)
-            except Exception as exc:
-                logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
-                return _decorate_snapshot(_blank_snapshot())
-            return _decorate_snapshot(fallback)
-
+    logger.info("[VendorRtInventory] No cached realtime snapshot found; returning blank snapshot")
     return _decorate_snapshot(_blank_snapshot())
 
 
@@ -635,6 +725,7 @@ def refresh_realtime_inventory_snapshot(
 
     _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
+    materialize_vendor_inventory_snapshot(snapshot, source="refresh")
     return snapshot
 
 
@@ -645,4 +736,5 @@ __all__ = [
     "is_snapshot_stale",
     "load_sales_30d_map",
     "decorate_items_with_sales",
+    "materialize_vendor_inventory_snapshot",
 ]
