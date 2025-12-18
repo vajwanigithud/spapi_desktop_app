@@ -3495,7 +3495,7 @@
           ordered.push({ label: name, count });
         });
         if (ordered.length) {
-          const maxDisplay = 5;
+          const maxDisplay = ordered.length;
           const shown = ordered.slice(0, maxDisplay);
           const hidden = ordered.length - shown.length;
           const bucketParts = shown.map(item => `${item.label} ${formatNumber(item.count)}`);

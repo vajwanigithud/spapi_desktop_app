@@ -132,3 +132,7 @@ tools/_codex_cleanup_backup_/
 # ============================
 !tests/golden/
 !tests/golden/*.json
+
+# Local backups
+_local_backups/
+
