@@ -100,6 +100,47 @@ def test_refresh_endpoint_handles_quota_error(monkeypatch: pytest.MonkeyPatch):
     assert "cooldown" in data["error"]
 
 
+def test_realtime_health_endpoint(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app()
+    snapshot = _sample_snapshot()
+    snapshot["age_seconds"] = 180
+    snapshot["age_hours"] = 0.05
+    snapshot["is_stale"] = False
+
+    monkeypatch.setattr(
+        realtime_routes,
+        "get_cached_realtime_inventory_snapshot",
+        lambda: dict(snapshot),
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/vendor-inventory/realtime/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert "is_stale" in data
+    assert "age_hours" in data
+    assert data["unique_asins"] == 2
+
+
+def test_realtime_health_endpoint_handles_missing_snapshot(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app()
+
+    monkeypatch.setattr(
+        realtime_routes,
+        "get_cached_realtime_inventory_snapshot",
+        lambda: {"items": []},
+    )
+
+    client = TestClient(app)
+    resp = client.get("/api/vendor-inventory/realtime/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["reason"] == "no_snapshot"
+    assert data["is_stale"] is True
+
+
 def test_legacy_endpoint_delegates_to_realtime_snapshot(monkeypatch: pytest.MonkeyPatch):
     app = _build_app(include_legacy=True)
     snapshot = _sample_snapshot()
