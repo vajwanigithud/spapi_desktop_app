@@ -8,6 +8,7 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 - Aggregation and querying for UI
 - Support for flexible lookback windows and view-by modes (ASIN / Time)
 """
+
 # DB-FIRST: SQLite is the single source of truth.
 # JSON files are debug/export only and must not be used for live state.
 
@@ -19,20 +20,28 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+# ------------------------------------------------------------
+# Timezone handling (Python 3.9+ preferred)
+# ------------------------------------------------------------
 try:
-    # Python 3.9+ standard lib
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except Exception:
-    # Fallback for environments without zoneinfo
     ZoneInfo = None
     class ZoneInfoNotFoundError(Exception):
         pass
 
+# ------------------------------------------------------------
+# Internal services
+# ------------------------------------------------------------
 from services.catalog_service import (
     record_catalog_asin_sources,
     seed_catalog_universe,
 )
-from services.db import execute_many_write, execute_write, get_db_connection
+from services.db import (
+    execute_many_write,
+    execute_write,
+    get_db_connection,
+)
 from services.perf import time_block
 from services.spapi_reports import (
     SpApiQuotaError,
@@ -42,28 +51,53 @@ from services.spapi_reports import (
 )
 from services.vendor_rt_sales_ledger import (
     acquire_worker_lock as ledger_acquire_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     claim_next_missing_hour as ledger_claim_next_missing_hour,
+)
+from services.vendor_rt_sales_ledger import (
     compute_required_hours as ledger_compute_required_hours,
+)
+from services.vendor_rt_sales_ledger import (
     ensure_hours_exist as ledger_ensure_hours_exist,
+)
+from services.vendor_rt_sales_ledger import (
     iso_hour_floor as ledger_iso_hour_floor,
+)
+from services.vendor_rt_sales_ledger import (
     mark_applied as ledger_mark_applied,
+)
+from services.vendor_rt_sales_ledger import (
     mark_downloaded as ledger_mark_downloaded,
+)
+from services.vendor_rt_sales_ledger import (
     mark_failed as ledger_mark_failed,
+)
+from services.vendor_rt_sales_ledger import (
     refresh_worker_lock as ledger_refresh_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     release_worker_lock as ledger_release_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     set_report_id as ledger_set_report_id,
 )
 
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-# UAE timezone: prefer real IANA zone, fall back to fixed UTC+4
+# ------------------------------------------------------------
+# UAE timezone (prefer IANA, fallback UTC+4)
+# ------------------------------------------------------------
 try:
     if ZoneInfo is None:
         raise ZoneInfoNotFoundError("zoneinfo not available")
     UAE_TZ = ZoneInfo("Asia/Dubai")
 except ZoneInfoNotFoundError:
-    # Fallback: fixed UTC+4, good enough for UAE (no DST)
     UAE_TZ = timezone(timedelta(hours=4))
+
 
 # ====================================================================
 # QUOTA AND AUDIT CONFIGURATION
@@ -2182,7 +2216,7 @@ def get_sales_trends_last_4_weeks(
             asins = [row["asin"] for row in trend_rows]
             placeholders = ",".join(["?" for _ in asins])
             catalog_query = f"""
-            SELECT asin, title, image AS imageUrl
+            SELECT asin, title, image AS image_url
             FROM spapi_catalog
             WHERE asin IN ({placeholders})
             """
@@ -2193,7 +2227,8 @@ def get_sales_trends_last_4_weeks(
                 if not catalog_entry:
                     continue
                 row["title"] = catalog_entry.get("title", row.get("title"))
-                row["imageUrl"] = catalog_entry.get("imageUrl", row.get("imageUrl"))
+                # Map snake_case DB column (image_url) to camelCase JSON field (imageUrl)
+                row["imageUrl"] = catalog_entry.get("image_url", row.get("imageUrl"))
 
         trend_rows.sort(key=lambda r: r["total_units_4w"], reverse=True)
 
