@@ -1,5 +1,10 @@
 import contextlib
+import os
 from datetime import datetime, timedelta, timezone
+
+os.environ.setdefault("LWA_CLIENT_ID", "test-client")
+os.environ.setdefault("LWA_CLIENT_SECRET", "test-secret")
+os.environ.setdefault("LWA_REFRESH_TOKEN", "test-refresh")
 
 from services import vendor_realtime_sales as rt_sales
 

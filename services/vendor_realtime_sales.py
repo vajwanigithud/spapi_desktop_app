@@ -17,8 +17,8 @@ import logging
 import math
 import os
 import sqlite3
-import time
-from datetime import datetime, time, timedelta, timezone
+import time as time_module
+from datetime import datetime, time as dt_time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1885,7 +1885,7 @@ def repair_missing_hours_last_30_days(
     processed_hours = 0
     stopped_reason = "completed"
     total_windows = len(windows)
-    start_monotonic = time.monotonic()
+    start_monotonic = time_module.monotonic()
     lock_ttl = runtime_cap + 120
 
     logger.info(
@@ -1895,7 +1895,7 @@ def repair_missing_hours_last_30_days(
 
     try:
         for window in windows:
-            elapsed = time.monotonic() - start_monotonic
+            elapsed = time_module.monotonic() - start_monotonic
             if elapsed >= runtime_cap:
                 stopped_reason = "runtime_cap"
                 break
@@ -1942,7 +1942,7 @@ def repair_missing_hours_last_30_days(
         ledger_release_worker_lock(marketplace_id, lock_owner)
 
     ended_utc = datetime.now(timezone.utc)
-    runtime_seconds = round(time.monotonic() - start_monotonic, 2)
+    runtime_seconds = round(time_module.monotonic() - start_monotonic, 2)
     remaining_missing = max(0, hours_targeted - processed_hours)
     ok = stopped_reason in {"completed", "no_work"}
 
@@ -2591,7 +2591,7 @@ def _compute_sales_trend_week_buckets_uae(now_uae: datetime, weeks: int = 4) -> 
 
     today_uae = now_uae.date()
     current_week_monday = today_uae - timedelta(days=today_uae.weekday())
-    last_completed_w1_start = datetime.combine(current_week_monday - timedelta(days=7), time(0, 0, 0), tzinfo=UAE_TZ)
+    last_completed_w1_start = datetime.combine(current_week_monday - timedelta(days=7), dt_time(0, 0, 0), tzinfo=UAE_TZ)
 
     buckets = {}
     week_keys = ["w4", "w3", "w2", "w1"]
@@ -2826,7 +2826,7 @@ def get_sales_trends_last_4_weeks(
         trend_rows.sort(key=lambda r: r["total_units_4w"], reverse=True)
 
         current_week_monday_uae = safe_now_uae.date() - timedelta(days=safe_now_uae.weekday())
-        current_week_start_uae = datetime.combine(current_week_monday_uae, time(0, 0, 0), tzinfo=UAE_TZ)
+        current_week_start_uae = datetime.combine(current_week_monday_uae, dt_time(0, 0, 0), tzinfo=UAE_TZ)
         trailing_start_utc = current_week_start_uae.astimezone(timezone.utc)
         trailing_end_utc = safe_now_utc
 
@@ -3312,8 +3312,8 @@ def get_rt_sales_audit_calendar(
     now_uae = datetime.now(UAE_TZ)
     bucket_dates, buckets = _build_empty_calendar(days, now_uae)
 
-    start_uae = datetime.combine(datetime.fromisoformat(bucket_dates[0]).date(), time(0, 0), tzinfo=UAE_TZ)
-    end_uae = datetime.combine(datetime.fromisoformat(bucket_dates[-1]).date() + timedelta(days=1), time(0, 0), tzinfo=UAE_TZ)
+    start_uae = datetime.combine(datetime.fromisoformat(bucket_dates[0]).date(), dt_time(0, 0), tzinfo=UAE_TZ)
+    end_uae = datetime.combine(datetime.fromisoformat(bucket_dates[-1]).date() + timedelta(days=1), dt_time(0, 0), tzinfo=UAE_TZ)
 
     start_utc = start_uae.astimezone(timezone.utc)
     end_utc = end_uae.astimezone(timezone.utc)
