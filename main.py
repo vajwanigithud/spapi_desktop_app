@@ -76,9 +76,9 @@
 
 import asyncio
 import csv
+import importlib.util
 import json
 import logging
-import importlib.util
 import os
 import time
 import uuid
@@ -103,6 +103,7 @@ from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_route
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
 from services import spapi_reports
 from services.async_utils import run_single_arg
+from services.catalog_images import attach_image_urls
 from services.catalog_service import (
     ensure_asin_in_universe,
     get_catalog_asin_sources_map,
@@ -159,11 +160,9 @@ from services.vendor_po_store import (
     ensure_vendor_po_schema,
     export_vendor_pos_snapshot,
     get_rejected_vendor_po_lines,
-    get_vendor_po as store_get_vendor_po,
     get_vendor_po_ledger,
     get_vendor_po_line_amount_total,
     get_vendor_po_line_totals_for_po,
-    get_vendor_po_lines as store_get_vendor_po_lines,
     get_vendor_po_list,
     get_vendor_po_sync_state,
     get_vendor_pos_by_numbers,
@@ -172,13 +171,26 @@ from services.vendor_po_store import (
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
 )
+from services.vendor_po_store import (
+    get_vendor_po as store_get_vendor_po,
+)
+from services.vendor_po_store import (
+    get_vendor_po_lines as store_get_vendor_po_lines,
+)
 from services.vendor_po_view import compute_amount_reconciliation, compute_po_status
 from services.vendor_rt_sales_ledger import (
+    LEDGER_NORMALIZATION_FLAG,
+    normalize_existing_ledger_rows,
+)
+from services.vendor_rt_sales_ledger import (
     acquire_worker_lock as acquire_rt_sales_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     refresh_worker_lock as refresh_rt_sales_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     release_worker_lock as release_rt_sales_worker_lock,
 )
-from services.vendor_rt_sales_ledger import LEDGER_NORMALIZATION_FLAG, normalize_existing_ledger_rows
 
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
@@ -435,7 +447,11 @@ def _rt_sales_lock_owner(label: str) -> str:
 def _ensure_rt_sales_ledger_normalized_once() -> None:
     """Normalize historical RT sales ledger rows exactly once per install."""
     try:
-        from services.db import get_app_kv, get_db_connection, set_app_kv  # Local import to avoid cycles
+        from services.db import (  # Local import to avoid cycles
+            get_app_kv,
+            get_db_connection,
+            set_app_kv,
+        )
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning(
             "[RtSalesLedgerNormalize] Skipping normalization; DB helpers unavailable: %s",
@@ -2455,6 +2471,13 @@ def get_vendor_realtime_sales_summary(
         # (old clients may expect this)
         if view_by == "asin":
             summary["top_asins"] = summary.get("rows", [])
+
+        rows = summary.get("rows", [])
+        for row in rows:
+            if row.get("image_url") and not row.get("imageUrl"):
+                row["imageUrl"] = row["image_url"]
+        attach_image_urls(rows)
+        summary["rows"] = rows
         
         return summary
     
@@ -2859,7 +2882,14 @@ def api_vendor_sales_trends(
                 marketplace_id,
                 min_total_units=min_total_units,
             )
-        
+
+        rows = data.get("rows", [])
+        for row in rows:
+            if row.get("image_url") and not row.get("imageUrl"):
+                row["imageUrl"] = row["image_url"]
+        attach_image_urls(rows)
+        data["rows"] = rows
+
         return data
     
     except Exception as e:
