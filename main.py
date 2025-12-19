@@ -188,7 +188,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from auth.spapi_auth import SpApiAuth
 
@@ -1010,6 +1010,57 @@ def resolve_vendor_host(marketplace_id: str) -> str:
 class PoStatusUpdate(BaseModel):
     status: str
     appointmentDate: str | None = None
+
+
+class VendorRtSalesFillDayRequest(BaseModel):
+    date: str = Field(..., description="UAE calendar date (YYYY-MM-DD)")
+    missing_hours: List[int] = Field(
+        default_factory=list, description="Optional list of hours (0-23) to target"
+    )
+    burst: bool = False
+    burst_hours: int = 6
+    max_batches: int = 1
+
+    @field_validator("date")
+    @classmethod
+    def _validate_date(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except Exception as exc:
+            raise ValueError("date must be provided in YYYY-MM-DD format") from exc
+        return value
+
+    @field_validator("missing_hours")
+    @classmethod
+    def _validate_missing_hours(cls, values: List[int]) -> List[int]:
+        cleaned: List[int] = []
+        for entry in values:
+            if entry is None:
+                continue
+            try:
+                hour = int(entry)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "missing_hours entries must be integers between 0 and 23"
+                ) from exc
+            if hour < 0 or hour > 23:
+                raise ValueError("missing_hours entries must be integers between 0 and 23")
+            cleaned.append(hour)
+        return cleaned
+
+    @field_validator("burst_hours")
+    @classmethod
+    def _validate_burst_hours(cls, value: int) -> int:
+        if value < 1 or value > 24:
+            raise ValueError("burst_hours must be between 1 and 24")
+        return value
+
+    @field_validator("max_batches")
+    @classmethod
+    def _validate_max_batches(cls, value: int) -> int:
+        if value < 1 or value > 10:
+            raise ValueError("max_batches must be between 1 and 10")
+        return value
 
 
 
@@ -2508,43 +2559,54 @@ def api_vendor_rt_sales_audit_day(date: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/vendor-realtime-sales/fill-day")
+@app.post(
+    "/api/vendor-realtime-sales/fill-day",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "schema": VendorRtSalesFillDayRequest.model_json_schema()
+                }
+            }
+        }
+    },
+)
 async def api_vendor_rt_sales_fill_day(
     background_tasks: BackgroundTasks,
     request: Request,
 ):
     """
-    Schedule SP-API requests for the missing hours of a UAE day.
+    Schedule SP-API requests for the missing hours of a UAE day, optionally enabling burst mode.
     """
+    raw_body = await request.body()
     try:
-        body = await request.json() if await request.body() else {}
-    except:
-        body = {}
-
-    date_str = body.get("date")
-    missing_hours = body.get("missing_hours", [])
-
-    if not date_str:
-        raise HTTPException(status_code=400, detail="date parameter required")
-    if not isinstance(missing_hours, list):
-        raise HTTPException(status_code=400, detail="missing_hours must be a list")
+        payload_raw = await request.json() if raw_body else {}
+    except Exception:
+        payload_raw = {}
+    try:
+        payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
+    except ValidationError as exc:
+        messages = "; ".join(err.get("msg", "invalid request body") for err in exc.errors())
+        raise HTTPException(status_code=400, detail=messages)
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
 
-    cleaned_hours = []
-    for entry in missing_hours:
-        try:
-            hour_int = int(entry)
-        except (TypeError, ValueError):
-            continue
-        if 0 <= hour_int <= 23:
-            cleaned_hours.append(hour_int)
+    date_str = payload.date
+    cleaned_hours = payload.missing_hours
+    burst_enabled = bool(payload.burst)
+    per_batch_cap = (
+        payload.burst_hours if burst_enabled else vendor_realtime_sales_service.MAX_HOURLY_REPORTS_PER_FILL_DAY
+    )
+    max_batches = payload.max_batches if burst_enabled else 1
 
     try:
         plan = vendor_realtime_sales_service.plan_fill_day_run(
             date_str=date_str,
             requested_hours=cleaned_hours,
             marketplace_id=marketplace_id,
+            max_reports=per_batch_cap,
+            burst_enabled=burst_enabled,
+            max_batches=max_batches,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2566,15 +2628,22 @@ async def api_vendor_rt_sales_fill_day(
             plan["hours_to_request"],
             marketplace_id,
             plan["total_missing"],
+            requested_hours=cleaned_hours,
+            burst_enabled=burst_enabled,
+            burst_hours=per_batch_cap,
+            max_batches=max_batches,
         )
 
     logger.info(
-        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s)",
+        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d)",
         date_str,
         len(scheduled),
         plan["remaining_missing"],
         len(plan["pending_hours"]),
         plan["cooldown_active"],
+        burst_enabled,
+        max_batches,
+        per_batch_cap,
     )
 
     return {
@@ -2584,6 +2653,11 @@ async def api_vendor_rt_sales_fill_day(
         "pending_hours": plan["pending_hours"],
         "cooldown_active": plan["cooldown_active"],
         "cooldown_until": plan["cooldown_until"],
+        "burst_enabled": plan["burst_enabled"],
+        "burst_hours": plan["burst_hours"],
+        "max_batches": plan["max_batches"],
+        "batches_run": plan["batches_run"],
+        "hours_applied_this_call": plan["hours_applied_this_call"],
     }
 
 

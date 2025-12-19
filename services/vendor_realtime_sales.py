@@ -14,6 +14,7 @@ Consumes GET_VENDOR_REAL_TIME_SALES_REPORT from SP-API and provides:
 
 import json
 import logging
+import math
 import os
 import sqlite3
 from datetime import datetime, time, timedelta, timezone
@@ -1246,11 +1247,16 @@ def plan_fill_day_run(
     date_str: str,
     requested_hours: Optional[List[int]],
     marketplace_id: str,
+    *,
     max_reports: int = MAX_HOURLY_REPORTS_PER_FILL_DAY,
+    burst_enabled: bool = False,
+    max_batches: int = 1,
 ) -> dict:
     """
     Determine which missing hours can be repaired in this fill-day run.
     """
+    clamped_reports = max(1, min(int(max_reports), 24))
+    clamped_batches = max(1, min(int(max_batches), 10))
     safe_now = get_safe_now_utc()
     hours_detail, missing_hours, pending_hours = _classify_daily_hours(
         date_str,
@@ -1276,19 +1282,31 @@ def plan_fill_day_run(
             f"{LOG_PREFIX_FILL_DAY} Quota cooldown active until {cooldown_until}; skipping SP-API calls"
         )
 
-    hours_to_request = (
-        missing_candidates[:max_reports] if not cooldown_active else missing_candidates[:0]
-    )
+    hours_to_request = missing_candidates[:clamped_reports] if not cooldown_active else []
 
-    if not cooldown_active and len(missing_candidates) > max_reports:
+    if not cooldown_active and len(missing_candidates) > clamped_reports:
         logger.info(
             f"{LOG_PREFIX_FILL_DAY} Capping repair run to %d hours for %s (of %d missing)",
-            max_reports,
+            clamped_reports,
             date_str,
             len(missing_candidates),
         )
 
     remaining_missing = max(0, total_missing - len(hours_to_request))
+    planned_batches = 1 if hours_to_request else 0
+    planned_hours = len(hours_to_request)
+
+    if burst_enabled and planned_batches and clamped_batches > 1 and remaining_missing > 0:
+        additional_batches = min(
+            clamped_batches - planned_batches,
+            math.ceil(remaining_missing / clamped_reports) if clamped_reports else 0,
+        )
+        planned_batches += additional_batches
+        planned_hours += min(remaining_missing, clamped_reports * additional_batches)
+
+    if burst_enabled and not hours_to_request:
+        planned_batches = 0
+        planned_hours = 0
 
     return {
         "date": date_str,
@@ -1299,6 +1317,11 @@ def plan_fill_day_run(
         "cooldown_active": cooldown_active,
         "cooldown_until": cooldown_until,
         "cooldown_remaining_seconds": cooldown_remaining_seconds(),
+        "burst_enabled": burst_enabled,
+        "burst_hours": clamped_reports,
+        "max_batches": clamped_batches,
+        "batches_run": planned_batches,
+        "hours_applied_this_call": planned_hours,
     }
 
 
@@ -1308,6 +1331,11 @@ def run_fill_day_repair_cycle(
     hours_to_request: List[dict],
     marketplace_id: str,
     total_missing: int,
+    *,
+    requested_hours: Optional[List[int]] = None,
+    burst_enabled: bool = False,
+    burst_hours: int = MAX_HOURLY_REPORTS_PER_FILL_DAY,
+    max_batches: int = 1,
 ) -> None:
     """
     Sequentially request and ingest the missing hours returned by plan_fill_day_run.
@@ -1316,58 +1344,123 @@ def run_fill_day_repair_cycle(
         logger.info(f"{LOG_PREFIX_FILL_DAY} No hours to repair for %s", date_str)
         return
 
-    hour_starts: List[datetime] = []
-    for entry in hours_to_request:
-        try:
-            hour_starts.append(_parse_iso_to_utc(entry["start_utc"]))
-        except Exception:
-            continue
-
-    if not hour_starts:
-        logger.info(f"{LOG_PREFIX_FILL_DAY} No valid hours to enqueue for %s", date_str)
-        return
-
     lock_owner = f"fill-day:{date_str}:{os.getpid()}:{datetime.now(timezone.utc).isoformat()}"
     lock_ttl = 1800
     if not ledger_acquire_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl):
         logger.info(f"{LOG_PREFIX_FILL_DAY} Worker lock busy for %s; skipping Fill Day run", marketplace_id)
         return
     try:
-        enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
-        summary = process_rt_sales_hour_ledger(
-            marketplace_id,
-            max_hours=len(hour_starts),
-        )
-        if not summary.get("ok", True):
-            error_msg = summary.get("error") or "unknown error"
-            error_type = summary.get("error_type")
-            if error_type == "cooldown":
-                logger.warning(
-                    f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
-                    date_str,
-                    error_msg,
+        per_batch_cap = burst_hours if burst_enabled else MAX_HOURLY_REPORTS_PER_FILL_DAY
+        per_batch_cap = max(1, min(int(per_batch_cap), 24))
+        batches_run = 0
+        total_applied = 0
+        latest_remaining = max(0, total_missing)
+        next_hours = hours_to_request
+
+        def _parse_hour_starts(entries: List[dict]) -> List[datetime]:
+            parsed: List[datetime] = []
+            for entry in entries:
+                start_iso = entry.get("start_utc")
+                if not start_iso:
+                    continue
+                try:
+                    parsed.append(_parse_iso_to_utc(start_iso))
+                except Exception:
+                    continue
+            return parsed
+
+        while next_hours and batches_run < max_batches:
+            hour_starts = _parse_hour_starts(next_hours)
+            if not hour_starts:
+                logger.info(f"{LOG_PREFIX_FILL_DAY} No valid hours to enqueue for %s", date_str)
+                break
+
+            enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+            requested_count = 0
+            applied_count = 0
+            batch_ok = True
+            for _ in hour_starts:
+                summary = process_rt_sales_hour_ledger(
+                    marketplace_id,
+                    max_hours=len(hour_starts),
                 )
-                return
-            if error_type == "quota":
-                logger.warning(
-                    f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
+                requested_count += int(summary.get("requested", 0) or 0)
+                applied_count += int(summary.get("applied", 0) or 0)
+                if not summary.get("ok", True):
+                    batch_ok = False
+                    error_msg = summary.get("error") or "unknown error"
+                    error_type = summary.get("error_type")
+                    if error_type == "cooldown":
+                        logger.warning(
+                            f"{LOG_PREFIX_FILL_DAY} Cooldown active during Fill Day for %s: %s",
+                            date_str,
+                            error_msg,
+                        )
+                    elif error_type == "quota":
+                        logger.warning(
+                            f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day for %s: %s",
+                            date_str,
+                            error_msg,
+                        )
+                    else:
+                        logger.error(
+                            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s failed: %s",
+                            date_str,
+                            error_msg,
+                        )
+                    next_hours = []
+                    break
+                ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+                if summary.get("applied", 0) <= 0:
+                    break
+
+            total_applied += applied_count
+            batches_run += 1 if batch_ok else 0
+            latest_remaining = max(0, latest_remaining - applied_count)
+            if applied_count == 0:
+                logger.info(
+                    f"{LOG_PREFIX_FILL_DAY} No additional claimable hours for %s; stopping batch loop",
                     date_str,
-                    error_msg,
                 )
-                return
-            logger.error(
-                f"{LOG_PREFIX_FILL_DAY} Fill Day run %s failed: %s",
+                break
+            logger.info(
+                f"{LOG_PREFIX_FILL_DAY} Fill Day batch %s #%d -> requested=%d applied=%d remaining_missing~%d",
                 date_str,
-                error_msg,
+                batches_run,
+                requested_count,
+                applied_count,
+                latest_remaining,
             )
-            return
-        ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+
+            if not batch_ok or not burst_enabled:
+                break
+            if batches_run >= max_batches:
+                break
+
+            next_plan = plan_fill_day_run(
+                date_str=date_str,
+                requested_hours=requested_hours,
+                marketplace_id=marketplace_id,
+                max_reports=per_batch_cap,
+                burst_enabled=burst_enabled,
+                max_batches=max_batches,
+            )
+            next_hours = next_plan.get("hours_to_request") or []
+            latest_remaining = next_plan.get("remaining_missing", latest_remaining)
+            if next_plan.get("cooldown_active"):
+                logger.info(
+                    f"{LOG_PREFIX_FILL_DAY} Halting burst for %s because cooldown activated mid-run",
+                    date_str,
+                )
+                break
+
         logger.info(
-            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s -> requested=%d applied=%d remaining_missing=%d",
+            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s completed -> batches=%d applied=%d burst=%s hours_per_batch=%d",
             date_str,
-            summary.get("requested", 0),
-            summary.get("applied", 0),
-            max(0, total_missing - summary.get("applied", 0)),
+            batches_run,
+            total_applied,
+            burst_enabled,
+            per_batch_cap,
         )
     finally:
         ledger_release_worker_lock(marketplace_id, lock_owner)
