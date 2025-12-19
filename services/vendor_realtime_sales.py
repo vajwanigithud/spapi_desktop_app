@@ -1167,6 +1167,14 @@ def _execute_vendor_rt_sales_report(
         data_end=normalized_end,
         extra_options={"currencyCode": currency_code},
     )
+    logger.info(
+        "%s waiting for RT sales report reportId=%s window=[%s, %s) marketplace=%s",
+        LOG_PREFIX_ADMIN,
+        report_id,
+        normalized_start.isoformat(),
+        normalized_end.isoformat(),
+        marketplace_id,
+    )
     for hour_iso in ledger_hours:
         ledger_set_report_id(marketplace_id, hour_iso, report_id)
     report_data = poll_vendor_report(report_id)
