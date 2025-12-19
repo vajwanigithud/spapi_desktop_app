@@ -90,9 +90,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl
 
+import requests
+import uvicorn
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
 import services.oos_service as oos_service
 import services.picklist_service as picklist_service
 import services.vendor_realtime_sales as vendor_realtime_sales_service
+from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
 from routes.print_log_routes import register_print_log_routes
@@ -192,18 +202,8 @@ from services.vendor_rt_sales_ledger import (
     release_worker_lock as release_rt_sales_worker_lock,
 )
 
+BODY_NONE = Body(default=None)
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
-
-import requests
-import uvicorn
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, ValidationError, field_validator
-
-from auth.spapi_auth import SpApiAuth
 
 # --- Logging configuration ---
 LOG_DIR = Path(__file__).parent / "logs"
@@ -918,10 +918,10 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
         resp = requests.get(url, headers=headers, params=params, timeout=30)
     except requests.exceptions.Timeout:
         logger.error(f"[Catalog] Timeout fetching {asin} after 30s")
-        raise HTTPException(status_code=504, detail=f"Catalog fetch timeout for {asin}")
+        raise HTTPException(status_code=504, detail=f"Catalog fetch timeout for {asin}") from None
     except requests.exceptions.RequestException as e:
         logger.error(f"[Catalog] Network error fetching {asin}: {e}")
-        raise HTTPException(status_code=503, detail=f"Catalog fetch network error: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Catalog fetch network error: {str(e)}") from e
     
     if resp.status_code == 429:
         raise HTTPException(status_code=429, detail="Catalog rate limit hit. Try again later.")
@@ -987,7 +987,6 @@ def parse_po_date(po: Dict[str, Any]) -> datetime:
 
 def enrich_items_with_catalog(po_list):
     looked_up = set()
-    updated = False
     spapi_cache = spapi_catalog_status()
     for po in po_list:
         details = po.get("orderDetails") or {}
@@ -1220,10 +1219,10 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             resp = requests.get(url, headers=headers, params=params, timeout=20)
         except requests.exceptions.Timeout:
             logger.error(f"[VendorPO] Timeout fetching POs after 20s on page {page}")
-            raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}")
+            raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}") from None
         except requests.exceptions.RequestException as e:
             logger.error(f"[VendorPO] Network error fetching POs: {e}")
-            raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}")
+            raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}") from e
         
         if resp.status_code >= 400:
             logger.error(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
@@ -1308,15 +1307,6 @@ def fetch_po_status_totals(po_number: str) -> Dict[str, int]:
     for po in purchase_orders:
         items = po.get("itemStatus") or po.get("items") or []
         for item in items:
-            # Normalize quantities
-            ordered_amt = 0
-            oq_wrapper = item.get("orderedQuantity", {})
-            if isinstance(oq_wrapper, dict):
-                if "amount" in oq_wrapper:
-                    ordered_amt = _parse_qty(oq_wrapper)
-                elif isinstance(oq_wrapper.get("orderedQuantity"), dict):
-                    ordered_amt = _parse_qty(oq_wrapper.get("orderedQuantity"))
-
             ack_obj = item.get("acknowledgementStatus") or {}
             accepted_amt = _parse_qty(ack_obj.get("acceptedQuantity"))
 
@@ -1830,7 +1820,7 @@ def _build_reconcile_header(po: Dict[str, Any], fallback_line_count: int) -> Dic
 
 
 @app.post("/api/vendor-pos/sync")
-def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
+def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     """
     Fetch Vendor POs from SP-API for a window and persist to SQLite (canonical store).
     """
@@ -1863,7 +1853,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
@@ -1887,7 +1877,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
 
 
 @app.post("/api/vendor-pos/rebuild")
-def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
+def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     """
     Full rebuild: fetch Vendor POs for the default rolling window and refresh SQLite snapshot.
     """
@@ -1920,7 +1910,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(defaul
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
@@ -1959,7 +1949,7 @@ def _fetch_and_persist_vendor_pos(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Vendor PO fetch failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Vendor PO fetch failed: {exc}") from exc
 
     synced_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -2485,7 +2475,7 @@ def get_vendor_realtime_sales_summary(
         raise
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/status")
@@ -2502,7 +2492,7 @@ def get_vendor_realtime_sales_status():
         return status
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/asin/{asin}")
@@ -2584,7 +2574,7 @@ def get_vendor_realtime_sales_for_asin(
         raise
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get ASIN detail: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/vendor-realtime-sales/backfill-4weeks")
@@ -2617,7 +2607,7 @@ def api_vendor_rt_sales_audit_4weeks():
         return data
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to get 4-week audit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/audit-calendar")
@@ -2639,7 +2629,7 @@ def api_vendor_rt_sales_audit_calendar(days: Optional[int] = None):
         return data
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to compute audit calendar: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/audit-day")
@@ -2655,10 +2645,10 @@ def api_vendor_rt_sales_audit_day(date: str):
         )
         return data
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to compute audit day for {date}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post(
@@ -2689,7 +2679,7 @@ async def api_vendor_rt_sales_fill_day(
         payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
     except ValidationError as exc:
         messages = "; ".join(err.get("msg", "invalid request body") for err in exc.errors())
-        raise HTTPException(status_code=400, detail=messages)
+        raise HTTPException(status_code=400, detail=messages) from exc
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
     pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause()
@@ -2721,7 +2711,7 @@ async def api_vendor_rt_sales_fill_day(
             report_window_hours=report_window_hours,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     scheduled = [
         {
@@ -2789,7 +2779,7 @@ async def api_vendor_rt_sales_repair_30d(body: VendorRtSalesRepair30dRequest):
             dry_run=body.dry_run,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not result.get("ok") and result.get("stopped_reason") == "lock_busy":
         raise HTTPException(status_code=409, detail="30-day repair already running (worker lock busy).")
@@ -2894,7 +2884,7 @@ def api_vendor_sales_trends(
     
     except Exception as e:
         logger.error(f"[VendorRtTrends] Failed to get sales trends: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/vendor-realtime-sales/synthesize-precutover-hours")
@@ -2923,7 +2913,7 @@ def synthesize_precutover_hours(max_days: int = 3):
             f"[VendorRtAdmin] Failed to synthesize pre-cutover hours: {e}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ========================================
@@ -3110,7 +3100,7 @@ def spapi_tester_run(req: TesterRequest):
         resp = requests.request(method, url, headers=headers, params=params, json=req.body_json, timeout=30)
     except Exception as e:
         tester_logger.error(f"[Tester] Error calling {url}: {e}")
-        raise HTTPException(status_code=502, detail=f"Request failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Request failed: {e}") from e
 
     try:
         body = resp.json()
@@ -3719,7 +3709,7 @@ def get_catalog_payload(asin: str):
     try:
         entry = get_catalog_entry(asin, db_path=CATALOG_DB_PATH)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}") from exc
     if not entry:
         return JSONResponse({"error": "Catalog not found"}, status_code=404)
     payload = parse_catalog_payload(entry.get("payload"))
@@ -3855,7 +3845,7 @@ def debug_catalog_sample(asin: str):
     try:
         entry = get_catalog_entry(asin, db_path=CATALOG_DB_PATH)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}") from exc
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
     payload = parse_catalog_payload(entry.get("payload"), include_raw=False)
