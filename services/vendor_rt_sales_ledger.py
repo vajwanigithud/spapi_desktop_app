@@ -226,6 +226,57 @@ def claim_next_missing_hour(marketplace_id: str, now_utc: datetime) -> Optional[
         return _fetch_row(conn, marketplace_id, hour_utc)
 
 
+def mark_requested_explicit(marketplace_id: str, hour_utc: str) -> int:
+    """
+    Transition a specific ledger hour into REQUESTED status and return the new attempt count.
+    """
+    if not marketplace_id or not hour_utc:
+        return 0
+    now_iso = _utc_now_iso()
+    with get_db_connection() as conn:
+        ensure_vendor_rt_sales_ledger_table(conn)
+        row = conn.execute(
+            f"""
+            SELECT attempt_count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ? AND hour_utc = ?
+            """,
+            (marketplace_id, hour_utc),
+        ).fetchone()
+        attempt = int((row["attempt_count"] if row else 0) or 0) + 1
+        if row:
+            conn.execute(
+                f"""
+                UPDATE {LEDGER_TABLE}
+                SET status = ?, attempt_count = ?, updated_at_utc = ?,
+                    last_error = NULL, next_retry_utc = NULL
+                WHERE marketplace_id = ? AND hour_utc = ?
+                """,
+                (STATUS_REQUESTED, attempt, now_iso, marketplace_id, hour_utc),
+            )
+        else:
+            conn.execute(
+                f"""
+                INSERT INTO {LEDGER_TABLE} (
+                    marketplace_id, hour_utc, status, report_id,
+                    attempt_count, last_error, next_retry_utc,
+                    created_at_utc, updated_at_utc
+                )
+                VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    marketplace_id,
+                    hour_utc,
+                    STATUS_REQUESTED,
+                    attempt,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        conn.commit()
+        return attempt
+
+
 def mark_downloaded(marketplace_id: str, hour_utc: str, report_id: Optional[str]) -> None:
     if not marketplace_id or not hour_utc:
         return

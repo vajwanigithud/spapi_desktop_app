@@ -1020,6 +1020,7 @@ class VendorRtSalesFillDayRequest(BaseModel):
     burst: bool = False
     burst_hours: int = 6
     max_batches: int = 1
+    report_window_hours: Optional[int] = 1
 
     @field_validator("date")
     @classmethod
@@ -1060,6 +1061,14 @@ class VendorRtSalesFillDayRequest(BaseModel):
     def _validate_max_batches(cls, value: int) -> int:
         if value < 1 or value > 10:
             raise ValueError("max_batches must be between 1 and 10")
+        return value
+
+    @field_validator("report_window_hours")
+    @classmethod
+    def _validate_report_window_hours(cls, value: Optional[int]) -> int:
+        value = value or 1
+        if value < 1 or value > 24 * 14:
+            raise ValueError("report_window_hours must be between 1 and 336")
         return value
 
 
@@ -2598,6 +2607,9 @@ async def api_vendor_rt_sales_fill_day(
         payload.burst_hours if burst_enabled else vendor_realtime_sales_service.MAX_HOURLY_REPORTS_PER_FILL_DAY
     )
     max_batches = payload.max_batches if burst_enabled else 1
+    report_window_hours = payload.report_window_hours or 1
+    max_window = vendor_realtime_sales_service.MAX_FILL_DAY_REPORT_WINDOW_HOURS
+    report_window_hours = max(1, min(report_window_hours, max_window))
 
     try:
         plan = vendor_realtime_sales_service.plan_fill_day_run(
@@ -2607,6 +2619,7 @@ async def api_vendor_rt_sales_fill_day(
             max_reports=per_batch_cap,
             burst_enabled=burst_enabled,
             max_batches=max_batches,
+            report_window_hours=report_window_hours,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2632,10 +2645,11 @@ async def api_vendor_rt_sales_fill_day(
             burst_enabled=burst_enabled,
             burst_hours=per_batch_cap,
             max_batches=max_batches,
+            report_window_hours=report_window_hours,
         )
 
     logger.info(
-        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d)",
+        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d window=%d)",
         date_str,
         len(scheduled),
         plan["remaining_missing"],
@@ -2644,6 +2658,7 @@ async def api_vendor_rt_sales_fill_day(
         burst_enabled,
         max_batches,
         per_batch_cap,
+        report_window_hours,
     )
 
     return {
@@ -2658,6 +2673,8 @@ async def api_vendor_rt_sales_fill_day(
         "max_batches": plan["max_batches"],
         "batches_run": plan["batches_run"],
         "hours_applied_this_call": plan["hours_applied_this_call"],
+        "report_window_hours": plan["report_window_hours"],
+        "reports_created_this_call": plan["reports_created_this_call"],
     }
 
 
