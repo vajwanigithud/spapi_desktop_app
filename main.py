@@ -178,6 +178,7 @@ from services.vendor_rt_sales_ledger import (
     refresh_worker_lock as refresh_rt_sales_worker_lock,
     release_worker_lock as release_rt_sales_worker_lock,
 )
+from services.vendor_rt_sales_ledger import LEDGER_NORMALIZATION_FLAG, normalize_existing_ledger_rows
 
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
@@ -431,6 +432,37 @@ def _rt_sales_lock_owner(label: str) -> str:
     return f"{label}:{os.getpid()}:{int(time.time())}"
 
 
+def _ensure_rt_sales_ledger_normalized_once() -> None:
+    """Normalize historical RT sales ledger rows exactly once per install."""
+    try:
+        from services.db import get_app_kv, get_db_connection, set_app_kv  # Local import to avoid cycles
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning(
+            "[RtSalesLedgerNormalize] Skipping normalization; DB helpers unavailable: %s",
+            exc,
+        )
+        return
+
+    try:
+        with get_db_connection() as conn:
+            already = get_app_kv(conn, LEDGER_NORMALIZATION_FLAG)
+            if already:
+                return
+            logger.info("[RtSalesLedgerNormalize] Running startup ledger normalization")
+            stats = normalize_existing_ledger_rows(conn)
+            set_app_kv(conn, LEDGER_NORMALIZATION_FLAG, "1")
+            logger.info(
+                "[RtSalesLedgerNormalize] Startup normalization complete stats=%s",
+                stats,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[RtSalesLedgerNormalize] Startup normalization failed (continuing): %s",
+            exc,
+            exc_info=True,
+        )
+
+
 class VendorPOSyncRequest(BaseModel):
     createdAfter: Optional[datetime] = Field(default=None)
 
@@ -485,6 +517,7 @@ try:
     ensure_oos_export_history_table()
     ensure_vendor_inventory_table()
     ensure_app_kv_table()
+    _ensure_rt_sales_ledger_normalized_once()
 except Exception as e:
     logger.warning(f"[Startup] Failed to init vendor_realtime_sales tables (non-critical): {e}")
 
