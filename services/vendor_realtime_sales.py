@@ -329,6 +329,7 @@ MAX_HOURLY_REPORTS_PER_FILL_DAY = int(
 )
 
 MAX_FILL_DAY_REPORT_WINDOW_HOURS = 24 * 14  # Amazon allows up to 14 days per report
+FILL_DAY_LOOKBACK_DAYS = 30
 
 # Hour ledger configuration
 LEDGER_SAFETY_LAG_MINUTES = int(os.getenv("VENDOR_RT_LEDGER_SAFETY_LAG_MINUTES", "90"))
@@ -948,7 +949,11 @@ def _group_hours_into_windows(
     if not hour_entries:
         return []
     clamped = max(1, int(hours_per_window))
+    earliest_allowed = _normalize_utc_datetime(
+        datetime.now(timezone.utc) - timedelta(days=FILL_DAY_LOOKBACK_DAYS)
+    )
     normalized: List[dict] = []
+    skipped = 0
     for entry in hour_entries:
         start_iso = entry.get("start_utc")
         end_iso = entry.get("end_utc")
@@ -959,6 +964,9 @@ def _group_hours_into_windows(
             end_dt = _parse_iso_to_utc(end_iso) if end_iso else start_dt + timedelta(hours=1)
         except Exception:
             continue
+        if start_dt < earliest_allowed:
+            skipped += 1
+            continue
         normalized.append(
             {
                 **entry,
@@ -968,6 +976,13 @@ def _group_hours_into_windows(
         )
 
     normalized.sort(key=lambda info: info["_start_dt"])
+    if skipped:
+        logger.warning(
+            "%s Skipped %d hour(s) older than %d-day lookback",
+            LOG_PREFIX_FILL_DAY,
+            skipped,
+            FILL_DAY_LOOKBACK_DAYS,
+        )
     windows: List[List[dict]] = []
     current: List[dict] = []
     last_start: Optional[datetime] = None
@@ -1447,7 +1462,15 @@ def plan_fill_day_run(
     """
     clamped_reports = max(1, min(int(max_reports), 24))
     clamped_batches = max(1, min(int(max_batches), 10))
-    clamped_window = max(1, min(int(report_window_hours), MAX_FILL_DAY_REPORT_WINDOW_HOURS))
+    requested_window = max(1, int(report_window_hours))
+    clamped_window = min(requested_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+    if requested_window != clamped_window:
+        logger.warning(
+            "%s report_window_hours=%d exceeds max span (%d); clamping",
+            LOG_PREFIX_FILL_DAY,
+            requested_window,
+            MAX_FILL_DAY_REPORT_WINDOW_HOURS,
+        )
     safe_now = get_safe_now_utc()
     hours_detail, missing_hours, pending_hours = _classify_daily_hours(
         date_str,
@@ -1551,7 +1574,15 @@ def run_fill_day_repair_cycle(
     try:
         per_batch_cap = burst_hours if burst_enabled else MAX_HOURLY_REPORTS_PER_FILL_DAY
         per_batch_cap = max(1, min(int(per_batch_cap), 24))
-        hours_per_report = max(1, min(int(report_window_hours), MAX_FILL_DAY_REPORT_WINDOW_HOURS))
+        requested_window = max(1, int(report_window_hours))
+        hours_per_report = min(requested_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+        if requested_window != hours_per_report:
+            logger.warning(
+                "%s report_window_hours=%d exceeds max span (%d); clamping in runner",
+                LOG_PREFIX_FILL_DAY,
+                requested_window,
+                MAX_FILL_DAY_REPORT_WINDOW_HOURS,
+            )
         batches_run = 0
         total_applied = 0
         total_reports = 0
