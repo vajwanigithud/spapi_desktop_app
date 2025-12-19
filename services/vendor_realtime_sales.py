@@ -18,7 +18,8 @@ import math
 import os
 import sqlite3
 import time as time_module
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -781,11 +782,11 @@ def _build_hourly_coverage_map(
           "has_sales": bool
       }
     """
-    normalized_start = _normalize_utc_datetime(start_utc)
-    normalized_end = _normalize_utc_datetime(end_utc)
+    normalized_start = floor_utc_hour(start_utc)
+    normalized_end = floor_utc_hour(end_utc)
     if safe_now is None:
         safe_now = get_safe_now_utc()
-    safe_now = _normalize_utc_datetime(safe_now)
+    safe_now = floor_utc_hour(safe_now)
 
     # Step 1: load persisted audit rows for the window.
     audit_map = _fetch_vendor_rt_audit_hours(
@@ -842,7 +843,7 @@ def get_safe_now_utc() -> datetime:
     Get current time in UTC, minus SAFE_MINUTES_LAG buffer.
     Real-time sales data is only available for fully completed hours.
     """
-    return datetime.now(timezone.utc) - timedelta(minutes=SAFE_MINUTES_LAG)
+    return floor_utc_hour(datetime.now(timezone.utc) - timedelta(minutes=SAFE_MINUTES_LAG))
 
 
 def ingest_realtime_sales_report(
@@ -967,6 +968,18 @@ def _normalize_utc_datetime(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def floor_utc_hour(dt: datetime) -> datetime:
+    """Normalize to UTC and floor to the top of the hour."""
+    normalized = _normalize_utc_datetime(dt)
+    if normalized.minute or normalized.second or normalized.microsecond:
+        logger.warning(
+            "%s Non-hour-aligned datetime encountered; flooring to hour: %s",
+            LOG_PREFIX_ADMIN,
+            normalized.isoformat(),
+        )
+    return normalized.replace(minute=0, second=0, microsecond=0)
+
+
 def _utc_iso(dt: datetime) -> str:
     """Return a normalized ISO string (with trailing Z) for a UTC datetime."""
     normalized = _normalize_utc_datetime(dt)
@@ -1012,7 +1025,7 @@ def _ledger_now() -> datetime:
 
 def _ledger_safe_cutoff(now_utc: Optional[datetime] = None) -> datetime:
     now_utc = now_utc or _ledger_now()
-    return _normalize_utc_datetime(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
+    return floor_utc_hour(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
 
 
 def _hour_iso_range(start_dt: datetime, end_dt: datetime) -> List[str]:
@@ -1046,8 +1059,8 @@ def _group_hours_into_windows(
         if not start_iso:
             continue
         try:
-            start_dt = _parse_iso_to_utc(start_iso)
-            end_dt = _parse_iso_to_utc(end_iso) if end_iso else start_dt + timedelta(hours=1)
+            start_dt = floor_utc_hour(_parse_iso_to_utc(start_iso))
+            end_dt = floor_utc_hour(_parse_iso_to_utc(end_iso)) if end_iso else start_dt + timedelta(hours=1)
         except Exception:
             continue
         if start_dt < earliest_allowed:
@@ -1056,8 +1069,8 @@ def _group_hours_into_windows(
         normalized.append(
             {
                 **entry,
-                "_start_dt": _normalize_utc_datetime(start_dt),
-                "_end_dt": _normalize_utc_datetime(end_dt),
+                "_start_dt": start_dt,
+                "_end_dt": end_dt,
             }
         )
 
@@ -1144,8 +1157,8 @@ def _execute_vendor_rt_sales_report(
     ledger_hour_iso: Optional[str] = None,
     ledger_hour_isos: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    normalized_start = _normalize_utc_datetime(start_utc)
-    normalized_end = _normalize_utc_datetime(end_utc)
+    normalized_start = floor_utc_hour(start_utc)
+    normalized_end = floor_utc_hour(end_utc)
     hour_label = ledger_hour_iso or f"{normalized_start.isoformat()}->{normalized_end.isoformat()}"
     ledger_hours: List[str] = []
     if ledger_hour_isos:
@@ -1812,7 +1825,8 @@ def _load_missing_hours_last_30_days(
     """
     Return missing hour entries for the last 30 days suitable for window grouping.
     """
-    start_window = safe_now - timedelta(days=FILL_DAY_LOOKBACK_DAYS)
+    safe_now = floor_utc_hour(safe_now)
+    start_window = floor_utc_hour(safe_now - timedelta(days=FILL_DAY_LOOKBACK_DAYS))
     with get_db_connection() as conn:
         coverage_map = _build_hourly_coverage_map(
             conn,
@@ -3323,8 +3337,8 @@ def get_rt_sales_audit_calendar(
     start_uae = datetime.combine(datetime.fromisoformat(bucket_dates[0]).date(), dt_time(0, 0), tzinfo=UAE_TZ)
     end_uae = datetime.combine(datetime.fromisoformat(bucket_dates[-1]).date() + timedelta(days=1), dt_time(0, 0), tzinfo=UAE_TZ)
 
-    start_utc = start_uae.astimezone(timezone.utc)
-    end_utc = end_uae.astimezone(timezone.utc)
+    start_utc = floor_utc_hour(start_uae.astimezone(timezone.utc))
+    end_utc = floor_utc_hour(end_uae.astimezone(timezone.utc))
 
     safe_now = get_safe_now_utc()
     rows: List[Dict[str, Any]] = []
