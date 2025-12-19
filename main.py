@@ -622,6 +622,15 @@ def vendor_rt_sales_auto_sync_loop():
         )
 
         now_utc = get_safe_now_utc()
+        pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause(now_utc=now_utc)
+        if pause_state.get("paused"):
+            logger.warning(
+                "[RTSalesAutoSync] Paused (%s) until %s; skipping cycle",
+                pause_state.get("reason") or "manual",
+                pause_state.get("until_utc") or "manual",
+            )
+            time.sleep(interval_seconds)
+            continue
 
         if is_in_quota_cooldown(now_utc):
             logger.warning("[RTSalesAutoSync] In quota cooldown; skipping all SP-API calls this cycle")
@@ -1069,6 +1078,34 @@ class VendorRtSalesFillDayRequest(BaseModel):
         value = value or 1
         if value < 1 or value > 24 * 14:
             raise ValueError("report_window_hours must be between 1 and 336")
+        return value
+
+
+class VendorRtSalesRepair30dRequest(BaseModel):
+    report_window_hours: int = 6
+    max_runtime_seconds: int = 600
+    max_reports: int = 50
+    dry_run: bool = False
+
+    @field_validator("report_window_hours")
+    @classmethod
+    def _validate_report_window(cls, value: int) -> int:
+        if value < 1 or value > 24 * 14:
+            raise ValueError("report_window_hours must be between 1 and 336")
+        return value
+
+    @field_validator("max_runtime_seconds")
+    @classmethod
+    def _validate_runtime(cls, value: int) -> int:
+        if value < 60 or value > 3600:
+            raise ValueError("max_runtime_seconds must be between 60 and 3600")
+        return value
+
+    @field_validator("max_reports")
+    @classmethod
+    def _validate_reports(cls, value: int) -> int:
+        if value < 1 or value > 500:
+            raise ValueError("max_reports must be between 1 and 500")
         return value
 
 
@@ -2599,6 +2636,12 @@ async def api_vendor_rt_sales_fill_day(
         raise HTTPException(status_code=400, detail=messages)
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+    pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause()
+    if pause_state.get("paused") and pause_state.get("reason") == vendor_realtime_sales_service.RT_SALES_REPAIR_PAUSE_REASON:
+        raise HTTPException(
+            status_code=409,
+            detail="30-day audit repair in progress; Fill Day is temporarily disabled.",
+        )
 
     date_str = payload.date
     cleaned_hours = payload.missing_hours
@@ -2676,6 +2719,25 @@ async def api_vendor_rt_sales_fill_day(
         "report_window_hours": plan["report_window_hours"],
         "reports_created_this_call": plan["reports_created_this_call"],
     }
+
+
+@app.post("/api/vendor/rt-sales/repair-30d")
+async def api_vendor_rt_sales_repair_30d(body: VendorRtSalesRepair30dRequest):
+    marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+    try:
+        result = vendor_realtime_sales_service.repair_missing_hours_last_30_days(
+            marketplace_id=marketplace_id,
+            report_window_hours=body.report_window_hours,
+            max_runtime_seconds=body.max_runtime_seconds,
+            max_reports=body.max_reports,
+            dry_run=body.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not result.get("ok") and result.get("stopped_reason") == "lock_busy":
+        raise HTTPException(status_code=409, detail="30-day repair already running (worker lock busy).")
+    return result
 
 
 @app.post("/api/vendor-realtime-sales/audit-and-repair")

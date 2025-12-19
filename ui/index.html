@@ -980,7 +980,9 @@
       <div style="padding:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
         <div style="font-size:14px; font-weight:600;">Last 30 days</div>
         <button id="audit-refresh-btn" class="btn btn-outline-secondary" onclick="refreshAuditCalendar()">Refresh Audit (DB Only)</button>
+        <button id="audit-repair-30d-btn" class="btn btn-outline-secondary" onclick="runAuditRepair30d()">Audit & Repair (Last 30 days)</button>
         <span id="audit-refresh-status" style="font-size:13px; color:#475569;"></span>
+        <span id="audit-repair-status" style="font-size:13px; color:#475569;"></span>
       </div>
       <div id="audit-calendar-grid" class="audit-calendar-grid"></div>
       <div id="audit-calendar-meta" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
@@ -5837,6 +5839,48 @@
           btn.disabled = false;
           btn.textContent = "Fill Day / Backfill";
         }
+      }
+    }
+
+    async function runAuditRepair30d() {
+      const btn = document.getElementById("audit-repair-30d-btn");
+      const statusEl = document.getElementById("audit-repair-status");
+      if (btn) btn.disabled = true;
+      if (statusEl) {
+        statusEl.textContent = "Running 30-day repair...";
+        statusEl.style.color = "#0f172a";
+      }
+      try {
+        const resp = await fetch("/api/vendor/rt-sales/repair-30d", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            report_window_hours: 6,
+            max_runtime_seconds: 600,
+            max_reports: 50
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+        }
+        if (statusEl) {
+          const reason = data.stopped_reason || "unknown";
+          const applied = data.hours_applied || 0;
+          const reports = data.reports_created || 0;
+          const remaining = data.remaining_missing ?? "?";
+          statusEl.textContent = `Repair stop: ${reason} | applied ${applied} hrs | reports ${reports} | remaining ${remaining}`;
+          statusEl.style.color = data.ok ? "#059669" : "#b91c1c";
+        }
+        await refreshAuditCalendar();
+      } catch (err) {
+        console.error("Repair 30d failed:", err);
+        if (statusEl) {
+          statusEl.textContent = `Repair failed: ${err.message}`;
+          statusEl.style.color = "#b91c1c";
+        }
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

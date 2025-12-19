@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import sqlite3
+import time
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,6 +35,7 @@ except Exception:
 # ------------------------------------------------------------
 # Internal services
 # ------------------------------------------------------------
+from services import db as db_service
 from services.catalog_service import (
     record_catalog_asin_sources,
     seed_catalog_universe,
@@ -314,6 +316,88 @@ def get_rt_sales_status(now_utc: Optional[datetime] = None) -> dict:
     }
 
 
+def _default_autosync_pause_state() -> dict:
+    return {"paused": False, "reason": None, "until_utc": None}
+
+
+def rt_sales_set_autosync_paused(
+    paused: bool,
+    reason: Optional[str],
+    until_utc: Optional[datetime],
+) -> dict:
+    """
+    Persist the autosync pause state so background loops and fill-day honor repairs.
+    """
+    state = {
+        "paused": bool(paused),
+        "reason": reason if paused else None,
+        "until_utc": _utc_iso(until_utc) if paused and until_utc else None,
+    }
+    try:
+        with get_db_connection() as conn:
+            db_service.set_app_kv(conn, RT_SALES_AUTOSYNC_PAUSE_KEY, json.dumps(state))
+    except Exception as exc:
+        logger.error(f"{LOG_PREFIX_ADMIN} Failed to persist autosync pause state: {exc}")
+    else:
+        if paused:
+            logger.warning(
+                f"{LOG_PREFIX_ADMIN} Autosync paused reason={state['reason'] or 'unspecified'} "
+                f"until={state['until_utc'] or 'manual'}"
+            )
+        else:
+            logger.info(f"{LOG_PREFIX_ADMIN} Autosync pause cleared")
+    return state
+
+
+def rt_sales_get_autosync_pause(
+    now_utc: Optional[datetime] = None,
+    *,
+    auto_clear: bool = True,
+) -> dict:
+    """
+    Return the current autosync pause state; auto-clear expired pauses when requested.
+    """
+    now_utc = _normalize_utc_datetime(now_utc or datetime.now(timezone.utc))
+    raw_state = _default_autosync_pause_state()
+    try:
+        with get_db_connection() as conn:
+            stored = db_service.get_app_kv(conn, RT_SALES_AUTOSYNC_PAUSE_KEY)
+    except Exception as exc:
+        logger.error(f"{LOG_PREFIX_ADMIN} Failed to read autosync pause state: {exc}")
+        stored = None
+    if stored:
+        try:
+            data = json.loads(stored)
+            raw_state.update(
+                {
+                    "paused": bool(data.get("paused")),
+                    "reason": data.get("reason"),
+                    "until_utc": data.get("until_utc"),
+                }
+            )
+        except Exception:
+            raw_state = _default_autosync_pause_state()
+
+    if raw_state["paused"] and raw_state.get("until_utc"):
+        try:
+            until_dt = datetime.fromisoformat(raw_state["until_utc"].replace("Z", "+00:00"))
+        except Exception:
+            until_dt = None
+        if until_dt and now_utc >= until_dt:
+            if auto_clear:
+                rt_sales_set_autosync_paused(False, None, None)
+            raw_state = _default_autosync_pause_state()
+    return raw_state
+
+
+def rt_sales_should_skip_autosync(now_utc: Optional[datetime] = None) -> Tuple[bool, dict]:
+    """
+    Helper for the auto-sync loop to check if a pause is in effect.
+    """
+    state = rt_sales_get_autosync_pause(now_utc=now_utc)
+    return bool(state.get("paused")), state
+
+
 # ====================================================================
 # TIME CONSTANTS FOR SAFE BACKFILLING
 # ====================================================================
@@ -330,6 +414,8 @@ MAX_HOURLY_REPORTS_PER_FILL_DAY = int(
 
 MAX_FILL_DAY_REPORT_WINDOW_HOURS = 24 * 14  # Amazon allows up to 14 days per report
 FILL_DAY_LOOKBACK_DAYS = 30
+RT_SALES_AUTOSYNC_PAUSE_KEY = "rt_sales_autosync_pause"
+RT_SALES_REPAIR_PAUSE_REASON = "repair-30d"
 
 # Hour ledger configuration
 LEDGER_SAFETY_LAG_MINUTES = int(os.getenv("VENDOR_RT_LEDGER_SAFETY_LAG_MINUTES", "90"))
@@ -1709,6 +1795,175 @@ def run_fill_day_repair_cycle(
         )
     finally:
         ledger_release_worker_lock(marketplace_id, lock_owner)
+
+
+def _load_missing_hours_last_30_days(
+    marketplace_id: str,
+    safe_now: datetime,
+) -> List[dict]:
+    """
+    Return missing hour entries for the last 30 days suitable for window grouping.
+    """
+    start_window = safe_now - timedelta(days=FILL_DAY_LOOKBACK_DAYS)
+    with get_db_connection() as conn:
+        coverage_map = _build_hourly_coverage_map(
+            conn,
+            marketplace_id,
+            start_window,
+            safe_now,
+            safe_now=safe_now,
+        )
+    missing_entries: List[dict] = []
+    for info in coverage_map.values():
+        status = (info.get("status") or "").upper()
+        if status != "MISSING":
+            continue
+        hour_start: datetime = info["hour_start"]
+        hour_end: datetime = info["hour_end"]
+        missing_entries.append(
+            {
+                "start_utc": _utc_iso(hour_start),
+                "end_utc": _utc_iso(hour_end),
+            }
+        )
+    missing_entries.sort(key=lambda item: item["start_utc"])
+    return missing_entries
+
+
+def repair_missing_hours_last_30_days(
+    marketplace_id: str,
+    *,
+    report_window_hours: int = 6,
+    max_runtime_seconds: int = 600,
+    max_reports: int = 50,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Run a single repair job that targets all missing hours in the last 30 days.
+    """
+    safe_now = get_safe_now_utc()
+    started_utc = datetime.now(timezone.utc)
+    report_window = max(1, int(report_window_hours))
+    window_hours = min(report_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+    if report_window != window_hours:
+        logger.warning(
+            f"{LOG_PREFIX_FILL_DAY} repair window_hours={report_window} exceeds limit; clamped to {window_hours}"
+        )
+    runtime_cap = max(60, min(int(max_runtime_seconds), 3600))
+    reports_cap = max(1, min(int(max_reports), 500))
+    missing_entries = _load_missing_hours_last_30_days(marketplace_id, safe_now)
+    hours_targeted = len(missing_entries)
+    windows = _group_hours_into_windows(missing_entries, window_hours)
+    dry_run_summary = {
+        "ok": True,
+        "dry_run": True,
+        "hours_targeted": hours_targeted,
+        "hours_applied": 0,
+        "hours_marked_empty": 0,
+        "reports_created": len(windows),
+        "remaining_missing": hours_targeted,
+        "started_utc": started_utc.isoformat(),
+        "ended_utc": started_utc.isoformat(),
+        "runtime_seconds": 0,
+        "stopped_reason": "dry_run" if hours_targeted else "no_work",
+    }
+    if dry_run or not hours_targeted:
+        return dry_run_summary
+
+    lock_owner = f"{RT_SALES_REPAIR_PAUSE_REASON}:{os.getpid()}:{started_utc.isoformat()}"
+    if not ledger_acquire_worker_lock(marketplace_id, lock_owner, ttl_seconds=runtime_cap + 120):
+        logger.warning(f"{LOG_PREFIX_FILL_DAY} repair-30d worker lock busy for {marketplace_id}")
+        dry_run_summary.update({"ok": False, "dry_run": False, "stopped_reason": "lock_busy"})
+        return dry_run_summary
+
+    pause_until = started_utc + timedelta(seconds=runtime_cap + 30)
+    rt_sales_set_autosync_paused(True, RT_SALES_REPAIR_PAUSE_REASON, pause_until)
+
+    reports_created = 0
+    hours_applied = 0
+    hours_marked_empty = 0
+    processed_hours = 0
+    stopped_reason = "completed"
+    total_windows = len(windows)
+    start_monotonic = time.monotonic()
+    lock_ttl = runtime_cap + 120
+
+    logger.info(
+        f"{LOG_PREFIX_FILL_DAY} repair-30d starting for {marketplace_id}: windows={total_windows} "
+        f"hours={hours_targeted} window_hours={window_hours} max_reports={reports_cap}"
+    )
+
+    try:
+        for window in windows:
+            elapsed = time.monotonic() - start_monotonic
+            if elapsed >= runtime_cap:
+                stopped_reason = "runtime_cap"
+                break
+            if reports_created >= reports_cap:
+                stopped_reason = "max_reports_cap"
+                break
+
+            hour_starts = []
+            for entry in window:
+                try:
+                    hour_starts.append(_parse_iso_to_utc(entry["start_utc"]))
+                except Exception:
+                    continue
+            enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+
+            try:
+                summary = _process_hour_window(marketplace_id, window)
+            except VendorRtCooldownBlock:
+                stopped_reason = "cooldown"
+                break
+            except SpApiQuotaError:
+                stopped_reason = "cooldown"
+                break
+            except Exception as exc:
+                stopped_reason = "error"
+                logger.error(f"{LOG_PREFIX_FILL_DAY} repair-30d window failed: {exc}", exc_info=True)
+                break
+
+            reports_created += int(summary.get("reports", 0) or 0)
+            hours_applied += int(summary.get("applied", 0) or 0)
+            empty_hours = summary.get("empty_hours") or []
+            hours_marked_empty += len(empty_hours)
+            processed_hours += len(window)
+            ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+
+            if reports_created >= reports_cap:
+                stopped_reason = "max_reports_cap"
+                break
+
+        if processed_hours >= hours_targeted and stopped_reason == "completed":
+            stopped_reason = "completed"
+    finally:
+        rt_sales_set_autosync_paused(False, None, None)
+        ledger_release_worker_lock(marketplace_id, lock_owner)
+
+    ended_utc = datetime.now(timezone.utc)
+    runtime_seconds = round(time.monotonic() - start_monotonic, 2)
+    remaining_missing = max(0, hours_targeted - processed_hours)
+    ok = stopped_reason in {"completed", "no_work"}
+
+    logger.info(
+        f"{LOG_PREFIX_FILL_DAY} repair-30d finished for {marketplace_id}: reports={reports_created} "
+        f"applied={hours_applied} empty={hours_marked_empty} reason={stopped_reason}"
+    )
+
+    return {
+        "ok": ok,
+        "dry_run": False,
+        "hours_targeted": hours_targeted,
+        "hours_applied": hours_applied,
+        "hours_marked_empty": hours_marked_empty,
+        "reports_created": reports_created,
+        "remaining_missing": remaining_missing,
+        "started_utc": started_utc.isoformat(),
+        "ended_utc": ended_utc.isoformat(),
+        "runtime_seconds": runtime_seconds,
+        "stopped_reason": stopped_reason,
+    }
 def repair_missing_hour(
     start_utc: datetime,
     end_utc: datetime,
