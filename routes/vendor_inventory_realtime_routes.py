@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from fastapi import APIRouter, FastAPI
 
+from services.catalog_images import attach_image_urls
 from services.db import get_db_connection
 from services.spapi_reports import SpApiQuotaError
 from services.vendor_inventory_realtime import (
@@ -159,6 +160,10 @@ def _normalize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     snapshot = _normalize_snapshot(dict(snapshot))
     items = snapshot.get("items") or []
+    for item in items:
+        if isinstance(item, dict) and item.get("image_url") and not item.get("imageUrl"):
+            item["imageUrl"] = item.get("image_url")
+    attach_image_urls(items)
     refresh_meta = snapshot.get("refresh") or {}
     refresh_in_progress = bool(refresh_meta.get("in_progress"))
     computed = _compute_as_of_fields(snapshot)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from routes import vendor_inventory_realtime_routes as realtime_routes
 from routes import vendor_rt_inventory_routes as legacy_routes
@@ -48,6 +48,8 @@ def _sample_snapshot():
 def test_realtime_snapshot_endpoint_includes_catalog_and_sales(monkeypatch: pytest.MonkeyPatch):
     app = _build_app()
     snapshot = _sample_snapshot()
+    # Pre-populate one row with an existing imageUrl to ensure we don't overwrite it
+    snapshot["items"][1]["imageUrl"] = "https://existing/B0TEST002.jpg"
 
     monkeypatch.setattr(
         realtime_routes,
@@ -58,6 +60,12 @@ def test_realtime_snapshot_endpoint_includes_catalog_and_sales(monkeypatch: pyte
         realtime_routes,
         "_load_catalog_metadata",
         lambda asins: {"B0TEST001": {"title": "Widget", "image_url": "https://img/1"}},
+    )
+    # Ensure catalog_images.attach_image_urls runs predictably without hitting SQLite.
+    monkeypatch.setattr(
+        realtime_routes,
+        "attach_image_urls",
+        lambda rows: rows,
     )
     monkeypatch.setattr(
         realtime_routes,
@@ -75,6 +83,9 @@ def test_realtime_snapshot_endpoint_includes_catalog_and_sales(monkeypatch: pyte
     assert data["as_of_uae"]
     assert data["items"][0]["title"] == "Widget"
     assert data["items"][0]["image_url"] == "https://img/1"
+    assert data["items"][0]["imageUrl"] == "https://img/1"
+    # Existing imageUrl is not overwritten
+    assert data["items"][1]["imageUrl"] == "https://existing/B0TEST002.jpg"
     sales_map = {item["asin"]: item["sales_30d"] for item in data["items"]}
     assert sales_map["B0TEST001"] == 12
     assert sales_map["B0TEST002"] == 0
