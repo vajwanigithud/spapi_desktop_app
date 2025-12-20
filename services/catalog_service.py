@@ -11,6 +11,7 @@ from .utils_barcodes import is_asin
 
 schema_logger = logging.getLogger("forecast_schema")
 logger = logging.getLogger(__name__)
+_FORECAST_DISABLED_LOGGED = False
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CATALOG_DB_PATH = ROOT / "catalog.db"
@@ -98,7 +99,10 @@ def init_catalog_db(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
                 """
             )
             conn.commit()
-    schema_logger.info("Forecast feature disabled: init_forecast_tables() not called")
+    global _FORECAST_DISABLED_LOGGED
+    if not _FORECAST_DISABLED_LOGGED:
+        schema_logger.info("Forecast feature disabled: init_forecast_tables() not called")
+        _FORECAST_DISABLED_LOGGED = True
 
 
 def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
