@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 import pytest
 
 from services import db as db_service
-from services.db import ensure_vendor_inventory_table, get_db_connection, get_vendor_inventory_snapshot
+from services.db import (
+    ensure_vendor_inventory_table,
+    get_db_connection,
+    get_vendor_inventory_snapshot,
+)
 
 os.environ.setdefault("LWA_CLIENT_ID", "dummy")
 os.environ.setdefault("LWA_CLIENT_SECRET", "dummy")
@@ -43,8 +47,11 @@ def _sample_snapshot():
 
 def test_materialize_snapshot_writes_vendor_inventory_rows(temp_db):
     snapshot = _sample_snapshot()
-    written = materialize_vendor_inventory_snapshot(snapshot, source="test")
-    assert written == 1
+    prune_meta = materialize_vendor_inventory_snapshot(snapshot, source="test")
+    assert isinstance(prune_meta, dict)
+    assert prune_meta.get("prune_attempted") in (True, False)
+    assert prune_meta.get("prune_min_keep_count") is not None
+    assert prune_meta.get("pruned_rows") is not None
     with get_db_connection() as conn:
         rows = get_vendor_inventory_snapshot(conn, snapshot["marketplace_id"])
     assert len(rows) == 1

@@ -531,15 +531,15 @@ def _materialize_rows_for_vendor_inventory(
     return rows
 
 
-def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> int:
+def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> Dict[str, Any]:
     """
     Replace vendor_inventory_asin rows using realtime snapshot items.
-    Returns number of rows written.
+    Returns prune metadata (dict) including row counts.
     """
     marketplace_id = (snapshot.get("marketplace_id") or "").strip()
     if not marketplace_id:
         logger.warning("[VendorRtInventory] Materialization skipped (%s): missing marketplace_id", source)
-        return 0
+        return {}
     window_start_raw = (
         snapshot.get("report_start_time")
         or snapshot.get("start_date")
@@ -569,7 +569,7 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
             source,
             marketplace_id,
         )
-        return 0
+        return {}
     try:
         ensure_vendor_inventory_table()
         with get_db_connection() as conn:
@@ -577,12 +577,12 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
         refresh_meta = snapshot.get("refresh") or {}
         refresh_meta.update(
             {
-                "prune_attempted": bool(prune_meta.get("prune_attempted")),
+                "prune_attempted": bool(prune_meta.get("prune_attempted", False)),
                 "prune_skipped_reason": prune_meta.get("prune_skipped_reason") or "",
-                "prune_min_keep_count": prune_meta.get("prune_min_keep_count"),
-                "pruned_rows": prune_meta.get("pruned_rows"),
-                "prune_kept_count": prune_meta.get("prune_kept_count"),
-                "prune_before_count": prune_meta.get("prune_before_count"),
+                "prune_min_keep_count": int(prune_meta.get("prune_min_keep_count", 0)),
+                "pruned_rows": int(prune_meta.get("pruned_rows", 0)),
+                "prune_kept_count": int(prune_meta.get("prune_kept_count", 0)),
+                "prune_before_count": int(prune_meta.get("prune_before_count", 0)),
             }
         )
         snapshot["refresh"] = refresh_meta
@@ -591,7 +591,7 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
             source,
             len(rows),
         )
-        return len(rows)
+        return prune_meta
     except Exception as exc:
         logger.error(
             "[VendorRtInventory] Failed to materialize snapshot (%s) for %s: %s",
@@ -600,7 +600,7 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
             exc,
             exc_info=True,
         )
-        return 0
+        return {}
 
 
 def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THRESHOLD_HOURS) -> bool:
@@ -789,7 +789,19 @@ def refresh_realtime_inventory_snapshot(
 
     _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
-    materialize_vendor_inventory_snapshot(snapshot, source="refresh")
+    prune_meta = materialize_vendor_inventory_snapshot(snapshot, source="refresh") or {}
+    refresh_meta = snapshot.get("refresh") or {}
+    refresh_meta.update(
+        {
+            "prune_attempted": bool(prune_meta.get("prune_attempted", False)),
+            "prune_skipped_reason": prune_meta.get("prune_skipped_reason") or "",
+            "prune_min_keep_count": int(prune_meta.get("prune_min_keep_count", 0)),
+            "pruned_rows": int(prune_meta.get("pruned_rows", 0)),
+            "prune_kept_count": int(prune_meta.get("prune_kept_count", 0)),
+            "prune_before_count": int(prune_meta.get("prune_before_count", 0)),
+        }
+    )
+    snapshot["refresh"] = refresh_meta
     try:
         ensure_app_kv_table()
         with get_db_connection() as conn:
