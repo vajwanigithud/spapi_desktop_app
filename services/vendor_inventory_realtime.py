@@ -472,7 +472,11 @@ def _decorate_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
-def _materialize_rows_for_vendor_inventory(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _materialize_rows_for_vendor_inventory(
+    snapshot: Dict[str, Any],
+    window_start: Optional[str] = None,
+    window_end: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     marketplace_id = (snapshot.get("marketplace_id") or "").strip()
     report_start = _parse_datetime(snapshot.get("report_start_time"))
     report_end = _parse_datetime(snapshot.get("report_end_time"))
@@ -505,8 +509,8 @@ def _materialize_rows_for_vendor_inventory(snapshot: Dict[str, Any]) -> List[Dic
             {
                 "marketplace_id": marketplace_id,
                 "asin": asin,
-                "start_date": _iso(start_dt) or snapshot.get("report_start_time") or generated_at,
-                "end_date": _iso(end_dt) or snapshot.get("report_end_time") or generated_at,
+                "start_date": window_start or _iso(start_dt) or snapshot.get("report_start_time") or generated_at,
+                "end_date": window_end or _iso(end_dt) or snapshot.get("report_end_time") or generated_at,
                 "sellable_onhand_units": sellable_units,
                 "sellable_onhand_cost": 0.0,
                 "unsellable_onhand_units": 0,
@@ -536,7 +540,29 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
     if not marketplace_id:
         logger.warning("[VendorRtInventory] Materialization skipped (%s): missing marketplace_id", source)
         return 0
-    rows = _materialize_rows_for_vendor_inventory(snapshot)
+    window_start_raw = (
+        snapshot.get("report_start_time")
+        or snapshot.get("start_date")
+        or snapshot.get("window_start_utc")
+    )
+    window_end_raw = (
+        snapshot.get("report_end_time")
+        or snapshot.get("end_date")
+        or snapshot.get("window_end_utc")
+    )
+    window_start_dt = _parse_datetime(window_start_raw)
+    window_end_dt = _parse_datetime(window_end_raw)
+    window_start = _iso(window_start_dt) if window_start_dt else None
+    window_end = _iso(window_end_dt) if window_end_dt else None
+    if not (window_start and window_end):
+        logger.warning(
+            "[VendorRtInventory] Snapshot window missing for %s (%s); using item timestamps",
+            marketplace_id,
+            source,
+        )
+        window_start = None
+        window_end = None
+    rows = _materialize_rows_for_vendor_inventory(snapshot, window_start=window_start, window_end=window_end)
     if not rows:
         logger.info(
             "[VendorRtInventory] Materialization skipped (%s): no items to persist for %s",
