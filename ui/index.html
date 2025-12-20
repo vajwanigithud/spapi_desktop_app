@@ -1216,8 +1216,7 @@
     let inventoryFetchInFlight = false;
     let inventoryFetchPromise = null;
     let lastRealtimeFetchAt = 0;
-    const INVENTORY_REFRESH_POLL_INTERVAL_MS = 15000;
-    const INVENTORY_FETCH_DEBOUNCE_MS = 60 * 1000;
+    const INVENTORY_REFRESH_POLL_INTERVAL_MS = 5 * 60 * 1000;    const INVENTORY_FETCH_DEBOUNCE_MS = 60 * 1000;
     let inventoryRefreshPollTimer = null;
     let inventoryRefreshPollingActive = false;
     let catalogAsinMapCache = null;
