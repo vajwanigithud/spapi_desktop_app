@@ -573,7 +573,19 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
     try:
         ensure_vendor_inventory_table()
         with get_db_connection() as conn:
-            replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
+            prune_meta = replace_vendor_inventory_snapshot(conn, marketplace_id, rows) or {}
+        refresh_meta = snapshot.get("refresh") or {}
+        refresh_meta.update(
+            {
+                "prune_attempted": bool(prune_meta.get("prune_attempted")),
+                "prune_skipped_reason": prune_meta.get("prune_skipped_reason") or "",
+                "prune_min_keep_count": prune_meta.get("prune_min_keep_count"),
+                "pruned_rows": prune_meta.get("pruned_rows"),
+                "prune_kept_count": prune_meta.get("prune_kept_count"),
+                "prune_before_count": prune_meta.get("prune_before_count"),
+            }
+        )
+        snapshot["refresh"] = refresh_meta
         logger.info(
             "[VendorRtInventory] Materialized realtime snapshot (%s) into vendor_inventory_asin: %s rows",
             source,

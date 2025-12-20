@@ -1071,6 +1071,7 @@
             <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
             <a id="inv-coverage-why" href="#" style="font-size:12px; color:#2563eb; text-decoration:none; display:none;" onclick="openInventoryCoverageModal(); return false;">ⓘ Why coverage is low?</a>
           </div>
+          <div id="inv-coverage-warning" class="muted-text" style="font-size:12px; line-height:1.3; color:#b45309; display:none;"></div>
           <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
             Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
           </div>
@@ -4432,6 +4433,7 @@
       const labelEl = document.getElementById('inv-week-label');
       const coverageEl = document.getElementById('inv-coverage-label');
       const coverageWhyEl = document.getElementById('inv-coverage-why');
+      const coverageWarnEl = document.getElementById('inv-coverage-warning');
       if (!labelEl) return;
       const realtimeMeta = realtimeInventoryMeta || meta || {};
       const count = realtimeInventorySnapshot.length;
@@ -4464,6 +4466,7 @@
       });
       const coverageLabel = realtimeMeta.coverage_label;
       const scopeExplanation = realtimeMeta.inventory_scope_explanation;
+      const pruneSkippedReason = realtimeMeta.prune_skipped_reason || '';
       if (coverageEl) {
         if (coverageLabel) {
           const parts = [coverageLabel];
@@ -4477,6 +4480,18 @@
           coverageEl.textContent = '';
           coverageEl.style.display = 'none';
           if (coverageWhyEl) coverageWhyEl.style.display = 'none';
+        }
+      }
+      if (coverageWarnEl) {
+        if (pruneSkippedReason) {
+          const reasonText = pruneSkippedReason === 'below_threshold'
+            ? 'Pruning skipped (snapshot too small). Data may be partial.'
+            : 'Pruning skipped (empty snapshot). Data may be partial.';
+          coverageWarnEl.textContent = `⚠️ ${reasonText}`;
+          coverageWarnEl.style.display = 'block';
+        } else {
+          coverageWarnEl.textContent = '';
+          coverageWarnEl.style.display = 'none';
         }
       }
       let labelParts = [`Real-Time | Loaded ${count} ASINs`];
@@ -4725,6 +4740,18 @@
         coverage_ratio: Number.isFinite(data?.coverage_ratio) ? Number(data.coverage_ratio) : null,
         catalog_asin_count: Number.isFinite(data?.catalog_asin_count) ? Number(data.catalog_asin_count) : null,
         unique_count: Number.isFinite(data?.unique_count) ? Number(data.unique_count) : null,
+        prune_attempted: Boolean(data?.prune_attempted ?? refreshMeta?.prune_attempted),
+        prune_skipped_reason: (data?.prune_skipped_reason || refreshMeta?.prune_skipped_reason || "") || "",
+        prune_min_keep_count: Number.isFinite(data?.prune_min_keep_count)
+          ? Number(data.prune_min_keep_count)
+          : Number.isFinite(refreshMeta?.prune_min_keep_count)
+          ? Number(refreshMeta.prune_min_keep_count)
+          : null,
+        pruned_rows: Number.isFinite(data?.pruned_rows)
+          ? Number(data.pruned_rows)
+          : Number.isFinite(refreshMeta?.pruned_rows)
+          ? Number(refreshMeta.pruned_rows)
+          : null,
       };
       realtimeInventorySnapshot = rows.slice();
       realtimeInventoryMeta = meta;

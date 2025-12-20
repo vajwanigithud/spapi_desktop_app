@@ -1,9 +1,10 @@
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 CATALOG_DB_PATH = Path(__file__).resolve().parent.parent / "catalog.db"
@@ -402,15 +403,16 @@ def ensure_vendor_inventory_table() -> None:
         raise
 
 
-def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> None:
+def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> dict[str, Any]:
     """
-    Upsert vendor_inventory_asin rows for the given marketplace_id.
-    Existing ASINs are updated; unseen ASINs remain.
-    
-    Args:
-        conn: SQLite connection object
-        marketplace_id: The marketplace ID to refresh
-        rows: List of dicts with keys matching table columns (except id)
+    Upsert vendor_inventory_asin rows for the given marketplace_id and prune stale ASINs
+    when safe. Returns prune metadata with keys:
+    - prune_attempted: bool
+    - prune_skipped_reason: "" | "empty_snapshot" | "below_threshold"
+    - prune_min_keep_count: int
+    - pruned_rows: int
+    - prune_kept_count: int
+    - prune_before_count: int | None
     """
     try:
         if not rows:
@@ -441,6 +443,12 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
         values = [tuple(row.get(col) for col in columns) for row in rows]
         conn.executemany(insert_sql, values)
 
+        try:
+            env_min_keep = int(os.getenv("INVENTORY_RT_PRUNE_MIN_KEEP", "20") or 20)
+        except Exception:
+            env_min_keep = 20
+        prune_min_keep_count = max(env_min_keep, 0)
+
         normalized_asins = {
             (row.get("asin") or "").strip().upper()
             for row in rows
@@ -450,16 +458,28 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
         kept_count = len(asins_in_snapshot)
 
         pruned_rows = 0
+        prune_attempted = False
+        prune_skipped_reason = ""
+        before_count: int | None = None
+
+        before_count = conn.execute(
+            "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
+            (marketplace_id,),
+        ).fetchone()[0]
+
         if not asins_in_snapshot:
+            prune_skipped_reason = "empty_snapshot"
             logger.warning(
-                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: empty snapshot ASIN set (preventing destructive delete)"
+                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: empty snapshot ASIN set (preventing destructive delete). kept={kept_count} existing_before={before_count} min_keep={prune_min_keep_count}"
+            )
+        elif kept_count < prune_min_keep_count:
+            prune_skipped_reason = "below_threshold"
+            logger.warning(
+                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: kept={kept_count} below min_keep={prune_min_keep_count}; existing_before={before_count}; prune skipped (threshold)"
             )
         else:
+            prune_attempted = True
             chunk_size = 500
-            before_count = conn.execute(
-                "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
-                (marketplace_id,),
-            ).fetchone()[0]
 
             rowcounts: list[int] = []
             if len(asins_in_snapshot) <= chunk_size:
@@ -471,13 +491,15 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
                 cur = conn.execute(delete_sql, [marketplace_id, *asins_in_snapshot])
                 rowcounts.append(cur.rowcount)
             else:
-                existing_asins = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT asin FROM vendor_inventory_asin WHERE marketplace_id = ?",
-                        (marketplace_id,),
-                    ).fetchall()
-                ]
+                rows_existing = conn.execute(
+                    "SELECT asin FROM vendor_inventory_asin WHERE marketplace_id = ?",
+                    (marketplace_id,),
+                ).fetchall()
+                existing_asins = []
+                for r in rows_existing:
+                    asin_val = r["asin"] if hasattr(r, "keys") else r[0]
+                    if asin_val:
+                        existing_asins.append(asin_val)
                 keep_set = set(asins_in_snapshot)
                 stale_asins = [
                     asin for asin in existing_asins if asin and asin.strip().upper() not in keep_set
@@ -493,27 +515,37 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
                     cur = conn.execute(delete_sql, [marketplace_id, *chunk])
                     rowcounts.append(cur.rowcount)
 
-            if rowcounts and all(rc is not None and rc >= 0 for rc in rowcounts):
-                pruned_rows = sum(rowcounts)
-            else:
-                after_count = conn.execute(
-                    "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
-                    (marketplace_id,),
-                ).fetchone()[0]
-                pruned_rows = max(before_count - after_count, 0)
+            if prune_attempted:
+                if rowcounts and all(rc is not None and rc >= 0 for rc in rowcounts):
+                    pruned_rows = sum(rowcounts)
+                else:
+                    after_count = conn.execute(
+                        "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
+                        (marketplace_id,),
+                    ).fetchone()[0]
+                    pruned_rows = max(before_count - after_count, 0)
 
-            if pruned_rows > 0:
-                logger.info(
-                    f"[DB] Pruned stale vendor_inventory_asin rows for {marketplace_id}: {pruned_rows} removed (kept {kept_count})"
-                )
-            else:
-                logger.info(
-                    f"[DB] No stale vendor_inventory_asin rows to prune for {marketplace_id} (kept {kept_count})"
-                )
+                if pruned_rows > 0:
+                    logger.info(
+                        f"[DB] Pruned stale vendor_inventory_asin rows for {marketplace_id}: {pruned_rows} removed (kept {kept_count})"
+                    )
+                else:
+                    logger.info(
+                        f"[DB] No stale vendor_inventory_asin rows to prune for {marketplace_id} (kept {kept_count})"
+                    )
 
         conn.commit()
 
         logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows")
+
+        return {
+            "prune_attempted": prune_attempted,
+            "prune_skipped_reason": prune_skipped_reason,
+            "prune_min_keep_count": prune_min_keep_count,
+            "pruned_rows": pruned_rows,
+            "prune_kept_count": kept_count,
+            "prune_before_count": before_count,
+        }
     except Exception as exc:
         logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)
         raise
