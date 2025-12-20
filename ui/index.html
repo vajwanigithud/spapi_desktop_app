@@ -207,9 +207,7 @@
       #catalog-table td {
         border: 1px solid var(--border);
         vertical-align: top;
-      }
-      #catalog-table th {
-        position: relative;
+        width: calc(100% / 6);
       }
       #catalog-table td:last-child {
         vertical-align: middle;
@@ -223,16 +221,6 @@
         height: 36px;
         background: #fff;
         font-size: 13px;
-      }
-      .catalog-col-resize-handle {
-        position: absolute;
-        right: 0;
-        top: 0;
-        width: 6px;
-        height: 100%;
-        cursor: col-resize;
-        z-index: 2;
-        user-select: none;
       }
       /* Conditional formatting for quantities */
       .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
@@ -701,11 +689,11 @@
           <table id="catalog-table">
             <thead>
               <tr>
-                <th style="width:22%;">ASIN</th>
-                <th style="width:22%;">SKU</th>
-                <th style="width:18%;">Barcode</th>
-                <th style="width:26%;">Title</th>
-                <th style="width:12%;">Image</th>
+                <th>ASIN</th>
+                <th>SKU</th>
+                <th>Barcode</th>
+                <th>Title</th>
+                <th>Image</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -1164,9 +1152,6 @@
       "Needs Catalog (Active)",
       "Blocked (Retries Exhausted)",
     ]);
-    const CATALOG_COL_WIDTH_KEY = "catalog_table_col_widths_v1";
-    let catalogColWidths = [];
-    let catalogResizeState = null;
     let activeTab = "pos";
     let oosItems = [];
     let selectedPoNumbers = [];
@@ -3057,122 +3042,6 @@
       return `catalog_audit_${stamp}.csv`;
     }
 
-    function initCatalogColumnResizing() {
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      const headers = table.querySelectorAll("th");
-      headers.forEach((th, index) => {
-        th.dataset.colIndex = index;
-        if (!th.querySelector(".catalog-col-resize-handle")) {
-          const handle = document.createElement("span");
-          handle.className = "catalog-col-resize-handle";
-          handle.dataset.colIndex = index;
-          handle.addEventListener("mousedown", onCatalogResizeMouseDown);
-          th.appendChild(handle);
-        }
-      });
-      try {
-        const saved = localStorage.getItem(CATALOG_COL_WIDTH_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            catalogColWidths = parsed;
-          }
-        }
-      } catch (err) {
-        catalogColWidths = [];
-      }
-      applyCatalogColumnWidths();
-    }
-
-    function onCatalogResizeMouseDown(event) {
-      event.preventDefault();
-      const handle = event.currentTarget;
-      const index = Number(handle.dataset.colIndex);
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      const header = table.querySelectorAll("th")[index];
-      if (!header) return;
-      catalogResizeState = {
-        columnIndex: index,
-        startX: event.pageX,
-        startWidth: header.offsetWidth,
-      };
-      document.body.style.cursor = "col-resize";
-      document.addEventListener("mousemove", onCatalogResizeMouseMove);
-      document.addEventListener("mouseup", onCatalogResizeMouseUp);
-    }
-
-    function onCatalogResizeMouseMove(event) {
-      if (!catalogResizeState) return;
-      const delta = event.pageX - catalogResizeState.startX;
-      const newWidth = Math.max(60, catalogResizeState.startWidth + delta);
-      setCatalogColumnWidth(catalogResizeState.columnIndex, newWidth);
-    }
-
-    function onCatalogResizeMouseUp() {
-      if (!catalogResizeState) return;
-      document.body.style.cursor = "";
-      document.removeEventListener("mousemove", onCatalogResizeMouseMove);
-      document.removeEventListener("mouseup", onCatalogResizeMouseUp);
-      try {
-        localStorage.setItem(CATALOG_COL_WIDTH_KEY, JSON.stringify(catalogColWidths));
-      } catch (err) {
-        console.warn("Failed to persist catalog widths", err);
-      }
-      catalogResizeState = null;
-    }
-
-    function setCatalogColumnWidth(index, width) {
-      if (typeof index !== "number" || index < 0) return;
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      catalogColWidths[index] = width;
-      const headers = table.querySelectorAll("th");
-      const header = headers[index];
-      if (header) {
-        header.style.width = `${width}px`;
-        header.style.minWidth = `${width}px`;
-        header.style.maxWidth = `${width}px`;
-      }
-      const rows = table.querySelectorAll("tbody tr");
-      rows.forEach(row => {
-        const cell = row.children[index];
-        if (cell) {
-          cell.style.width = `${width}px`;
-          cell.style.minWidth = `${width}px`;
-          cell.style.maxWidth = `${width}px`;
-        }
-      });
-    }
-
-    function applyCatalogColumnWidths() {
-      const table = document.getElementById("catalog-table");
-      if (!table || !catalogColWidths || !catalogColWidths.length) return;
-      const headers = table.querySelectorAll("th");
-      headers.forEach((th, index) => {
-        const width = catalogColWidths[index];
-        if (width) {
-          th.style.width = `${width}px`;
-          th.style.minWidth = `${width}px`;
-          th.style.maxWidth = `${width}px`;
-        }
-      });
-      const rows = table.querySelectorAll("tbody tr");
-      rows.forEach(row => {
-        const cells = row.children;
-        catalogColWidths.forEach((width, idx) => {
-          if (!width) return;
-          const cell = cells[idx];
-          if (cell) {
-            cell.style.width = `${width}px`;
-            cell.style.minWidth = `${width}px`;
-            cell.style.maxWidth = `${width}px`;
-          }
-        });
-      });
-    }
-
     async function fetchAllMissing() {
       const tbody = document.getElementById("asin-rows");
       tbody.innerHTML = '<tr><td colspan="6" class="empty">Fetching all missing... this may take time.</td></tr>';
@@ -3398,7 +3267,6 @@
           </td>
         </tr>`;
       }).join("");
-      applyCatalogColumnWidths();
     }
 
     async function fetchCatalog(asin, btnEl) {
@@ -5947,7 +5815,6 @@
     updateInventoryRefreshButtonState();
     updateInventoryFreshnessLabel();
 
-    initCatalogColumnResizing();
     showTab("pos");
     loadPOs(false);
     refreshVendorPoStatus();
