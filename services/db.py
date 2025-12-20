@@ -353,7 +353,7 @@ def ensure_vendor_inventory_table() -> None:
     """
     Create vendor_inventory_asin table if it does not exist.
     Stores weekly inventory snapshots per ASIN per marketplace.
-    One row per ASIN per week (latest week only, per design).
+    One row per ASIN per marketplace (latest seen snapshot per design).
     """
     sql = """
     CREATE TABLE IF NOT EXISTS vendor_inventory_asin (
@@ -388,11 +388,11 @@ def ensure_vendor_inventory_table() -> None:
     """
     try:
         execute_write(sql)
-        
-        # Create unique index to prevent duplicate snapshots
+        # Recreate uniqueness on (marketplace_id, asin) only so historical ASINs persist
+        execute_write("DROP INDEX IF EXISTS idx_vendor_inventory_unique")
         index_sql = """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_inventory_unique
-        ON vendor_inventory_asin (marketplace_id, asin, start_date, end_date)
+        ON vendor_inventory_asin (marketplace_id, asin)
         """
         execute_write(index_sql)
         
@@ -404,8 +404,8 @@ def ensure_vendor_inventory_table() -> None:
 
 def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> None:
     """
-    For the given marketplace_id, delete existing vendor_inventory_asin rows
-    and insert the provided new snapshot rows (already filtered to latest week).
+    Upsert vendor_inventory_asin rows for the given marketplace_id.
+    Existing ASINs are updated; unseen ASINs remain.
     
     Args:
         conn: SQLite connection object
@@ -413,36 +413,38 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
         rows: List of dicts with keys matching table columns (except id)
     """
     try:
-        # Delete existing records for this marketplace
-        conn.execute(
-            "DELETE FROM vendor_inventory_asin WHERE marketplace_id = ?",
-            (marketplace_id,)
-        )
-        
-        # Bulk insert new rows
-        if rows:
-            columns = [
-                "marketplace_id", "asin", "start_date", "end_date",
-                "sellable_onhand_units", "sellable_onhand_cost",
-                "unsellable_onhand_units", "unsellable_onhand_cost",
-                "aged90plus_sellable_units", "aged90plus_sellable_cost",
-                "unhealthy_units", "unhealthy_cost",
-                "net_received_units", "net_received_cost",
-                "open_po_units", "unfilled_customer_ordered_units",
-                "vendor_confirmation_rate", "sell_through_rate",
-                "updated_at"
-            ]
-            placeholders = ", ".join(["?" for _ in columns])
-            insert_sql = f"INSERT INTO vendor_inventory_asin ({', '.join(columns)}) VALUES ({placeholders})"
-            
-            for row in rows:
-                values = tuple(row.get(col) for col in columns)
-                conn.execute(insert_sql, values)
-        
+        if not rows:
+            logger.info(f"[DB] No vendor_inventory_asin rows to upsert for {marketplace_id}")
+            return
+
+        columns = [
+            "marketplace_id", "asin", "start_date", "end_date",
+            "sellable_onhand_units", "sellable_onhand_cost",
+            "unsellable_onhand_units", "unsellable_onhand_cost",
+            "aged90plus_sellable_units", "aged90plus_sellable_cost",
+            "unhealthy_units", "unhealthy_cost",
+            "net_received_units", "net_received_cost",
+            "open_po_units", "unfilled_customer_ordered_units",
+            "vendor_confirmation_rate", "sell_through_rate",
+            "updated_at"
+        ]
+
+        placeholders = ", ".join(["?" for _ in columns])
+        update_columns = [col for col in columns if col not in ("marketplace_id", "asin")]
+        update_clause = ", ".join([f"{col} = excluded.{col}" for col in update_columns])
+        insert_sql = f"""
+        INSERT INTO vendor_inventory_asin ({', '.join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT(marketplace_id, asin) DO UPDATE SET {update_clause}
+        """
+
+        values = [tuple(row.get(col) for col in columns) for row in rows]
+        conn.executemany(insert_sql, values)
         conn.commit()
-        logger.info(f"[DB] Replaced vendor_inventory_asin snapshot for {marketplace_id}: {len(rows)} rows")
+
+        logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows")
     except Exception as exc:
-        logger.error(f"[DB] Failed to replace vendor_inventory_asin snapshot: {exc}", exc_info=True)
+        logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)
         raise
 
 
