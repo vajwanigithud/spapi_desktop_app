@@ -358,6 +358,11 @@
         opacity: 0.8;
       }
 
+      .inv-asof {
+        text-decoration: underline dotted;
+        cursor: help;
+      }
+
       .inventory-mode-toggle {
         display: flex;
         flex-wrap: wrap;
@@ -4426,7 +4431,35 @@
         as_of_uae: realtimeMeta.as_of_uae,
       });
       if (asOfLabel) {
-        labelEl.textContent = `Real-time | Loaded ${count} ASINs | As of ${asOfLabel}`;
+        const refreshMeta = realtimeMeta.refresh || {};
+        const windowStart =
+          realtimeMeta.window_start_utc ||
+          realtimeMeta.report_window_start_utc ||
+          realtimeMeta.window_start ||
+          refreshMeta.window_start_utc ||
+          refreshMeta.report_window_start_utc ||
+          refreshMeta.window_start;
+        const windowEnd =
+          realtimeMeta.window_end_utc ||
+          realtimeMeta.report_window_end_utc ||
+          realtimeMeta.window_end ||
+          refreshMeta.window_end_utc ||
+          refreshMeta.report_window_end_utc ||
+          refreshMeta.window_end;
+
+        let tooltip = '';
+        if (windowStart || windowEnd) {
+          const parts = [];
+          if (windowStart) parts.push(`Start: ${windowStart}`);
+          if (windowEnd) parts.push(`End: ${windowEnd}`);
+          tooltip = parts.join(' | ');
+        }
+
+        const asOfHtml = tooltip
+          ? `<span class="inv-asof" title="${escapeHtml(tooltip)}">As of ${escapeHtml(asOfLabel)}</span>`
+          : `<span class="inv-asof">As of ${escapeHtml(asOfLabel)}</span>`;
+
+        labelEl.innerHTML = `Real-time | Loaded ${count} ASINs | ${asOfHtml}`;
       } else {
         labelEl.textContent = `Real-time | Loaded ${count} ASINs`;
       }
