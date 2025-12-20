@@ -1208,8 +1208,6 @@
     let vendorInventorySnapshot = [];
     let vendorInventoryMeta = null;
     let inventoryMode = 'realtime';
-    let weeklyInventorySnapshot = [];
-    let weeklyInventoryMeta = null;
     let realtimeInventorySnapshot = [];
     let realtimeInventoryMeta = null;
     let currentInventorySubtab = 'snapshot';
@@ -1217,8 +1215,6 @@
     let invSortDirection = 'desc';
     let invQuickFilter = 'all';
     let invRealtimeRefreshInFlight = false;
-    let weeklyFetchInFlight = false;
-    let weeklyRefreshInFlight = false;
     let inventoryAutoRefreshRequested = false;
     let inventoryFetchInFlight = false;
     let inventoryFetchPromise = null;
@@ -4424,6 +4420,29 @@
       if (!labelEl) return;
       const realtimeMeta = realtimeInventoryMeta || meta || {};
       const count = realtimeInventorySnapshot.length;
+      const refreshMeta = realtimeMeta.refresh || {};
+      const windowStart =
+        realtimeMeta.window_start_uae ||
+        realtimeMeta.window_start_local ||
+        realtimeMeta.window_start_utc ||
+        realtimeMeta.report_window_start_utc ||
+        realtimeMeta.window_start ||
+        refreshMeta.window_start_uae ||
+        refreshMeta.window_start_local ||
+        refreshMeta.window_start_utc ||
+        refreshMeta.report_window_start_utc ||
+        refreshMeta.window_start;
+      const windowEnd =
+        realtimeMeta.window_end_uae ||
+        realtimeMeta.window_end_local ||
+        realtimeMeta.window_end_utc ||
+        realtimeMeta.report_window_end_utc ||
+        realtimeMeta.window_end ||
+        refreshMeta.window_end_uae ||
+        refreshMeta.window_end_local ||
+        refreshMeta.window_end_utc ||
+        refreshMeta.report_window_end_utc ||
+        refreshMeta.window_end;
       const asOfLabel = formatInventoryAsOf({
         as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
         as_of_uae: realtimeMeta.as_of_uae,
@@ -4436,46 +4455,24 @@
           if (scopeExplanation) {
             parts.push(scopeExplanation);
           }
-          coverageEl.textContent = parts.join(' — ');
+          coverageEl.textContent = parts.join(' - ');
           coverageEl.style.display = 'block';
         } else {
           coverageEl.textContent = '';
           coverageEl.style.display = 'none';
         }
       }
-      if (asOfLabel) {
-        const refreshMeta = realtimeMeta.refresh || {};
-        const windowStart =
-          realtimeMeta.window_start_utc ||
-          realtimeMeta.report_window_start_utc ||
-          realtimeMeta.window_start ||
-          refreshMeta.window_start_utc ||
-          refreshMeta.report_window_start_utc ||
-          refreshMeta.window_start;
-        const windowEnd =
-          realtimeMeta.window_end_utc ||
-          realtimeMeta.report_window_end_utc ||
-          realtimeMeta.window_end ||
-          refreshMeta.window_end_utc ||
-          refreshMeta.report_window_end_utc ||
-          refreshMeta.window_end;
-
-        let tooltip = '';
-        if (windowStart || windowEnd) {
-          const parts = [];
-          if (windowStart) parts.push(`Start: ${windowStart}`);
-          if (windowEnd) parts.push(`End: ${windowEnd}`);
-          tooltip = parts.join(' | ');
-        }
-
-        const asOfHtml = tooltip
-          ? `<span class="inv-asof" title="${escapeHtml(tooltip)}">As of ${escapeHtml(asOfLabel)}</span>`
-          : `<span class="inv-asof">As of ${escapeHtml(asOfLabel)}</span>`;
-
-        labelEl.innerHTML = `Real-Time | Loaded ${count} ASINs | ${asOfHtml}`;
-      } else {
-        labelEl.textContent = `Real-Time | Loaded ${count} ASINs`;
+      let labelParts = [`Real-Time | Loaded ${count} ASINs`];
+      if (windowStart || windowEnd) {
+        const windowSegments = [];
+        if (windowStart) windowSegments.push(windowStart);
+        if (windowEnd) windowSegments.push(windowEnd);
+        const windowText = windowSegments.length === 2 ? `${windowSegments[0]} -> ${windowSegments[1]}` : windowSegments.join('');
+        labelParts.push(`Window: ${windowText}`);
+      } else if (asOfLabel) {
+        labelParts.push(`As of ${asOfLabel}`);
       }
+      labelEl.textContent = labelParts.join(' | ');
     }
 
     function updateInventoryModeButtons() {
@@ -4699,22 +4696,6 @@
     function refreshCurrentInventorySnapshot(options = {}) {
       refreshRealtimeInventorySnapshot(options);
     }
-
-    function fetchWeeklyInventorySnapshot({ silent = false } = {}) {
-      return fetchRealtimeInventorySnapshot({ silent });
-    }
-
-    function applyWeeklyInventoryPayload(data, { silent = false } = {}) {
-      // Weekly inventory is deprecated; snapshots are served from real-time inventory only.
-      if (!silent && data) {
-        setInventoryStatus('Real-Time inventory is now the only available view.');
-      }
-    }
-
-    function refreshWeeklyInventorySnapshot(options = {}) {
-      refreshRealtimeInventorySnapshot(options);
-    }
-
 
     function setInventorySubtab(subtab) {
       currentInventorySubtab = subtab;
@@ -5191,9 +5172,63 @@
 
       const a = document.createElement('a');
       a.href = url;
-      const weekLabel = document.getElementById('inv-week-label')?.textContent || '';
-      const weekPart = weekLabel.replace(/[^\d\-]/g, '');
-      a.download = weekPart ? `Inventory_${weekPart}.csv` : 'vendor_inventory_snapshot.csv';
+      const meta = vendorInventoryMeta || realtimeInventoryMeta || {};
+      const refreshMeta = meta.refresh || {};
+      const pickWindowValue = (start, end) => start || end;
+      const windowStartRaw =
+        meta.window_start_uae ||
+        meta.window_start_local ||
+        meta.window_start_utc ||
+        meta.report_window_start_utc ||
+        meta.window_start ||
+        refreshMeta.window_start_uae ||
+        refreshMeta.window_start_local ||
+        refreshMeta.window_start_utc ||
+        refreshMeta.report_window_start_utc ||
+        refreshMeta.window_start;
+      const windowEndRaw =
+        meta.window_end_uae ||
+        meta.window_end_local ||
+        meta.window_end_utc ||
+        meta.report_window_end_utc ||
+        meta.window_end ||
+        refreshMeta.window_end_uae ||
+        refreshMeta.window_end_local ||
+        refreshMeta.window_end_utc ||
+        refreshMeta.report_window_end_utc ||
+        refreshMeta.window_end;
+      const asOfRaw =
+        meta.as_of_uae ||
+        meta.as_of ||
+        meta.generated_at ||
+        refreshMeta.as_of_uae ||
+        refreshMeta.as_of ||
+        refreshMeta.generated_at ||
+        null;
+
+      const formatTimestampForFilename = (value) => {
+        if (!value) return null;
+        const date = new Date(value);
+        if (!Number.isNaN(date.getTime())) {
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}`;
+        }
+        return String(value).replace(/[^0-9A-Za-z_-]/g, '');
+      };
+
+      const startLabel = formatTimestampForFilename(windowStartRaw);
+      const endLabel = formatTimestampForFilename(windowEndRaw);
+      const asOfLabel = formatTimestampForFilename(asOfRaw);
+
+      if (startLabel && endLabel) {
+        a.download = `Inventory_Realtime_${startLabel}-${endLabel}.csv`;
+      } else if (asOfLabel) {
+        a.download = `Inventory_AsOf_${asOfLabel}.csv`;
+      } else {
+        const fallback = pickWindowValue(windowStartRaw, windowEndRaw) || asOfRaw;
+        const fallbackLabel = formatTimestampForFilename(fallback);
+        a.download = fallbackLabel ? `Inventory_${fallbackLabel}.csv` : 'vendor_inventory_snapshot.csv';
+      }
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
