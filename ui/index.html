@@ -1067,6 +1067,7 @@
       <div class="inventory-mode-toggle">
         <div style="display:flex; flex-direction:column; gap:4px;">
           <span id="inv-week-label" class="muted-text"></span>
+          <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
           <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
             Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
           </div>
@@ -4419,6 +4420,7 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
+      const coverageEl = document.getElementById('inv-coverage-label');
       if (!labelEl) return;
       const realtimeMeta = realtimeInventoryMeta || meta || {};
       const count = realtimeInventorySnapshot.length;
@@ -4426,6 +4428,21 @@
         as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
         as_of_uae: realtimeMeta.as_of_uae,
       });
+      const coverageLabel = realtimeMeta.coverage_label;
+      const scopeExplanation = realtimeMeta.inventory_scope_explanation;
+      if (coverageEl) {
+        if (coverageLabel) {
+          const parts = [coverageLabel];
+          if (scopeExplanation) {
+            parts.push(scopeExplanation);
+          }
+          coverageEl.textContent = parts.join(' — ');
+          coverageEl.style.display = 'block';
+        } else {
+          coverageEl.textContent = '';
+          coverageEl.style.display = 'none';
+        }
+      }
       if (asOfLabel) {
         const refreshMeta = realtimeMeta.refresh || {};
         const windowStart =
@@ -4612,6 +4629,11 @@
         generated_at: data?.generated_at || null,
         refresh_in_progress: Boolean(data?.refresh_in_progress || refreshMeta?.in_progress),
         refresh: refreshMeta,
+        coverage_label: data?.coverage_label || refreshMeta?.coverage_label || null,
+        inventory_scope_explanation: data?.inventory_scope_explanation || refreshMeta?.inventory_scope_explanation || null,
+        coverage_ratio: Number.isFinite(data?.coverage_ratio) ? Number(data.coverage_ratio) : null,
+        catalog_asin_count: Number.isFinite(data?.catalog_asin_count) ? Number(data.catalog_asin_count) : null,
+        unique_count: Number.isFinite(data?.unique_count) ? Number(data.unique_count) : null,
       };
       realtimeInventorySnapshot = rows.slice();
       realtimeInventoryMeta = meta;
