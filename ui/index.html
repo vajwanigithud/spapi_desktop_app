@@ -4594,39 +4594,43 @@
       const catalogCount = Number.isFinite(meta.catalog_asin_count) ? meta.catalog_asin_count : null;
       const coverageRatio = Number.isFinite(meta.coverage_ratio) ? meta.coverage_ratio : null;
 
-      const windowStart =
-        meta.window_start_uae ||
-        meta.report_window_start_uae ||
-        meta.window_start_local ||
-        meta.window_start_utc ||
-        meta.report_window_start_utc ||
-        meta.window_start ||
-        refreshMeta.window_start_uae ||
-        refreshMeta.report_window_start_uae ||
-        refreshMeta.window_start_local ||
-        refreshMeta.window_start_utc ||
-        refreshMeta.report_window_start_utc ||
-        refreshMeta.window_start;
+      const reportStartRaw =
+        meta.report_start_time ||
+        refreshMeta.report_start_time ||
+        meta.window_start_time ||
+        refreshMeta.window_start_time ||
+        meta.start_date ||
+        refreshMeta.start_date ||
+        meta.reportStartTime ||
+        refreshMeta.reportStartTime;
 
-      const windowEnd =
-        meta.window_end_uae ||
-        meta.report_window_end_uae ||
-        meta.window_end_local ||
-        meta.window_end_utc ||
-        meta.report_window_end_utc ||
-        meta.window_end ||
-        refreshMeta.window_end_uae ||
-        refreshMeta.report_window_end_uae ||
-        refreshMeta.window_end_local ||
-        refreshMeta.window_end_utc ||
-        refreshMeta.report_window_end_utc ||
-        refreshMeta.window_end;
+      const reportEndRaw =
+        meta.report_end_time ||
+        refreshMeta.report_end_time ||
+        meta.window_end_time ||
+        refreshMeta.window_end_time ||
+        meta.end_date ||
+        refreshMeta.end_date ||
+        meta.reportEndTime ||
+        refreshMeta.reportEndTime;
 
       const asOfUae = meta.as_of_uae || refreshMeta.as_of_uae || null;
 
       const fmtNumber = (val) => (Number.isFinite(val) ? val.toLocaleString() : '—');
       const fmtPercent = (val) => (Number.isFinite(val) ? `${(val * 100).toFixed(1)}%` : '—');
       const fmtText = (val) => (val ? String(val) : '—');
+      const fmtUae = (val) => {
+        if (!val) return '—';
+        try {
+          if (typeof formatUaeTime === 'function') {
+            const formatted = formatUaeTime(val);
+            if (formatted) return formatted;
+          }
+        } catch (err) {
+          // fall through to raw string
+        }
+        return String(val);
+      };
 
       body.innerHTML = `
         <div style="display:flex; flex-direction:column; gap:12px; font-size:13px; color:#111827;">
@@ -4639,8 +4643,8 @@
               <div><span class="muted-text">Unique ASINs in snapshot:</span> ${fmtNumber(uniqueCount)}</div>
               <div><span class="muted-text">Catalog ASINs (known):</span> ${fmtNumber(catalogCount)}</div>
               <div><span class="muted-text">Coverage ratio:</span> ${fmtPercent(coverageRatio)}</div>
-              <div><span class="muted-text">Report start:</span> ${fmtText(windowStart)}</div>
-              <div><span class="muted-text">Report end:</span> ${fmtText(windowEnd)}</div>
+              <div><span class="muted-text">Report start:</span> ${fmtUae(reportStartRaw)}</div>
+              <div><span class="muted-text">Report end:</span> ${fmtUae(reportEndRaw)}</div>
               <div><span class="muted-text">As of (UAE):</span> ${fmtText(asOfUae)}</div>
             </div>
           </div>
