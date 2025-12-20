@@ -136,3 +136,5 @@ tools/_codex_cleanup_backup_/
 # Local backups
 _local_backups/
 
+
+catalog_fetcher_exclusions.json
