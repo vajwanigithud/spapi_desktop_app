@@ -440,9 +440,72 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
 
         values = [tuple(row.get(col) for col in columns) for row in rows]
         conn.executemany(insert_sql, values)
+
+        normalized_asins = {
+            (row.get("asin") or "").strip().upper()
+            for row in rows
+            if (row.get("asin") or "").strip()
+        }
+        asins_in_snapshot = sorted(normalized_asins)
+
+        pruned_rows = 0
+        if asins_in_snapshot:
+            chunk_size = 500
+            before_count = conn.execute(
+                "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
+                (marketplace_id,),
+            ).fetchone()[0]
+
+            rowcounts: list[int] = []
+            if len(asins_in_snapshot) <= chunk_size:
+                placeholders = ", ".join("?" for _ in asins_in_snapshot)
+                delete_sql = (
+                    f"DELETE FROM vendor_inventory_asin "
+                    f"WHERE marketplace_id = ? AND asin NOT IN ({placeholders})"
+                )
+                cur = conn.execute(delete_sql, [marketplace_id, *asins_in_snapshot])
+                rowcounts.append(cur.rowcount)
+            else:
+                existing_asins = [
+                    row["asin"]
+                    for row in conn.execute(
+                        "SELECT asin FROM vendor_inventory_asin WHERE marketplace_id = ?",
+                        (marketplace_id,),
+                    ).fetchall()
+                ]
+                keep_set = set(asins_in_snapshot)
+                stale_asins = [
+                    asin for asin in existing_asins if asin and asin.strip().upper() not in keep_set
+                ]
+
+                for idx in range(0, len(stale_asins), chunk_size):
+                    chunk = stale_asins[idx : idx + chunk_size]
+                    placeholders = ", ".join("?" for _ in chunk)
+                    delete_sql = (
+                        f"DELETE FROM vendor_inventory_asin "
+                        f"WHERE marketplace_id = ? AND asin IN ({placeholders})"
+                    )
+                    cur = conn.execute(delete_sql, [marketplace_id, *chunk])
+                    rowcounts.append(cur.rowcount)
+
+            if rowcounts and all(rc is not None and rc >= 0 for rc in rowcounts):
+                pruned_rows = sum(rowcounts)
+            else:
+                after_count = conn.execute(
+                    "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
+                    (marketplace_id,),
+                ).fetchone()[0]
+                pruned_rows = max(before_count - after_count, 0)
+
         conn.commit()
 
         logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows")
+        if asins_in_snapshot:
+            logger.info(
+                f"[DB] Pruned vendor_inventory_asin stale rows for {marketplace_id}: {pruned_rows} rows"
+            )
+        else:
+            logger.info(f"[DB] Skipped prune for {marketplace_id}: empty ASIN snapshot")
     except Exception as exc:
         logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)
         raise
