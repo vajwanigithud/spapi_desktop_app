@@ -619,6 +619,7 @@ def refresh_realtime_inventory_snapshot(
         raise ValueError("lookback_hours must be greater than zero")
 
     now = datetime.now(timezone.utc)
+    cached_snapshot = _decorate_snapshot(_load_snapshot_from_db())
     ensure_app_kv_table()
     last_refresh_raw: Optional[str] = None
     try:
@@ -629,17 +630,22 @@ def refresh_realtime_inventory_snapshot(
     last_refresh_dt = _parse_datetime(last_refresh_raw)
     if last_refresh_dt and now - last_refresh_dt < timedelta(hours=COOLDOWN_HOURS):
         cooldown_until = last_refresh_dt + timedelta(hours=COOLDOWN_HOURS)
-        return {
-            "cooldown_active": True,
-            "cooldown_until_utc": _iso(cooldown_until),
-            "refresh_in_progress": False,
-            "status": "cooldown_active",
-            "refresh_skipped": True,
-            "marketplace_id": marketplace_id,
-        }
+        cooldown_snapshot = dict(cached_snapshot)
+        cooldown_snapshot.setdefault("items", [])
+        cooldown_snapshot.setdefault("marketplace_id", marketplace_id)
+        cooldown_snapshot.update(
+            {
+                "cooldown_active": True,
+                "cooldown_until_utc": _iso(cooldown_until),
+                "refresh_in_progress": False,
+                "status": "cooldown_active",
+                "refresh_skipped": True,
+                "marketplace_id": cooldown_snapshot.get("marketplace_id") or marketplace_id,
+            }
+        )
+        return cooldown_snapshot
 
     path = cache_path or DEFAULT_CACHE_PATH
-    cached_snapshot = _decorate_snapshot(_load_snapshot_from_db())
 
     # Throttle SP-API report creation if we fetched within the last window.
     generated_at = _parse_datetime(cached_snapshot.get("generated_at"))

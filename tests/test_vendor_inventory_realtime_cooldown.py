@@ -51,6 +51,9 @@ def test_refresh_respects_hourly_cooldown(tmp_path, monkeypatch, delta_minutes):
 
     assert result["cooldown_active"] is True
     assert result["refresh_in_progress"] is False
+    assert result["marketplace_id"] == "A2TESTMKT"
+    assert "items" in result
+    assert isinstance(result["items"], list)
     assert call_counter["count"] == 0
     assert observed["kv_value"]
     assert result["cooldown_until_utc"]
