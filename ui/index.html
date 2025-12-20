@@ -1062,19 +1062,20 @@
       </div>
     </div>
   <div class="panel" id="inventory-tab" style="display:none; margin-top:14px;">
-    <h2>Vendor Inventory</h2>
+    <h2>Real-Time Inventory</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div class="inventory-mode-toggle">
-        <div style="display:flex; gap:6px;">
-          <button id="inventory-toggle-weekly" class="inventory-toggle-btn active" onclick="setInventoryMode('weekly')">Weekly Snapshot</button>
-          <button id="inventory-toggle-realtime" class="inventory-toggle-btn" onclick="setInventoryMode('realtime')">Real-time Snapshot</button>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <span id="inv-week-label" class="muted-text"></span>
+          <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
+            Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
+          </div>
         </div>
-        <span id="inv-week-label" class="muted-text"></span>
       </div>
 
       <!-- Controls row -->
       <div class="inventory-controls">
-        <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Snapshot</button>
+        <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Real-Time Snapshot</button>
         <button id="inv-download-btn" class="btn" style="background:#16a34a;" onclick="downloadVendorInventorySnapshotCsv()">Download CSV (current view)</button>
         <span id="inv-status-label" class="muted-text"></span>
       </div>
@@ -1205,7 +1206,7 @@
     let recentNotifications = [];
     let vendorInventorySnapshot = [];
     let vendorInventoryMeta = null;
-    let inventoryMode = 'weekly';
+    let inventoryMode = 'realtime';
     let weeklyInventorySnapshot = [];
     let weeklyInventoryMeta = null;
     let realtimeInventorySnapshot = [];
@@ -4419,11 +4420,6 @@
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
       if (!labelEl) return;
-      if (inventoryMode === 'weekly') {
-        const count = weeklyInventorySnapshot.length;
-        labelEl.textContent = `Weekly | Loaded ${count} ASINs`;
-        return;
-      }
       const realtimeMeta = realtimeInventoryMeta || meta || {};
       const count = realtimeInventorySnapshot.length;
       const asOfLabel = formatInventoryAsOf({
@@ -4459,47 +4455,31 @@
           ? `<span class="inv-asof" title="${escapeHtml(tooltip)}">As of ${escapeHtml(asOfLabel)}</span>`
           : `<span class="inv-asof">As of ${escapeHtml(asOfLabel)}</span>`;
 
-        labelEl.innerHTML = `Real-time | Loaded ${count} ASINs | ${asOfHtml}`;
+        labelEl.innerHTML = `Real-Time | Loaded ${count} ASINs | ${asOfHtml}`;
       } else {
-        labelEl.textContent = `Real-time | Loaded ${count} ASINs`;
+        labelEl.textContent = `Real-Time | Loaded ${count} ASINs`;
       }
     }
 
     function updateInventoryModeButtons() {
-      const weeklyBtn = document.getElementById('inventory-toggle-weekly');
       const realtimeBtn = document.getElementById('inventory-toggle-realtime');
-      if (weeklyBtn) {
-        weeklyBtn.classList.toggle('active', inventoryMode === 'weekly');
-      }
       if (realtimeBtn) {
-        realtimeBtn.classList.toggle('active', inventoryMode === 'realtime');
+        realtimeBtn.classList.add('active');
       }
     }
 
     function setInventoryMode(mode) {
-      if (mode !== 'weekly' && mode !== 'realtime') return;
-      if (inventoryMode === mode) return;
-      inventoryMode = mode;
+      if (mode !== 'realtime' || inventoryMode === 'realtime') return;
+      inventoryMode = 'realtime';
       updateInventoryModeButtons();
       updateInventoryRefreshButtonState();
-      if (mode === 'weekly') {
-        if (weeklyInventorySnapshot.length === 0) {
-          fetchWeeklyInventorySnapshot();
-        } else {
-          vendorInventorySnapshot = weeklyInventorySnapshot.slice();
-          vendorInventoryMeta = weeklyInventoryMeta;
-          updateInventoryFreshnessUi(weeklyInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-        }
+      if (realtimeInventorySnapshot.length === 0) {
+        fetchRealtimeInventorySnapshot();
       } else {
-        if (realtimeInventorySnapshot.length === 0) {
-          fetchRealtimeInventorySnapshot();
-        } else {
-          vendorInventorySnapshot = realtimeInventorySnapshot.slice();
-          vendorInventoryMeta = realtimeInventoryMeta;
-          updateInventoryFreshnessUi(realtimeInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-        }
+        vendorInventorySnapshot = realtimeInventorySnapshot.slice();
+        vendorInventoryMeta = realtimeInventoryMeta;
+        updateInventoryFreshnessUi(realtimeInventoryMeta);
+        renderVendorInventoryCurrentSubtab();
       }
     }
 
@@ -4507,21 +4487,15 @@
     function updateInventoryRefreshButtonState() {
       const refreshBtn = document.getElementById('inv-refresh-btn');
       if (!refreshBtn) return;
-      if (inventoryMode === 'weekly') {
-        const loading = weeklyFetchInFlight || weeklyRefreshInFlight;
-        refreshBtn.disabled = loading;
-        refreshBtn.textContent = loading ? 'Refreshing Weekly…' : 'Refresh Weekly Snapshot';
-        return;
-      }
       const refreshRunning = !!(
         realtimeInventoryMeta?.refresh_in_progress || realtimeInventoryMeta?.refresh?.in_progress
       );
       if (invRealtimeRefreshInFlight || refreshRunning) {
         refreshBtn.disabled = true;
-        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing Real-time…';
+        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing Real-Time…';
       } else {
         refreshBtn.disabled = false;
-        refreshBtn.textContent = 'Refresh Real-time Snapshot';
+        refreshBtn.textContent = 'Refresh Real-Time Snapshot';
       }
     }
 
@@ -4555,14 +4529,6 @@
     function updateInventoryFreshnessUi(meta, { clearStatusWhenFresh = false } = {}) {
       updateInventoryModeButtons();
       updateInventoryFreshnessLabel(meta);
-      if (inventoryMode === 'weekly') {
-        updateInventoryRefreshButtonState();
-        if (clearStatusWhenFresh) {
-          setInventoryStatus('');
-        }
-        return;
-      }
-
       const realtimeMeta = realtimeInventoryMeta || meta || {};
       const refreshRunning = !!(realtimeMeta.refresh_in_progress || realtimeMeta.refresh?.in_progress);
       if (refreshRunning) {
@@ -4586,18 +4552,6 @@
     }
 
     function loadInventorySnapshotIfNeeded(forceReload = false) {
-      if (inventoryMode === 'weekly') {
-        if (!forceReload && weeklyInventorySnapshot.length > 0) {
-          vendorInventorySnapshot = weeklyInventorySnapshot.slice();
-          vendorInventoryMeta = weeklyInventoryMeta;
-          updateInventoryFreshnessUi(weeklyInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-          return;
-        }
-        fetchWeeklyInventorySnapshot({ silent: !forceReload });
-        return;
-      }
-
       if (!forceReload && realtimeInventorySnapshot.length > 0) {
         vendorInventorySnapshot = realtimeInventorySnapshot.slice();
         vendorInventoryMeta = realtimeInventoryMeta;
@@ -4721,97 +4675,22 @@
     }
 
     function refreshCurrentInventorySnapshot(options = {}) {
-      if (inventoryMode === 'weekly') {
-        refreshWeeklyInventorySnapshot(options);
-      } else {
-        refreshRealtimeInventorySnapshot(options);
-      }
+      refreshRealtimeInventorySnapshot(options);
     }
 
     function fetchWeeklyInventorySnapshot({ silent = false } = {}) {
-      if (weeklyFetchInFlight) {
-        return Promise.resolve();
-      }
-      weeklyFetchInFlight = true;
-      updateInventoryRefreshButtonState();
-      if (!silent) {
-        setInventoryStatus('Loading weekly snapshot…');
-      }
-      return fetch('/api/vendor-inventory/snapshot')
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.json();
-        })
-        .then((data) => {
-          applyWeeklyInventoryPayload(data, { silent });
-        })
-        .catch((err) => {
-          console.error(err);
-          setInventoryStatus('Failed to load weekly snapshot: ' + (err?.message || err), '#b91c1c');
-        })
-        .finally(() => {
-          weeklyFetchInFlight = false;
-          updateInventoryRefreshButtonState();
-        });
+      return fetchRealtimeInventorySnapshot({ silent });
     }
 
     function applyWeeklyInventoryPayload(data, { silent = false } = {}) {
-      const rows = Array.isArray(data?.items) ? data.items : [];
-      weeklyInventorySnapshot = rows.slice();
-      weeklyInventoryMeta = {
-        week_start_date: data?.week_start_date || null,
-        week_end_date: data?.week_end_date || null,
-        count: rows.length,
-      };
-      if (inventoryMode === 'weekly') {
-        vendorInventorySnapshot = rows.slice();
-        vendorInventoryMeta = weeklyInventoryMeta;
-        if (!silent) {
-          setInventoryStatus(`Loaded ${rows.length} weekly ASINs`);
-        }
-        updateInventoryFreshnessUi(weeklyInventoryMeta, { clearStatusWhenFresh: silent });
-        renderVendorInventoryCurrentSubtab();
+      // Weekly inventory is deprecated; snapshots are served from real-time inventory only.
+      if (!silent && data) {
+        setInventoryStatus('Real-Time inventory is now the only available view.');
       }
     }
 
     function refreshWeeklyInventorySnapshot(options = {}) {
-      const { silent = false } = options;
-      if (weeklyRefreshInFlight) {
-        return;
-      }
-      weeklyRefreshInFlight = true;
-      updateInventoryRefreshButtonState();
-      if (!silent) {
-        setInventoryStatus('Refreshing weekly snapshot…');
-      }
-      fetch('/api/vendor-inventory/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.json();
-        })
-        .then((data) => {
-          if (data?.status === 'ok') {
-            fetchWeeklyInventorySnapshot({ silent: true });
-            if (!silent) {
-              setInventoryStatus(`Weekly snapshot refreshed (${data?.ingested_asins || 0} ASINs)`);
-            }
-          } else if (data?.status === 'quota_error') {
-            setInventoryStatus('Weekly refresh blocked by quota: ' + (data?.error || ''), '#b91c1c');
-          } else if (data?.status === 'error') {
-            setInventoryStatus('Weekly refresh failed: ' + (data?.error || ''), '#b91c1c');
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          setInventoryStatus('Weekly refresh failed: ' + (err?.message || err), '#b91c1c');
-        })
-        .finally(() => {
-          weeklyRefreshInFlight = false;
-          updateInventoryRefreshButtonState();
-        });
+      refreshRealtimeInventorySnapshot(options);
     }
 
 
