@@ -222,6 +222,35 @@
         background: #fff;
         font-size: 13px;
       }
+      #catalog-context-menu {
+        position: fixed;
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.2);
+        padding: 6px;
+        z-index: 40;
+        min-width: 210px;
+        display: none;
+      }
+      #catalog-context-menu button {
+        width: 100%;
+        display: block;
+        text-align: left;
+        background: #fff;
+        color: #0f172a;
+        border: none;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #catalog-context-menu button:hover {
+        background: #f1f5f9;
+      }
+      #catalog-context-menu button.danger {
+        color: #b91c1c;
+      }
       /* Conditional formatting for quantities */
       .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
       .qty-pending { background-color: #fef3c7; color: #92400e; font-weight: 600; }
@@ -1121,6 +1150,11 @@
     </div>
   </div>
 
+  <div id="catalog-context-menu">
+    <button class="danger" onclick="handleCatalogContextDelete()">Delete from Catalog List</button>
+    <button onclick="closeCatalogContextMenu()">Cancel</button>
+  </div>
+
   <script>
     let vendorPOs = [];
     let filteredPOs = [];
@@ -1193,6 +1227,7 @@
     let catalogHealthSummary = null;
     let catalogActionableOnly = false;
     let catalogSortMode = "bucket";
+    let catalogContextMenuAsin = null;
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -2846,6 +2881,7 @@
     }
 
     async function loadAsinList(force = false) {
+      closeCatalogContextMenu();
       const tbody = document.getElementById("asin-rows");
       tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading...</td></tr>';
       try {
@@ -3251,7 +3287,7 @@
         if (bucketBadgeHtml) asinCellParts.push(bucketBadgeHtml);
         const asinCellHtml = asinCellParts.join("");
 
-        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')">
+        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')" oncontextmenu="openCatalogContextMenu(event, '${asin}')">
           <td>${asinCellHtml}</td>
           <td>${sku}</td>
           <td>${barcodeCell}</td>
@@ -3268,6 +3304,79 @@
         </tr>`;
       }).join("");
     }
+
+    function openCatalogContextMenu(event, asin) {
+      if (activeTab !== "catalog") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const menu = document.getElementById("catalog-context-menu");
+      if (!menu) return;
+      catalogContextMenuAsin = asin;
+      menu.dataset.asin = asin;
+      menu.style.display = "block";
+      const padding = 8;
+      const rect = menu.getBoundingClientRect();
+      let left = event.clientX;
+      let top = event.clientY;
+      if (left + rect.width > window.innerWidth - padding) {
+        left = window.innerWidth - rect.width - padding;
+      }
+      if (top + rect.height > window.innerHeight - padding) {
+        top = window.innerHeight - rect.height - padding;
+      }
+      menu.style.left = `${Math.max(padding, left)}px`;
+      menu.style.top = `${Math.max(padding, top)}px`;
+    }
+
+    function closeCatalogContextMenu() {
+      const menu = document.getElementById("catalog-context-menu");
+      if (menu) {
+        menu.style.display = "none";
+        menu.dataset.asin = "";
+      }
+      catalogContextMenuAsin = null;
+    }
+
+    async function handleCatalogContextDelete() {
+      const asin = catalogContextMenuAsin || (document.getElementById("catalog-context-menu")?.dataset?.asin || "").trim();
+      if (!asin) {
+        closeCatalogContextMenu();
+        return;
+      }
+      const ok = confirm(`Delete ${asin} from Catalog Fetcher list?\nThis removes it only from Catalog Fetcher.`);
+      if (!ok) {
+        closeCatalogContextMenu();
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/catalog/asins/${asin}`, { method: "DELETE" });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.ok === false) {
+          const msg = data.detail || data.error || `HTTP ${resp.status}`;
+          throw new Error(msg);
+        }
+        showToast(`Removed ${asin} from Catalog list`);
+        await loadAsinList(true);
+      } catch (err) {
+        alert(`Failed to delete ${asin}: ${err?.message || err}`);
+      } finally {
+        closeCatalogContextMenu();
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const menu = document.getElementById("catalog-context-menu");
+      if (!menu || menu.style.display === "none") return;
+      if (!menu.contains(event.target)) {
+        closeCatalogContextMenu();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeCatalogContextMenu();
+      }
+    });
 
     async function fetchCatalog(asin, btnEl) {
       if (btnEl) {
@@ -5751,6 +5860,7 @@
     }
 
     function showTab(tabName) {
+      closeCatalogContextMenu();
       activeTab = tabName;
       document.querySelectorAll(".tab-btn").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.tab === tabName);

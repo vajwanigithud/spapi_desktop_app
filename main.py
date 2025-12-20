@@ -417,6 +417,7 @@ EU_MARKETPLACE_IDS = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1R
 FE_MARKETPLACE_IDS = {"A1VC38T7YXB528"}  # JP
 PO_TRACKER_PATH = Path(__file__).parent / "po_tracker.json"
 OOS_STATE_PATH = Path(__file__).parent / "oos_state.json"
+CATALOG_FETCHER_EXCLUSIONS_PATH = Path(__file__).parent / "catalog_fetcher_exclusions.json"
 
 
 def resolve_catalog_host(marketplace_id: str) -> str:
@@ -477,6 +478,65 @@ def _ensure_rt_sales_ledger_normalized_once() -> None:
             exc,
             exc_info=True,
         )
+
+
+def load_catalog_fetcher_exclusions() -> Set[str]:
+    """Return normalized ASINs that should be hidden from the Catalog Fetcher list."""
+    if not CATALOG_FETCHER_EXCLUSIONS_PATH.exists():
+        return set()
+    try:
+        raw = json.loads(CATALOG_FETCHER_EXCLUSIONS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("[Catalog] Failed to read catalog fetcher exclusions: %s", exc)
+        return set()
+
+    if isinstance(raw, dict):
+        values = raw.get("exclusions") or raw.get("asins") or []
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return set()
+
+    exclusions = {
+        asin.strip().upper()
+        for asin in (values or [])
+        if isinstance(asin, str) and asin.strip() and is_asin(asin.strip().upper())
+    }
+    return exclusions
+
+
+def save_catalog_fetcher_exclusions(exclusions: Set[str]) -> None:
+    payload = sorted({(asin or "").strip().upper() for asin in exclusions if asin})
+    try:
+        CATALOG_FETCHER_EXCLUSIONS_PATH.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("[Catalog] Failed to write catalog fetcher exclusions: %s", exc)
+
+
+def add_catalog_fetcher_exclusion(asin: str) -> Set[str]:
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm or not is_asin(asin_norm):
+        return load_catalog_fetcher_exclusions()
+    exclusions = load_catalog_fetcher_exclusions()
+    if asin_norm not in exclusions:
+        exclusions.add(asin_norm)
+        save_catalog_fetcher_exclusions(exclusions)
+    else:
+        save_catalog_fetcher_exclusions(exclusions)
+    return exclusions
+
+
+def remove_catalog_fetcher_exclusion(asin: str) -> None:
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm:
+        return
+    exclusions = load_catalog_fetcher_exclusions()
+    if asin_norm in exclusions:
+        exclusions.remove(asin_norm)
+        save_catalog_fetcher_exclusions(exclusions)
 
 
 class VendorPOSyncRequest(BaseModel):
@@ -3442,7 +3502,8 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         if seeded:
             logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor PO database")
         record_catalog_asin_sources(asins, "vendor_po")
-        universe = list_universe_asins()
+        exclusions = load_catalog_fetcher_exclusions()
+        universe = [asin for asin in list_universe_asins() if asin not in exclusions]
         fetched = spapi_catalog_status()
         attempts_map = get_catalog_fetch_attempts_map(universe)
         source_map = get_catalog_asin_sources_map(universe)
@@ -3586,6 +3647,19 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
     }
 
 
+@app.delete("/api/catalog/asins/{asin}")
+def delete_catalog_fetcher_asin(asin: str):
+    """
+    Hide an ASIN from the Catalog Fetcher list while leaving catalog data intact.
+    """
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm or not is_asin(asin_norm):
+        raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    add_catalog_fetcher_exclusion(asin_norm)
+    logger.info("[CatalogFetcher] Excluded ASIN from fetcher list: %s", asin_norm)
+    return {"ok": True, "asin": asin_norm}
+
+
 @app.post("/api/catalog/add-asin")
 def add_catalog_asin(payload: Dict[str, Any]):
     """
@@ -3598,6 +3672,7 @@ def add_catalog_asin(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="asin is required")
     if not is_asin(asin):
         raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    remove_catalog_fetcher_exclusion(asin)
     ensure_asin_in_universe(asin)
     record_catalog_asin_source(asin, "manual")
     return {"status": "ok", "asin": asin}
