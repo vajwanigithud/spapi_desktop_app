@@ -111,6 +111,35 @@ def test_refresh_endpoint_handles_quota_error(monkeypatch: pytest.MonkeyPatch):
     assert "cooldown" in data["error"]
 
 
+def test_refresh_endpoint_respects_singleflight(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app()
+    refresh_called = {"invocations": 0}
+
+    def _refresh_callable(*_args, **_kwargs):
+        refresh_called["invocations"] += 1
+        return {}
+
+    def _singleflight_stub(*_args, **_kwargs):
+        return {
+            "status": "refresh_in_progress",
+            "source": "cache",
+            "refresh": {"in_progress": True},
+        }
+
+    monkeypatch.setattr(realtime_routes, "refresh_realtime_inventory_snapshot", _refresh_callable)
+    monkeypatch.setattr(realtime_routes, "refresh_vendor_rt_inventory_singleflight", _singleflight_stub)
+    monkeypatch.setattr(realtime_routes, "get_cached_realtime_inventory_snapshot", lambda: {"items": []})
+
+    client = TestClient(app)
+    resp = client.post("/api/vendor-inventory/realtime/refresh")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "refresh_in_progress"
+    assert data["source"] == "cache"
+    assert data["refresh"]["in_progress"] is True
+    assert refresh_called["invocations"] == 0
+
+
 def test_realtime_health_endpoint(monkeypatch: pytest.MonkeyPatch):
     app = _build_app()
     snapshot = _sample_snapshot()

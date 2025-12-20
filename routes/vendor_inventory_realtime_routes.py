@@ -15,11 +15,13 @@ from services.catalog_images import attach_image_urls
 from services.db import get_db_connection
 from services.spapi_reports import SpApiQuotaError
 from services.vendor_inventory_realtime import (
+    DEFAULT_LOOKBACK_HOURS,
     decorate_items_with_sales,
     get_cached_realtime_inventory_snapshot,
     load_sales_30d_map,
     refresh_realtime_inventory_snapshot,
 )
+from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
 
 router = APIRouter(prefix="/api/vendor-inventory/realtime")
 logger = logging.getLogger(__name__)
@@ -260,8 +262,32 @@ def _build_health_payload() -> Dict[str, Any]:
 
 def _refresh_snapshot_payload() -> Dict[str, Any]:
     marketplace_id = DEFAULT_MARKETPLACE_ID
-    snapshot = refresh_realtime_inventory_snapshot(marketplace_id)
+
+    def _refresh_singleflight_callable(marketplace_id: str, **_kwargs: Any) -> Dict[str, Any]:
+        # Preserve existing report logic while letting the single-flight guard orchestrate execution.
+        return refresh_realtime_inventory_snapshot(
+            marketplace_id,
+            lookback_hours=DEFAULT_LOOKBACK_HOURS,
+        )
+
+    result = refresh_vendor_rt_inventory_singleflight(
+        marketplace_id,
+        hours=DEFAULT_LOOKBACK_HOURS,
+        sync_callable=_refresh_singleflight_callable,
+    )
+
+    snapshot = get_cached_realtime_inventory_snapshot()
     snapshot.setdefault("marketplace_id", marketplace_id)
+
+    refresh_meta = result.get("refresh") or {}
+    snapshot["refresh"] = refresh_meta
+    if result.get("status"):
+        snapshot["status"] = result["status"]
+    if result.get("source"):
+        snapshot["source"] = result["source"]
+    if result.get("status") == "fresh_skipped":
+        snapshot["refresh_skipped"] = True
+
     return _format_snapshot_response(snapshot)
 
 
