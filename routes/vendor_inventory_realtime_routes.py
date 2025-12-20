@@ -170,12 +170,12 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     attach_image_urls(items)
     refresh_meta = snapshot.get("refresh") or {}
     prune_top = {
-        "prune_attempted": _pick(refresh_meta.get("prune_attempted"), snapshot.get("prune_attempted")),
-        "prune_skipped_reason": _pick(refresh_meta.get("prune_skipped_reason"), snapshot.get("prune_skipped_reason")),
-        "prune_min_keep_count": _pick(refresh_meta.get("prune_min_keep_count"), snapshot.get("prune_min_keep_count")),
-        "pruned_rows": _pick(refresh_meta.get("pruned_rows"), snapshot.get("pruned_rows")),
-        "prune_kept_count": _pick(refresh_meta.get("prune_kept_count"), snapshot.get("prune_kept_count")),
-        "prune_before_count": _pick(refresh_meta.get("prune_before_count"), snapshot.get("prune_before_count")),
+        "prune_attempted": _pick(refresh_meta.get("prune_attempted"), snapshot.get("prune_attempted"), False),
+        "prune_skipped_reason": _pick(refresh_meta.get("prune_skipped_reason"), snapshot.get("prune_skipped_reason"), ""),
+        "prune_min_keep_count": _pick(refresh_meta.get("prune_min_keep_count"), snapshot.get("prune_min_keep_count"), 0),
+        "pruned_rows": _pick(refresh_meta.get("pruned_rows"), snapshot.get("pruned_rows"), 0),
+        "prune_kept_count": _pick(refresh_meta.get("prune_kept_count"), snapshot.get("prune_kept_count"), 0),
+        "prune_before_count": _pick(refresh_meta.get("prune_before_count"), snapshot.get("prune_before_count"), 0),
     }
     # Ensure refresh_meta carries prune fields if missing so UI can also read from refresh
     for k, v in prune_top.items():
@@ -202,12 +202,12 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         "refresh_skipped": snapshot.get("refresh_skipped") or False,
         "refresh_in_progress": refresh_in_progress,
         "refresh": refresh_meta,
-        "prune_attempted": prune_top.get("prune_attempted", None),
-        "prune_skipped_reason": (prune_top.get("prune_skipped_reason") or ""),
-        "prune_min_keep_count": prune_top.get("prune_min_keep_count", None),
-        "pruned_rows": prune_top.get("pruned_rows", None),
-        "prune_kept_count": prune_top.get("prune_kept_count", None),
-        "prune_before_count": prune_top.get("prune_before_count", None),
+        "prune_attempted": bool(prune_top.get("prune_attempted")),
+        "prune_skipped_reason": prune_top.get("prune_skipped_reason") or "",
+        "prune_min_keep_count": prune_top.get("prune_min_keep_count") or 0,
+        "pruned_rows": prune_top.get("pruned_rows") or 0,
+        "prune_kept_count": prune_top.get("prune_kept_count") or 0,
+        "prune_before_count": prune_top.get("prune_before_count") or 0,
         "as_of_raw": computed["as_of_raw"],
         "as_of": computed["as_of"],
         "as_of_utc": computed["as_of"],

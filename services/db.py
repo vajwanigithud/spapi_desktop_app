@@ -455,27 +455,26 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
             if (row.get("asin") or "").strip()
         }
         asins_in_snapshot = sorted(normalized_asins)
-        kept_count = len(asins_in_snapshot)
+        prune_kept_count = len(asins_in_snapshot)
 
-        pruned_rows = 0
         prune_attempted = False
         prune_skipped_reason = ""
-        before_count: int | None = None
+        pruned_rows = 0
 
-        before_count = conn.execute(
+        prune_before_count = conn.execute(
             "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
             (marketplace_id,),
         ).fetchone()[0]
 
-        if not asins_in_snapshot:
+        if prune_kept_count == 0:
             prune_skipped_reason = "empty_snapshot"
             logger.warning(
-                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: empty snapshot ASIN set (preventing destructive delete). kept={kept_count} existing_before={before_count} min_keep={prune_min_keep_count}"
+                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: empty snapshot ASIN set (preventing destructive delete). kept={prune_kept_count} existing_before={prune_before_count} min_keep={prune_min_keep_count}"
             )
-        elif kept_count < prune_min_keep_count:
+        elif prune_kept_count < prune_min_keep_count:
             prune_skipped_reason = "below_threshold"
             logger.warning(
-                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: kept={kept_count} below min_keep={prune_min_keep_count}; existing_before={before_count}; prune skipped (threshold)"
+                f"[DB] Skipping prune for vendor_inventory_asin {marketplace_id}: kept={prune_kept_count} below min_keep={prune_min_keep_count}; existing_before={prune_before_count}; prune skipped (threshold)"
             )
         else:
             prune_attempted = True
@@ -523,15 +522,15 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
                         "SELECT COUNT(*) FROM vendor_inventory_asin WHERE marketplace_id = ?",
                         (marketplace_id,),
                     ).fetchone()[0]
-                    pruned_rows = max(before_count - after_count, 0)
+                    pruned_rows = max(prune_before_count - after_count, 0)
 
                 if pruned_rows > 0:
                     logger.info(
-                        f"[DB] Pruned stale vendor_inventory_asin rows for {marketplace_id}: {pruned_rows} removed (kept {kept_count})"
+                        f"[DB] Pruned stale vendor_inventory_asin rows for {marketplace_id}: {pruned_rows} removed (kept {prune_kept_count})"
                     )
                 else:
                     logger.info(
-                        f"[DB] No stale vendor_inventory_asin rows to prune for {marketplace_id} (kept {kept_count})"
+                        f"[DB] No stale vendor_inventory_asin rows to prune for {marketplace_id} (kept {prune_kept_count})"
                     )
 
         conn.commit()
@@ -539,12 +538,12 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
         logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows")
 
         return {
-            "prune_attempted": prune_attempted,
-            "prune_skipped_reason": prune_skipped_reason,
-            "prune_min_keep_count": prune_min_keep_count,
-            "pruned_rows": pruned_rows,
-            "prune_kept_count": kept_count,
-            "prune_before_count": before_count,
+            "prune_attempted": bool(prune_attempted),
+            "prune_skipped_reason": prune_skipped_reason or "",
+            "prune_min_keep_count": int(prune_min_keep_count),
+            "pruned_rows": int(pruned_rows),
+            "prune_kept_count": int(prune_kept_count),
+            "prune_before_count": int(prune_before_count),
         }
     except Exception as exc:
         logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)

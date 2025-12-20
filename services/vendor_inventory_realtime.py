@@ -577,12 +577,12 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
         refresh_meta = snapshot.get("refresh") or {}
         refresh_meta.update(
             {
-                "prune_attempted": bool(prune_meta.get("prune_attempted")),
+                "prune_attempted": bool(prune_meta.get("prune_attempted", False)),
                 "prune_skipped_reason": prune_meta.get("prune_skipped_reason") or "",
-                "prune_min_keep_count": prune_meta.get("prune_min_keep_count"),
-                "pruned_rows": prune_meta.get("pruned_rows"),
-                "prune_kept_count": prune_meta.get("prune_kept_count"),
-                "prune_before_count": prune_meta.get("prune_before_count"),
+                "prune_min_keep_count": int(prune_meta.get("prune_min_keep_count", 0)),
+                "pruned_rows": int(prune_meta.get("pruned_rows", 0)),
+                "prune_kept_count": int(prune_meta.get("prune_kept_count", 0)),
+                "prune_before_count": int(prune_meta.get("prune_before_count", 0)),
             }
         )
         snapshot["refresh"] = refresh_meta
@@ -793,12 +793,12 @@ def refresh_realtime_inventory_snapshot(
     refresh_meta = snapshot.get("refresh") or {}
     refresh_meta.update(
         {
-            "prune_attempted": prune_meta.get("prune_attempted"),
-            "prune_skipped_reason": prune_meta.get("prune_skipped_reason"),
-            "prune_min_keep_count": prune_meta.get("prune_min_keep_count"),
-            "pruned_rows": prune_meta.get("pruned_rows"),
-            "prune_kept_count": prune_meta.get("prune_kept_count"),
-            "prune_before_count": prune_meta.get("prune_before_count"),
+            "prune_attempted": bool(prune_meta.get("prune_attempted", False)),
+            "prune_skipped_reason": prune_meta.get("prune_skipped_reason") or "",
+            "prune_min_keep_count": int(prune_meta.get("prune_min_keep_count", 0)),
+            "pruned_rows": int(prune_meta.get("pruned_rows", 0)),
+            "prune_kept_count": int(prune_meta.get("prune_kept_count", 0)),
+            "prune_before_count": int(prune_meta.get("prune_before_count", 0)),
         }
     )
     snapshot["refresh"] = refresh_meta
