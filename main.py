@@ -608,7 +608,7 @@ _rt_sales_auto_sync_thread = None
 _rt_sales_auto_sync_stop = False
 
 # Vendor RT Inventory auto-refresh (realtime inventory snapshot)
-VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED", "true").lower() != "false"
+VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED", "false").lower() != "false"
 VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES = int(os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES", "60"))
 _rt_inventory_auto_refresh_thread = None
 _rt_inventory_auto_refresh_stop = False
@@ -981,8 +981,11 @@ def vendor_rt_inventory_auto_refresh_loop():
 
     while not _rt_inventory_auto_refresh_stop:
         try:
+            from services.vendor_inventory_realtime import (
+                DEFAULT_LOOKBACK_HOURS,
+                refresh_realtime_inventory_snapshot,
+            )
             from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
-            from services.vendor_inventory_realtime import DEFAULT_LOOKBACK_HOURS, refresh_realtime_inventory_snapshot
 
             result = refresh_vendor_rt_inventory_singleflight(
                 marketplace_id,
