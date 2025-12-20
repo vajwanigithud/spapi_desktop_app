@@ -45,6 +45,8 @@ DEFAULT_LOOKBACK_HOURS = 24
 STALE_THRESHOLD_HOURS = 24
 MIN_REFRESH_INTERVAL_MINUTES = 30
 SALES_30D_LOOKBACK_DAYS = 30
+COOLDOWN_HOURS = 1
+COOLDOWN_KV_KEY = "vendor_rt_inventory_last_refresh_utc"
 
 _CANDIDATE_ROW_KEYS = [
     "reportData",
@@ -617,6 +619,25 @@ def refresh_realtime_inventory_snapshot(
         raise ValueError("lookback_hours must be greater than zero")
 
     now = datetime.now(timezone.utc)
+    ensure_app_kv_table()
+    last_refresh_raw: Optional[str] = None
+    try:
+        with get_db_connection() as conn:
+            last_refresh_raw = get_app_kv(conn, COOLDOWN_KV_KEY)
+    except Exception as exc:
+        logger.warning("[VendorRtInventory] Failed to read cooldown marker: %s", exc)
+    last_refresh_dt = _parse_datetime(last_refresh_raw)
+    if last_refresh_dt and now - last_refresh_dt < timedelta(hours=COOLDOWN_HOURS):
+        cooldown_until = last_refresh_dt + timedelta(hours=COOLDOWN_HOURS)
+        return {
+            "cooldown_active": True,
+            "cooldown_until_utc": _iso(cooldown_until),
+            "refresh_in_progress": False,
+            "status": "cooldown_active",
+            "refresh_skipped": True,
+            "marketplace_id": marketplace_id,
+        }
+
     path = cache_path or DEFAULT_CACHE_PATH
     cached_snapshot = _decorate_snapshot(_load_snapshot_from_db())
 
@@ -630,7 +651,6 @@ def refresh_realtime_inventory_snapshot(
         throttled = dict(cached_snapshot)
         throttled["refresh_skipped"] = True
         return throttled
-
     data_end = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     data_start = data_end - timedelta(hours=lookback_hours)
 
@@ -726,6 +746,12 @@ def refresh_realtime_inventory_snapshot(
     _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
     materialize_vendor_inventory_snapshot(snapshot, source="refresh")
+    try:
+        ensure_app_kv_table()
+        with get_db_connection() as conn:
+            set_app_kv(conn, COOLDOWN_KV_KEY, _iso(now))
+    except Exception as exc:
+        logger.warning("[VendorRtInventory] Failed to persist cooldown marker: %s", exc)
     return snapshot
 
 
