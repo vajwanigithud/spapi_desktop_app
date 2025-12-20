@@ -261,6 +261,33 @@
       .rt-ledger-metric-title { font-size: 11px; text-transform: uppercase; color: #6b7280; margin-bottom: 4px; letter-spacing: 0.04em; }
       .rt-ledger-metric-value { font-size: 18px; font-weight: 700; color: #0f172a; }
       .rt-ledger-muted { font-size: 12px; color: #6b7280; font-weight: 500; }
+      /* Vendor RT Summary layout */
+      .rt-summary-layout { display: flex; gap: 16px; align-items: flex-start; padding: 12px; }
+      .rt-summary-left { flex: 0 0 32%; max-width: 420px; display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
+      .rt-summary-controls { display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-controls-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+      .rt-summary-metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+      .rt-summary-table-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; gap: 10px; }
+      .rt-summary-table-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+      .rt-summary-table-wrapper { border: 1px solid var(--border); border-radius: 10px; overflow: auto; max-height: 60vh; position: relative; background: #fff; }
+      .rt-summary-window-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #475569; }
+      .rt-summary-table-label { font-weight: 600; font-size: 14px; color: #0f172a; }
+      .rt-summary-asin-image { width: 72px; height: 72px; object-fit: contain; border-radius: 10px; background: #f8fafc; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+      #rt-sales-asin-table thead th,
+      #rt-sales-time-table thead th { position: sticky; top: 0; background: #f8fafc; z-index: 2; }
+      #rt-sales-asin-table th,
+      #rt-sales-asin-table td,
+      #rt-sales-time-table th,
+      #rt-sales-time-table td { padding: 10px; }
+      .rt-summary-detail-card { margin-top: 0; }
+      @media (max-width: 1100px) {
+        .rt-summary-layout { flex-direction: column; }
+        .rt-summary-left,
+        .rt-summary-right { max-width: none; width: 100%; }
+        .rt-summary-table-wrapper { max-height: none; }
+      }
       /* Out-of-Stock export status */
       .export-status-pending { font-weight: 600; color: #d97706; }
       .export-status-exported { opacity: 0.6; color: #6b7280; }
@@ -798,120 +825,138 @@
 
     <div class="panel" id="tab-vrt-summary" style="display:none; margin-top:14px;">
       <h2>Vendor Real Time Summary</h2>
-      <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <label style="font-size:14px; font-weight:600;">Lookback:</label>
-          <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
-            <option value="2">Trailing 2 hours</option>
-            <option value="4">Trailing 4 hours</option>
-            <option value="8">Trailing 8 hours</option>
-            <option value="12">Trailing 12 hours</option>
-            <option value="24">Trailing 24 hours</option>
-            <option value="48">Trailing 48 hours</option>
-          </select>
-          
-          <label style="font-size:14px; font-weight:600; margin-left:12px;">View By:</label>
-          <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
-            <option value="asin" selected>ASIN</option>
-            <option value="time">Time</option>
-          </select>
-          
-          <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()" style="margin-left:12px;">Refresh Now</button>
-        </div>
-        <div class="rt-sales-status-strip">
-          <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
-          <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
-        </div>
-        <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Missing</div>
-            <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
+      <div class="rt-summary-layout">
+        <div class="rt-summary-left">
+          <div class="rt-summary-card rt-summary-controls">
+            <div class="rt-summary-controls-row">
+              <label style="font-size:14px; font-weight:600;">Lookback:</label>
+              <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
+                <option value="2">Trailing 2 hours</option>
+                <option value="4">Trailing 4 hours</option>
+                <option value="8">Trailing 8 hours</option>
+                <option value="12">Trailing 12 hours</option>
+                <option value="24">Trailing 24 hours</option>
+                <option value="48">Trailing 48 hours</option>
+              </select>
+
+              <label style="font-size:14px; font-weight:600;">View By:</label>
+              <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
+                <option value="asin" selected>ASIN</option>
+                <option value="time">Time</option>
+              </select>
+
+              <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
+            </div>
+            <div class="rt-sales-status-strip">
+              <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
+              <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
+            </div>
           </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Requested</div>
-            <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
+
+          <div class="rt-summary-card">
+            <div id="rt-sales-summary" class="rt-summary-metrics-grid">
+              <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
+                <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
+                <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
+              </div>
+              <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
+                <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
+                <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
+              </div>
+            </div>
           </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Downloaded</div>
-            <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Applied</div>
-            <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Failed</div>
-            <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Last Applied Hour</div>
-            <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Next Claimable Hour</div>
-            <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+
+          <div class="rt-summary-card">
+            <div style="font-weight:600; margin-bottom:6px;">Ledger</div>
+            <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Missing</div>
+                <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Requested</div>
+                <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Downloaded</div>
+                <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Applied</div>
+                <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Failed</div>
+                <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Last Applied Hour</div>
+                <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Next Claimable Hour</div>
+                <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div id="rt-sales-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
-          <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
-            <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
-            <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
+        <div class="rt-summary-right">
+          <div class="rt-summary-table-card">
+            <div class="rt-summary-table-head">
+              <div class="rt-summary-table-label" id="rt-sales-table-title">Top ASINs</div>
+            </div>
+            <div class="rt-summary-window-meta">
+              <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
+              <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
+            </div>
+            <div class="rt-summary-table-wrapper">
+              <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
+                <thead>
+                  <tr>
+                    <th style="width:26%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:22%; text-align:center; word-break:break-word;">Image</th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-top-asins-rows">
+                <tr><td colspan="4" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
+                </tbody>
+              </table>
+              <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
+                <thead>
+                  <tr>
+                    <th style="width:48%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('bucket_time')">Time Bucket (UAE) <span id="rt-sales-sort-bucket-time" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-time-units" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-time-revenue" class="rt-sales-sort-arrow"></span></th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-time-rows">
+                  <tr><td colspan="3" class="empty">No data available</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
-            <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
-            <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
-          </div>
-        </div>
 
-        <div style="font-weight:600; margin-top:8px;" id="rt-sales-table-title">Top ASINs</div>
-        <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
-        <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
-        <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
-          <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
-            <thead>
-              <tr>
-                <th style="flex:1; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:center; word-break:break-word;">Image</th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
-              </tr>
-            </thead>
-            <tbody id="rt-sales-top-asins-rows">
-            <tr><td colspan="4" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
-            </tbody>
-          </table>
-          <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
-            <thead>
-              <tr>
-                <th style="flex:2; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('bucket_time')">Time Bucket (UAE) <span id="rt-sales-sort-bucket-time" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-time-units" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-time-revenue" class="rt-sales-sort-arrow"></span></th>
-              </tr>
-            </thead>
-            <tbody id="rt-sales-time-rows">
-              <tr><td colspan="3" class="empty">No data available</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div id="rt-sales-asin-detail" style="margin-top:16px; display:none;">
-          <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">-</span></div>
-          <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
-            <table>
-              <thead>
-                <tr>
-                  <th style="min-width:160px;">Hour (UTC)</th>
-                  <th style="text-align:right; width:80px;">Units</th>
-                  <th style="text-align:right; width:100px;">Revenue</th>
-                </tr>
-              </thead>
-              <tbody id="rt-sales-asin-detail-rows">
-                <tr><td colspan="3" class="empty">-</td></tr>
-              </tbody>
-            </table>
+          <div id="rt-sales-asin-detail" class="rt-summary-card rt-summary-detail-card" style="display:none;">
+            <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">-</span></div>
+            <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="min-width:160px;">Hour (UTC)</th>
+                    <th style="text-align:right; width:80px;">Units</th>
+                    <th style="text-align:right; width:100px;">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-asin-detail-rows">
+                  <tr><td colspan="3" class="empty">-</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
           </div>
-          <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
         </div>
       </div>
     </div>
@@ -4172,7 +4217,7 @@
 
       tbody.innerHTML = data.map(asin_row => {
         const imageHtml = asin_row.imageUrl
-          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" style="max-width:40px; max-height:40px; object-fit:contain; border-radius:4px;" />`
+          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" class="rt-summary-asin-image" loading="eager" decoding="sync" />`
           : '—';
         return `
           <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
