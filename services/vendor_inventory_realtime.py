@@ -412,7 +412,7 @@ def _decorate_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     sales_map = _load_sales_30d_map(snapshot.get("marketplace_id"))
     for item in items:
         asin = str(item.get("asin") or "").strip()
-        item["sales_30d"] = sales_map.get(asin) if asin else None
+        item["sales_30d"] = int(sales_map.get(asin) or sales_map.get(asin.upper()) or 0) if asin else 0
     unique_asins = {
         str(item.get("asin") or "").strip().upper()
         for item in items
