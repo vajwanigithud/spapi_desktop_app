@@ -16,7 +16,7 @@ from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
-WAITING_STATUSES = {"cooldown", "locked"}
+WAITING_STATUSES = {"cooldown", "locked", "waiting"}
 MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
@@ -189,17 +189,17 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         details = "Failed ledger hours present"
 
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
-    if not next_eligible_dt and last_run_iso:
-        last_dt = _parse_iso_datetime(last_run_iso)
-        if last_dt:
-            next_eligible_dt = last_dt + timedelta(minutes=15)
+    last_run_dt = _parse_iso_datetime(last_run_iso) if last_run_iso else None
+    if not next_eligible_dt and last_run_dt:
+        next_eligible_dt = last_run_dt + timedelta(minutes=15)
 
+    last_run_display = _fmt_uae(last_run_dt or last_run_iso)
     workers.append(
         {
             "key": "rt_sales_sync",
             "name": "RT Sales Sync",
             "status": status,
-            "last_run_at_uae": _fmt_uae(last_run_iso),
+            "last_run_at_uae": last_run_display,
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
             "details": details,
             "what": "Ingests real-time sales and maintains hourly ledger",
