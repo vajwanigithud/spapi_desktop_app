@@ -20,6 +20,30 @@ CATALOG_DB_PATH = Path(__file__).resolve().parent.parent / "catalog.db"
 _db_write_lock = Lock()
 _db_timeout = 10  # seconds
 
+
+@contextmanager
+def get_db_connection_for_path(db_path: Path):
+    """Return a SQLite connection for the given path, reusing the default setup when possible.
+
+    Uses the hardened default connection (WAL, timeout, row_factory) when the caller requests
+    the main catalog DB path; otherwise opens a scoped connection for the provided path.
+    """
+    resolved = Path(db_path).resolve()
+    default = Path(CATALOG_DB_PATH).resolve()
+    if resolved == default:
+        with get_db_connection() as conn:
+            yield conn
+    else:
+        conn = None
+        try:
+            conn = sqlite3.connect(resolved, timeout=_db_timeout)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+        finally:
+            if conn:
+                conn.close()
+
 @contextmanager
 def get_db_connection():
     """
@@ -635,6 +659,51 @@ def set_app_kv(conn, key: str, value: str) -> None:
     except Exception as exc:
         logger.error(f"[DB] Failed to set_app_kv for key '{key}': {exc}")
         raise
+
+
+def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
+    """Ensure DF Payments tables exist for the given database path."""
+    orders_sql = """
+    CREATE TABLE IF NOT EXISTS df_payments_orders (
+        marketplace_id TEXT NOT NULL,
+        purchase_order_number TEXT NOT NULL,
+        customer_order_number TEXT,
+        order_date_utc TEXT,
+        order_status TEXT,
+        items_count INTEGER,
+        total_units INTEGER,
+        subtotal_amount REAL,
+        vat_amount REAL,
+        currency_code TEXT,
+        sku_list TEXT,
+        last_updated_utc TEXT,
+        PRIMARY KEY (marketplace_id, purchase_order_number)
+    )
+    """
+
+    state_sql = """
+    CREATE TABLE IF NOT EXISTS df_payments_state (
+        marketplace_id TEXT PRIMARY KEY,
+        last_fetch_started_at TEXT,
+        last_fetch_finished_at TEXT,
+        last_fetch_status TEXT,
+        last_error TEXT,
+        last_lookback_days INTEGER,
+        rows_90d INTEGER
+    )
+    """
+
+    index_sql = """
+    CREATE INDEX IF NOT EXISTS idx_df_payments_order_date
+    ON df_payments_orders (marketplace_id, order_date_utc)
+    """
+
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            conn.execute(orders_sql)
+            conn.execute(state_sql)
+            conn.execute(index_sql)
+            conn.commit()
 
 
 def get_exported_asins(marketplace_id: str = "A2VIGQ35RCS4UG") -> set[str]:
