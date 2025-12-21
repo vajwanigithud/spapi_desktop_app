@@ -1634,11 +1634,21 @@ def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
             accepted_qty = _coerce_int(accepted_raw)
 
         received_qty = _coerce_int(row.get("received_qty"))
+        cancelled_qty = _coerce_int(row.get("cancelled_qty"))
         pending_qty_val = row.get("pending_qty")
         if pending_qty_val is None:
-            pending_qty = max(0, accepted_qty - received_qty)
+            pending_qty = max(0, accepted_qty - received_qty - cancelled_qty)
         else:
             pending_qty = _coerce_int(pending_qty_val)
+
+        net_cost_amount = row.get("net_cost_amount")
+        net_cost_currency = row.get("net_cost_currency")
+        net_cost_obj = None
+        if net_cost_amount is not None:
+            net_cost_obj = {
+                "amount": net_cost_amount,
+                "currencyCode": net_cost_currency or row.get("net_cost_currency") or "",
+            }
 
         normalized_items.append(
             {
@@ -1652,6 +1662,14 @@ def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
                     "receivedQuantity": {"amount": received_qty},
                     "pendingQuantity": {"amount": pending_qty},
                 },
+                "ordered_qty": ordered_qty,
+                "accepted_qty": accepted_qty,
+                "received_qty": received_qty,
+                "cancelled_qty": cancelled_qty,
+                "pending_qty": pending_qty,
+                "net_cost_amount": net_cost_amount,
+                "net_cost_currency": net_cost_currency,
+                "netCost": net_cost_obj,
                 "title": row.get("title") or "",
                 "image": row.get("image") or "",
             }
@@ -1684,8 +1702,12 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 "ordered": 0,
                 "accepted": 0,
                 "received": 0,
-                "cancelled": 0,
+                "rejected": 0,
                 "pending": 0,
+                "unit_cost": None,
+                "currency": None,
+                "total_amount": Decimal("0"),
+                "has_total": False,
             }
             order.append(key)
 
@@ -1702,15 +1724,25 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
         ordered_val = _extract_quantity_value(item, "ordered_qty", item.get("orderedQuantity"))
         accepted_val = _extract_quantity_value(item, "accepted_qty", item.get("acknowledgementStatus", {}).get("acceptedQuantity"), fallback=ordered_val)
         received_val = _extract_quantity_value(item, "received_qty", (item.get("receivingStatus") or {}).get("receivedQuantity"))
-        cancelled_val = _extract_quantity_value(item, "cancelled_qty", item.get("acknowledgementStatus", {}).get("rejectedQuantity"))
+        rejected_val = _extract_quantity_value(item, "cancelled_qty", item.get("acknowledgementStatus", {}).get("rejectedQuantity"))
         pending_val = _extract_quantity_value(item, "pending_qty", (item.get("receivingStatus") or {}).get("pendingQuantity"), allow_none=True)
         if pending_val is None:
-            pending_val = max(0, accepted_val - received_val - cancelled_val)
+            pending_val = max(0, accepted_val - received_val - rejected_val)
+
+        unit_cost, currency = _extract_unit_cost_from_row(item)
+        if unit_cost is not None:
+            if bucket["unit_cost"] is None:
+                bucket["unit_cost"] = unit_cost
+            if not bucket["currency"] and currency:
+                bucket["currency"] = currency
+            if accepted_val > 0:
+                bucket["total_amount"] += unit_cost * Decimal(accepted_val)
+                bucket["has_total"] = True
 
         bucket["ordered"] += ordered_val
         bucket["accepted"] += accepted_val
         bucket["received"] += received_val
-        bucket["cancelled"] += cancelled_val
+        bucket["rejected"] += rejected_val
         bucket["pending"] += pending_val
 
     aggregated: List[Dict[str, Any]] = []
@@ -1721,20 +1753,23 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
         ordered = bucket["ordered"]
         accepted = bucket["accepted"]
         received = bucket["received"]
-        cancelled = bucket["cancelled"]
+        rejected = bucket["rejected"]
         pending = max(0, bucket["pending"])
 
         if accepted <= 0 and ordered > 0:
             accepted = ordered
 
         if pending <= 0:
-            pending = max(0, accepted - received - cancelled)
+            pending = max(0, accepted - received - rejected)
 
         status = "ACCEPTED"
-        if cancelled >= accepted and accepted <= 0:
+        if rejected >= accepted and accepted <= 0:
             status = "REJECTED"
         elif received >= accepted and accepted > 0:
             status = "RECEIVED"
+
+        total_amount = float(bucket["total_amount"]) if bucket["has_total"] else None
+        unit_cost = float(bucket["unit_cost"]) if bucket["unit_cost"] is not None else None
 
         aggregated.append(
             {
@@ -1746,18 +1781,23 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 "ordered_qty": ordered,
                 "accepted_qty": accepted,
                 "received_qty": received,
-                "cancelled_qty": cancelled,
+                "cancelled_qty": rejected,
+                "rejected_qty": rejected,
                 "remaining_qty": pending,
                 "orderedQuantity": {"amount": ordered},
                 "acknowledgementStatus": {
                     "acceptedQuantity": {"amount": accepted},
-                    "rejectedQuantity": {"amount": cancelled},
+                    "rejectedQuantity": {"amount": rejected},
                     "confirmationStatus": status,
                 },
                 "receivingStatus": {
                     "receivedQuantity": {"amount": received},
                     "pendingQuantity": {"amount": pending},
                 },
+                "net_amount": unit_cost,
+                "currencyCode": bucket["currency"],
+                "total_amount": total_amount,
+                "accepted_line_amount": total_amount,
             }
         )
 
@@ -1795,11 +1835,118 @@ def _extract_amount_from_dict(data: Any) -> Optional[int]:
     return None
 
 
+def _extract_unit_cost_from_row(item: Dict[str, Any]) -> Tuple[Optional[Decimal], Optional[str]]:
+    if not isinstance(item, dict):
+        return None, None
+
+    for amount_field, currency_field in (
+        ("net_cost_amount", "net_cost_currency"),
+        ("unit_cost_amount", "unit_cost_currency"),
+    ):
+        amount = item.get(amount_field)
+        if amount is not None:
+            amount_dec = _coerce_decimal(amount)
+            if amount_dec is not None:
+                return amount_dec, item.get(currency_field) or item.get("currencyCode")
+
+    for key in ("netCost", "net_cost", "itemNetCost", "item_net_cost", "unitCost", "unit_cost"):
+        amount_dec, currency = _extract_money_tuple(item.get(key))
+        if amount_dec is not None:
+            return amount_dec, currency or item.get("currencyCode")
+
+    return None, None
+
+
+def _extract_money_tuple(value: Any) -> Tuple[Optional[Decimal], Optional[str]]:
+    if isinstance(value, dict):
+        amount_val = value.get("amount") or value.get("value")
+        amount_dec = _coerce_decimal(amount_val)
+        if amount_dec is not None:
+            currency = value.get("currencyCode") or value.get("currency")
+            return amount_dec, currency
+    elif value is not None:
+        amount_dec = _coerce_decimal(value)
+        if amount_dec is not None:
+            return amount_dec, None
+    return None, None
+
+
+def _compute_amounts_summary(items: List[Dict[str, Any]], po: Dict[str, Any]) -> Dict[str, Any]:
+    total_sum = Decimal("0")
+    saw_total = False
+    currency = None
+    for row in items or []:
+        total_amount = row.get("total_amount")
+        if total_amount is None:
+            continue
+        total_dec = _coerce_decimal(total_amount)
+        if total_dec is None:
+            continue
+        total_sum += total_dec
+        saw_total = True
+        if not currency:
+            currency = row.get("currencyCode") or row.get("currency")
+
+    sum_total_amount = float(total_sum) if saw_total else None
+    header_amount_dec, header_currency = _extract_po_total_amount(po)
+    if not currency:
+        currency = header_currency
+
+    diff = None
+    if sum_total_amount is not None and header_amount_dec is not None:
+        diff = float(total_sum - header_amount_dec)
+
+    return {
+        "sum_total_amount": sum_total_amount,
+        "po_total_accepted_cost": float(header_amount_dec) if header_amount_dec is not None else None,
+        "currency": currency,
+        "diff": diff,
+    }
+
+
+def _extract_po_total_amount(po: Dict[str, Any]) -> Tuple[Optional[Decimal], Optional[str]]:
+    total_obj = po.get("totalAcceptedCost")
+    candidates = [
+        po.get("total_accepted_cost"),
+        po.get("totalAcceptedCostAmount"),
+        total_obj.get("amount") if isinstance(total_obj, dict) else None,
+    ]
+    for value in candidates:
+        amount_dec = _coerce_decimal(value)
+        if amount_dec is not None:
+            currency = (
+                po.get("total_accepted_cost_currency")
+                or po.get("totalAcceptedCostCurrency")
+                or (total_obj.get("currencyCode") if isinstance(total_obj, dict) else None)
+            )
+            return amount_dec, currency
+
+    fallback = _coerce_decimal(po.get("accepted_total_amount"))
+    if fallback is not None:
+        currency = (
+            po.get("accepted_total_currency")
+            or po.get("total_accepted_cost_currency")
+            or po.get("totalAcceptedCostCurrency")
+        )
+        return fallback, currency
+
+    return None, po.get("totalAcceptedCostCurrency") or po.get("total_accepted_cost_currency")
+
+
 def _coerce_int(value: Any) -> int:
     try:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _coerce_decimal(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def _summarize_vendor_po_lines(lines: List[Dict[str, Any]]) -> Tuple[Dict[str, int], List[Dict[str, Any]], List[str]]:
@@ -2320,13 +2467,15 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     if items_for_modal:
         aggregated_items = _aggregate_po_items_for_modal(items_for_modal)
         po["orderDetails"]["items"] = aggregated_items
+        po["poItemsCount"] = len(aggregated_items)
         items_for_modal = aggregated_items
     line_source = "db_lines" if used_db_lines and items_for_modal else ("raw_orderDetails" if items_for_modal else "empty")
     logger.info("[VendorPODetail] %s line_count=%d source=%s", po_number, len(items_for_modal), line_source)
 
     po["notificationFlags"] = flags
     po["sync_state"] = get_vendor_po_sync_state()
-    return {"item": po}
+    amounts_summary = _compute_amounts_summary(items_for_modal, po)
+    return {"item": po, "amounts": amounts_summary}
 
 
 @app.get("/api/vendor-pos/{po_number}/ledger")
