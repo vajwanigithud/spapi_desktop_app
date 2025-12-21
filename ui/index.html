@@ -805,7 +805,9 @@
           </select>
         </label>
         <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
+        <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
         <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
+        <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
       </div>
 
       <div class="dfp-dashboard">
@@ -6108,6 +6110,7 @@
           <div class="worker-card" id="workers-section-inventory"></div>
           <div class="worker-card" id="workers-section-rt-sales"></div>
           <div class="worker-card" id="workers-section-vendor-po"></div>
+          <div class="worker-card" id="workers-section-df-payments"></div>
         </div>
       </div>
     </div>

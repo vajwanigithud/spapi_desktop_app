@@ -114,13 +114,14 @@
     const sectionInventory = document.getElementById("workers-section-inventory");
     const sectionRtSales = document.getElementById("workers-section-rt-sales");
     const sectionVendorPo = document.getElementById("workers-section-vendor-po");
+    const sectionDfPayments = document.getElementById("workers-section-df-payments");
 
     if (!button || !backdrop || !heartbeatEl || !lastCheckedEl) {
       return;
     }
 
     function clearSections(message) {
-      [sectionInventory, sectionRtSales, sectionVendorPo].forEach((section) => {
+      [sectionInventory, sectionRtSales, sectionVendorPo, sectionDfPayments].forEach((section) => {
         if (section) {
           section.innerHTML = "";
           if (message) {
@@ -154,6 +155,7 @@
         renderDomain(sectionInventory, data.domains?.inventory, "Inventory");
         renderDomain(sectionRtSales, data.domains?.rt_sales, "REAL-TIME SALES");
         renderDomain(sectionVendorPo, data.domains?.vendor_po, "VENDOR PO");
+        renderDomain(sectionDfPayments, data.domains?.df_payments, "DF PAYMENTS");
       } catch (err) {
         button.textContent = "🛠 Workers: ERROR";
         heartbeatEl.textContent = "System heartbeat: Check logs";

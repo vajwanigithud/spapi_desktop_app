@@ -55,6 +55,21 @@
     setStatus(`Last fetch: ${lastLabel} | Rows (90d): ${rowsLabel} | Error: ${errorLabel}`);
   }
 
+  function renderDiagnostics(diagnostics) {
+    const el = document.getElementById("dfp-range");
+    if (!el) return;
+    if (!diagnostics) {
+      el.textContent = "Loaded: — orders | Range: — → — (UTC)";
+      return;
+    }
+    const count = diagnostics.orders_count != null ? diagnostics.orders_count : "—";
+    const minDate = diagnostics.min_order_date_utc || "—";
+    const maxDate = diagnostics.max_order_date_utc || "—";
+    const pages = diagnostics.pages_fetched != null ? diagnostics.pages_fetched : "—";
+    const lookback = diagnostics.lookback_days_applied != null ? diagnostics.lookback_days_applied : "—";
+    el.textContent = `Loaded: ${count} orders | Range: ${minDate} → ${maxDate} (UTC) | Pages: ${pages} | Lookback applied: ${lookback}d`;
+  }
+
   function renderInvoices(invoices) {
     const tbody = document.getElementById("dfp-invoices-body");
     if (!tbody) return;
@@ -127,8 +142,10 @@
     const orders = data?.orders || [];
     const dashboard = data?.dashboard || {};
     const state = data?.state || {};
+    const diagnostics = state?.diagnostics;
 
     renderStatus(state, orders.length);
+    renderDiagnostics(diagnostics);
     renderInvoices(dashboard.invoices_by_month || []);
     renderCashflow(dashboard.cashflow_projection || []);
     renderOrders(orders);
@@ -155,12 +172,14 @@
 
   async function triggerFetch() {
     const btn = document.getElementById("dfp-fetch-btn");
+    const incBtn = document.getElementById("dfp-incremental-btn");
     const lookbackSel = document.getElementById("dfp-lookback");
     const lookback = lookbackSel ? Number(lookbackSel.value || 90) : 90;
     if (btn) {
       btn.disabled = true;
       btn.textContent = "Fetching…";
     }
+    if (incBtn) incBtn.disabled = true;
     setStatus("Fetching DF orders…");
     try {
       const resp = await fetch("/api/df-payments/fetch", {
@@ -182,6 +201,36 @@
         btn.disabled = false;
         btn.textContent = "Fetch Orders";
       }
+      if (incBtn) incBtn.disabled = false;
+    }
+  }
+
+  async function triggerIncremental() {
+    const btn = document.getElementById("dfp-incremental-btn");
+    const fetchBtn = document.getElementById("dfp-fetch-btn");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Scanning…";
+    }
+    if (fetchBtn) fetchBtn.disabled = true;
+    setStatus("Incremental scan in progress…");
+    try {
+      const resp = await fetch("/api/df-payments/incremental", { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok === false) {
+        const detail = data?.detail || data?.error || resp.statusText;
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+      await loadDfPaymentsState();
+      setStatus(`Incremental scan: +${data.orders_upserted ?? 0} orders`);
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, true);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Incremental Scan";
+      }
+      if (fetchBtn) fetchBtn.disabled = false;
     }
   }
 
@@ -190,6 +239,10 @@
     const btn = document.getElementById("dfp-fetch-btn");
     if (btn) {
       btn.addEventListener("click", triggerFetch);
+    }
+    const incBtn = document.getElementById("dfp-incremental-btn");
+    if (incBtn) {
+      incBtn.addEventListener("click", triggerIncremental);
     }
     dfpInitialized = true;
   }
