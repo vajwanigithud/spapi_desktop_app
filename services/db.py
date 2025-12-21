@@ -417,6 +417,7 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
     try:
         try:
             raw_min_keep = os.getenv("INVENTORY_RT_PRUNE_MIN_KEEP")
+            raw_min_keep = raw_min_keep.strip() if isinstance(raw_min_keep, str) else raw_min_keep
             env_min_keep = int(raw_min_keep) if raw_min_keep not in (None, "") else 20
         except Exception:
             env_min_keep = 20
@@ -538,11 +539,11 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
 
         return {
             "prune_attempted": bool(prune_attempted),
-            "prune_skipped_reason": prune_skipped_reason or "",
-            "prune_min_keep_count": int(prune_min_keep_count),
-            "pruned_rows": int(pruned_rows),
-            "prune_kept_count": int(prune_kept_count),
-            "prune_before_count": int(prune_before_count),
+            "prune_skipped_reason": str(prune_skipped_reason or ""),
+            "prune_min_keep_count": int(prune_min_keep_count or 0),
+            "pruned_rows": int(pruned_rows or 0),
+            "prune_kept_count": int(prune_kept_count or 0),
+            "prune_before_count": int(prune_before_count or 0),
         }
     except Exception as exc:
         logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)
