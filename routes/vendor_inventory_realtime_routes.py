@@ -174,7 +174,7 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(item, dict) and item.get("image_url") and not item.get("imageUrl"):
             item["imageUrl"] = item.get("image_url")
     attach_image_urls(items)
-    refresh_meta = snapshot.get("refresh") or {}
+    refresh_meta = dict(snapshot.get("refresh") or {})
     prune_top: Dict[str, Any] = {}
     for key, default in PRUNE_META_DEFAULTS.items():
         value = refresh_meta.get(key)
@@ -182,9 +182,17 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             value = snapshot.get(key)
         if value is None:
             value = default
-        prune_top[key] = value
-        if key not in refresh_meta or refresh_meta.get(key) is None:
-            refresh_meta[key] = value
+        if key == "prune_attempted":
+            coerced = bool(value)
+        elif key == "prune_skipped_reason":
+            coerced = str(value or "")
+        else:
+            try:
+                coerced = int(value)
+            except Exception:
+                coerced = int(default)
+        prune_top[key] = coerced
+        refresh_meta[key] = coerced
     refresh_in_progress = bool(refresh_meta.get("in_progress"))
     computed = _compute_as_of_fields(snapshot)
     status = snapshot.get("status")

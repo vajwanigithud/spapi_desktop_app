@@ -481,12 +481,14 @@ def _decorate_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merge_prune_meta(refresh_meta: Dict[str, Any], prune_meta: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(refresh_meta or {})
     for key, default in _PRUNE_META_DEFAULTS.items():
         if key in prune_meta and prune_meta.get(key) is not None:
-            refresh_meta[key] = prune_meta[key]
-        elif key not in refresh_meta or refresh_meta.get(key) is None:
-            refresh_meta[key] = default
-    return refresh_meta
+            merged[key] = prune_meta[key]
+            continue
+        if key not in merged or merged.get(key) is None:
+            merged[key] = default
+    return merged
 
 
 def _materialize_rows_for_vendor_inventory(
