@@ -246,7 +246,17 @@ def _load_orders(marketplace_id: str, *, db_path: Path) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-def _get_invoices_by_month(marketplace_id: str, *, db_path: Path) -> List[Dict[str, Any]]:
+def _month_key(dt: datetime) -> str:
+    return dt.strftime("%Y-%m")
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    year = dt.year + ((dt.month - 1 + months) // 12)
+    month = ((dt.month - 1 + months) % 12) + 1
+    return dt.replace(year=year, month=month, day=1)
+
+
+def _aggregate_invoice_totals(marketplace_id: str, *, db_path: Path) -> Dict[str, float]:
     with _connection(db_path) as conn:
         rows = conn.execute(
             """
@@ -254,31 +264,39 @@ def _get_invoices_by_month(marketplace_id: str, *, db_path: Path) -> List[Dict[s
             FROM df_payments_orders
             WHERE marketplace_id = ?
             GROUP BY substr(order_date_utc, 1, 7)
-            ORDER BY month DESC
             """,
             (marketplace_id,),
         ).fetchall()
-        return [
-            {
-                "month": row["month"],
-                "total_incl_vat": float(row["total"] or 0),
-            }
-            for row in rows
-            if row["month"]
-        ]
+    return {
+        row["month"]: float(row["total"] or 0)
+        for row in rows
+        if row["month"]
+    }
 
 
-def _build_cashflow_projection(invoice_months: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    months = [row["month"] for row in invoice_months if row.get("month")]
-    if not months:
-        months = [datetime.now(timezone.utc).strftime("%Y-%m")]
+def _slice_invoices_window(month_totals: Dict[str, float], *, now_utc: datetime) -> List[Dict[str, Any]]:
+    current_month = _month_key(now_utc)
+    prev_month = _month_key(_add_months(now_utc, -1))
+    ordered_months = [prev_month, current_month]
+    return [
+        {"month": m, "total_incl_vat": month_totals[m]}
+        for m in ordered_months
+        if m in month_totals
+    ]
+
+
+def _build_cashflow_projection(month_totals: Dict[str, float], *, now_utc: datetime) -> List[Dict[str, Any]]:
+    current_month = _month_key(now_utc)
+    next_month = _month_key(_add_months(now_utc, 1))
+    ordered_months = [current_month, next_month]
     return [
         {
-            "month": month,
+            "month": m,
             "unpaid_amount": 0.0,
             "note": "(reconciliation not enabled yet)",
         }
-        for month in months
+        for m in ordered_months
+        if m in month_totals
     ]
 
 
@@ -353,13 +371,16 @@ def get_df_payments_state(
     marketplace_id: str = DEFAULT_MARKETPLACE_ID,
     *,
     db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    now_utc: Optional[datetime] = None,
 ) -> Dict[str, Any]:
+    effective_now = now_utc or datetime.now(timezone.utc)
     ensure_df_payments_tables(db_path)
     orders = _load_orders(marketplace_id, db_path=db_path)
-    invoices_by_month = _get_invoices_by_month(marketplace_id, db_path=db_path)
+    month_totals = _aggregate_invoice_totals(marketplace_id, db_path=db_path)
+    invoices_by_month = _slice_invoices_window(month_totals, now_utc=effective_now)
     dashboard = {
         "invoices_by_month": invoices_by_month,
-        "cashflow_projection": _build_cashflow_projection(invoices_by_month),
+        "cashflow_projection": _build_cashflow_projection(month_totals, now_utc=effective_now),
     }
     state_row = _get_state_row(marketplace_id, db_path=db_path)
     state_row["rows_90d"] = state_row.get("rows_90d") or len(orders)

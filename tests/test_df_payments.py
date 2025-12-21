@@ -64,6 +64,38 @@ def _sample_payload(now_utc: datetime) -> dict:
     }
 
 
+def _make_order(po_number: str, order_date: datetime, amount: float) -> dict:
+    return {
+        "purchaseOrderNumber": po_number,
+        "orderDetails": {
+            "orderStatus": "OPEN",
+            "orderDate": order_date.isoformat(),
+            "items": [
+                {
+                    "vendorProductIdentifier": f"SKU-{po_number}",
+                    "orderedQuantity": {"amount": 1},
+                    "netPrice": {"amount": str(amount), "currencyCode": "AED"},
+                }
+            ],
+        },
+    }
+
+
+def _multi_month_payload(now_utc: datetime) -> dict:
+    dec = datetime(2024, 12, 20, tzinfo=timezone.utc)
+    jan = datetime(2025, 1, 10, tzinfo=timezone.utc)
+    feb = datetime(2025, 2, 5, tzinfo=timezone.utc)
+    mar = datetime(2025, 3, 1, tzinfo=timezone.utc)
+    return {
+        "purchaseOrders": [
+            _make_order("PO-DEC", dec, 100),
+            _make_order("PO-JAN", jan, 200),
+            _make_order("PO-FEB", feb, 300),
+            _make_order("PO-MAR", mar, 400),
+        ]
+    }
+
+
 def test_df_payments_materialize_and_prune(tmp_path):
     db_path = tmp_path / "df_payments.db"
     ensure_df_payments_tables(db_path)
@@ -79,7 +111,7 @@ def test_df_payments_materialize_and_prune(tmp_path):
         now_utc=fixed_now,
     )
 
-    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path)
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
     orders = state["orders"]
 
     assert len(orders) == 1
@@ -103,3 +135,29 @@ def test_df_payments_materialize_and_prune(tmp_path):
     assert "reconciliation" in (cashflow[0]["note"] or "").lower()
 
     assert state["state"]["rows_90d"] == 1
+
+
+def test_df_payments_dashboard_windows(tmp_path):
+    db_path = tmp_path / "df_payments_windows.db"
+    ensure_df_payments_tables(db_path)
+
+    fixed_now = datetime(2025, 2, 15, 12, 0, tzinfo=timezone.utc)
+    payload = _multi_month_payload(fixed_now)
+
+    refresh_df_payments(
+        MARKETPLACE_ID,
+        lookback_days=120,
+        db_path=db_path,
+        fetcher=lambda **kwargs: payload,
+        now_utc=fixed_now,
+    )
+
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
+
+    invoices = state["dashboard"]["invoices_by_month"]
+    assert [row["month"] for row in invoices] == ["2025-01", "2025-02"]
+
+    cashflow = state["dashboard"]["cashflow_projection"]
+    assert [row["month"] for row in cashflow] == ["2025-02", "2025-03"]
+    for row in cashflow:
+        assert row["unpaid_amount"] == 0.0
