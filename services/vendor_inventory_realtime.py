@@ -47,14 +47,6 @@ MIN_REFRESH_INTERVAL_MINUTES = 30
 SALES_30D_LOOKBACK_DAYS = 30
 COOLDOWN_HOURS = 1
 COOLDOWN_KV_KEY = "vendor_rt_inventory_last_refresh_utc"
-_PRUNE_META_DEFAULTS = {
-    "prune_attempted": False,
-    "prune_skipped_reason": "",
-    "prune_min_keep_count": 0,
-    "pruned_rows": 0,
-    "prune_kept_count": 0,
-    "prune_before_count": 0,
-}
 
 _CANDIDATE_ROW_KEYS = [
     "reportData",
@@ -480,17 +472,6 @@ def _decorate_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
-def _merge_prune_meta(refresh_meta: Dict[str, Any], prune_meta: Dict[str, Any]) -> Dict[str, Any]:
-    merged = dict(refresh_meta or {})
-    for key, default in _PRUNE_META_DEFAULTS.items():
-        if key in prune_meta and prune_meta.get(key) is not None:
-            merged[key] = prune_meta[key]
-            continue
-        if key not in merged or merged.get(key) is None:
-            merged[key] = default
-    return merged
-
-
 def _materialize_rows_for_vendor_inventory(
     snapshot: Dict[str, Any],
     window_start: Optional[str] = None,
@@ -550,10 +531,10 @@ def _materialize_rows_for_vendor_inventory(
     return rows
 
 
-def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> int:
     """
     Replace vendor_inventory_asin rows using realtime snapshot items.
-    Returns prune metadata (dict) including row counts.
+    Returns number of rows written.
     """
     marketplace_id = (snapshot.get("marketplace_id") or "").strip()
     if not marketplace_id:
@@ -585,15 +566,13 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
     try:
         ensure_vendor_inventory_table()
         with get_db_connection() as conn:
-            prune_meta = replace_vendor_inventory_snapshot(conn, marketplace_id, rows) or {}
-        refresh_meta = _merge_prune_meta(snapshot.get("refresh") or {}, prune_meta)
-        snapshot["refresh"] = refresh_meta
+            replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
         logger.info(
             "[VendorRtInventory] Materialized realtime snapshot (%s) into vendor_inventory_asin: %s rows",
             source,
             len(rows),
         )
-        return prune_meta
+        return len(rows)
     except Exception as exc:
         logger.error(
             "[VendorRtInventory] Failed to materialize snapshot (%s) for %s: %s",
@@ -602,7 +581,7 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
             exc,
             exc_info=True,
         )
-        return {}
+        return 0
 
 
 def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THRESHOLD_HOURS) -> bool:
@@ -791,9 +770,7 @@ def refresh_realtime_inventory_snapshot(
 
     _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
-    prune_meta = materialize_vendor_inventory_snapshot(snapshot, source="refresh") or {}
-    refresh_meta = _merge_prune_meta(snapshot.get("refresh") or {}, prune_meta)
-    snapshot["refresh"] = refresh_meta
+    materialize_vendor_inventory_snapshot(snapshot, source="refresh")
     try:
         ensure_app_kv_table()
         with get_db_connection() as conn:

@@ -34,14 +34,6 @@ MARKETPLACE_IDS: List[str] = [
 DEFAULT_MARKETPLACE_ID = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
 UAE_TZ = timezone(timedelta(hours=4))
 CATALOG_CHUNK_SIZE = 400
-PRUNE_META_DEFAULTS = {
-    "prune_attempted": False,
-    "prune_skipped_reason": "",
-    "prune_min_keep_count": 0,
-    "pruned_rows": 0,
-    "prune_kept_count": 0,
-    "prune_before_count": 0,
-}
 
 
 def _chunked(seq: Sequence[str], size: int = CATALOG_CHUNK_SIZE) -> Iterable[Sequence[str]]:
@@ -175,24 +167,6 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             item["imageUrl"] = item.get("image_url")
     attach_image_urls(items)
     refresh_meta = dict(snapshot.get("refresh") or {})
-    prune_top: Dict[str, Any] = {}
-    for key, default in PRUNE_META_DEFAULTS.items():
-        value = refresh_meta.get(key)
-        if value is None:
-            value = snapshot.get(key)
-        if value is None:
-            value = default
-        if key == "prune_attempted":
-            coerced = bool(value)
-        elif key == "prune_skipped_reason":
-            coerced = str(value or "")
-        else:
-            try:
-                coerced = int(value)
-            except Exception:
-                coerced = int(default)
-        prune_top[key] = coerced
-        refresh_meta[key] = coerced
     refresh_in_progress = bool(refresh_meta.get("in_progress"))
     computed = _compute_as_of_fields(snapshot)
     status = snapshot.get("status")
@@ -214,12 +188,6 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         "refresh_skipped": snapshot.get("refresh_skipped") or False,
         "refresh_in_progress": refresh_in_progress,
         "refresh": refresh_meta,
-        "prune_attempted": bool(prune_top.get("prune_attempted")),
-        "prune_skipped_reason": prune_top.get("prune_skipped_reason") or "",
-        "prune_min_keep_count": int(prune_top.get("prune_min_keep_count") or 0),
-        "pruned_rows": int(prune_top.get("pruned_rows") or 0),
-        "prune_kept_count": int(prune_top.get("prune_kept_count") or 0),
-        "prune_before_count": int(prune_top.get("prune_before_count") or 0),
         "as_of_raw": computed["as_of_raw"],
         "as_of": computed["as_of"],
         "as_of_utc": computed["as_of"],
