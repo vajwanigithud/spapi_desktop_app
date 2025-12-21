@@ -16,7 +16,7 @@ from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
-WAITING_STATUSES = {"cooldown", "locked", "waiting"}
+WAITING_STATUSES = {"waiting"}
 MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
@@ -42,6 +42,18 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     return dt
 
 
+def _utc_iso(value: Optional[Any]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = _parse_iso_datetime(str(value))
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def _fmt_uae(value: Optional[Any]) -> Optional[str]:
     if value is None:
         return None
@@ -55,9 +67,21 @@ def _fmt_uae(value: Optional[Any]) -> Optional[str]:
     return dt.astimezone(UAE_TZ).strftime("%Y-%m-%d %H:%M UAE")
 
 
+def _worker_waiting(reason_code: str, reason: Optional[str], next_dt: Optional[datetime]) -> Dict[str, Any]:
+    return {
+        "status": "waiting",
+        "reason_code": reason_code,
+        "reason": reason or reason_code,
+        "next_eligible_at_utc": _utc_iso(next_dt),
+        "next_eligible_at_uae": _fmt_uae(next_dt),
+    }
+
+
 def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     workers: List[Dict[str, Any]] = []
     status = "ok"
+    reason_code = "ok"
+    reason: Optional[str] = None
     details: Optional[str] = None
     cooldown_until_dt: Optional[datetime] = None
     last_run_iso: Optional[str] = None
@@ -76,7 +100,9 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         last_run_iso = last_refresh_dt.isoformat()
         cooldown_until_dt = last_refresh_dt + timedelta(hours=getattr(rt_inventory, "COOLDOWN_HOURS", 1))
         if cooldown_until_dt > now_utc:
-            status = "cooldown"
+            status = "waiting"
+            reason_code = "cooldown"
+            reason = "Cooldown active"
 
     try:
         refresh_meta = get_refresh_metadata(marketplace_id)
@@ -94,26 +120,32 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     if refresh_status == "FAILED":
         status = "error"
+        reason_code = "error"
         details = refresh_error or "Last refresh failed"
 
     if refresh_in_progress and status == "ok":
-        status = "locked"
-        details = "Refresh in progress"
+        status = "waiting"
+        reason_code = "worker_lock"
+        reason = "Refresh in progress"
+        details = details or "Refresh in progress"
 
-    if status == "cooldown" and cooldown_until_dt:
+    if status == "waiting" and reason_code == "cooldown" and cooldown_until_dt:
         details = details or f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
 
-    workers.append(
-        {
-            "key": "rt_inventory_refresh",
-            "name": "Realtime Inventory Refresh",
-            "status": status,
-            "last_run_at_uae": _fmt_uae(last_run_iso),
-            "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else None,
-            "details": details,
-            "what": "Fetches Amazon RT inventory and stores snapshot",
-        }
-    )
+    base_worker = {
+        "key": "rt_inventory_refresh",
+        "name": "Realtime Inventory Refresh",
+        "status": status,
+        "reason_code": reason_code,
+        "reason": reason or reason_code,
+        "last_run_at_utc": _utc_iso(last_run_iso),
+        "last_run_at_uae": _fmt_uae(last_run_iso),
+        "next_eligible_at_utc": _utc_iso(cooldown_until_dt) if cooldown_until_dt else None,
+        "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if cooldown_until_dt else None,
+        "details": details,
+        "what": "Fetches Amazon RT inventory and stores snapshot",
+    }
+    workers.append(base_worker)
 
     materializer_status = "ok" if status != "error" else "error"
     materializer_details = None
@@ -124,7 +156,11 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "key": "inventory_materializer",
             "name": "Inventory Materializer",
             "status": materializer_status,
+            "reason_code": "ok" if materializer_status == "ok" else "error",
+            "reason": (materializer_details or "Materializer ok") if materializer_status == "ok" else (materializer_details or "Last materialization failed"),
+            "last_run_at_utc": _utc_iso(last_run_iso),
             "last_run_at_uae": _fmt_uae(last_run_iso),
+            "next_eligible_at_utc": None,
             "next_eligible_at_uae": None,
             "details": materializer_details,
             "what": "Writes inventory snapshot into SQLite safely",
@@ -167,25 +203,32 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         cooldown_until_dt = None
 
     status = "ok"
+    reason_code = "ok"
+    reason: Optional[str] = None
     details: Optional[str] = None
     next_eligible_dt: Optional[datetime] = None
 
     if cooldown_active:
-        status = "cooldown"
+        status = "waiting"
+        reason_code = "cooldown"
+        reason = "Quota cooldown active"
         next_eligible_dt = cooldown_until_dt
-        details = "Quota cooldown active"
     elif lock_row:
         if lock_stale:
             status = "error"
+            reason_code = "error"
             details = "Worker lock stale"
         else:
-            status = "locked"
+            status = "waiting"
+            reason_code = "worker_lock"
             next_eligible_dt = lock_expires_dt
             owner = lock_row.get("owner")
             if owner:
-                details = f"Lock owner: {owner}"
+                reason = f"Lock owner: {owner}"
+                details = details or reason
     elif ledger_summary.get("failed"):
         status = "error"
+        reason_code = "error"
         details = "Failed ledger hours present"
 
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
@@ -199,7 +242,11 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "key": "rt_sales_sync",
             "name": "RT Sales Sync",
             "status": status,
+            "reason_code": reason_code,
+            "reason": reason or reason_code,
+            "last_run_at_utc": _utc_iso(last_run_dt or last_run_iso),
             "last_run_at_uae": last_run_display,
+            "next_eligible_at_utc": _utc_iso(next_eligible_dt),
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
             "details": details,
             "what": "Ingests real-time sales and maintains hourly ledger",
@@ -222,8 +269,12 @@ def _vendor_po_domain() -> Dict[str, Any]:
         {
             "key": "vendor_po_sync",
             "name": "Vendor PO Sync",
-            "status": "ok",
+            "status": "waiting",
+            "reason_code": "manual",
+            "reason": "Manual / on-demand",
+            "last_run_at_utc": _utc_iso(last_success),
             "last_run_at_uae": _fmt_uae(last_success),
+            "next_eligible_at_utc": None,
             "next_eligible_at_uae": None,
             "details": "Manual / on-demand",
             "what": "Refreshes Vendor POs when run manually",
@@ -258,7 +309,11 @@ def get_worker_status() -> Dict[str, Any]:
                     "key": "rt_inventory_refresh",
                     "name": "Realtime Inventory Refresh",
                     "status": "error",
+                    "reason_code": "error",
+                    "reason": "Inventory status unavailable",
+                    "last_run_at_utc": None,
                     "last_run_at_uae": None,
+                    "next_eligible_at_utc": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
                     "what": "Fetches Amazon RT inventory and stores snapshot",
@@ -267,7 +322,11 @@ def get_worker_status() -> Dict[str, Any]:
                     "key": "inventory_materializer",
                     "name": "Inventory Materializer",
                     "status": "error",
+                    "reason_code": "error",
+                    "reason": "Inventory status unavailable",
+                    "last_run_at_utc": None,
                     "last_run_at_uae": None,
+                    "next_eligible_at_utc": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
                     "what": "Writes inventory snapshot into SQLite safely",
@@ -285,7 +344,11 @@ def get_worker_status() -> Dict[str, Any]:
                     "key": "rt_sales_sync",
                     "name": "RT Sales Sync",
                     "status": "error",
+                    "reason_code": "error",
+                    "reason": "RT sales status unavailable",
+                    "last_run_at_utc": None,
                     "last_run_at_uae": None,
+                    "next_eligible_at_utc": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
                     "what": "Ingests real-time sales and maintains hourly ledger",
@@ -303,7 +366,11 @@ def get_worker_status() -> Dict[str, Any]:
                     "key": "vendor_po_sync",
                     "name": "Vendor PO Sync",
                     "status": "error",
+                    "reason_code": "error",
+                    "reason": "Vendor PO status unavailable",
+                    "last_run_at_utc": None,
                     "last_run_at_uae": None,
+                    "next_eligible_at_utc": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
                     "what": "Refreshes Vendor POs when run manually",

@@ -1,5 +1,5 @@
 (function () {
-  const WAITING_STATUSES = new Set(["cooldown", "locked"]);
+  const WAITING_STATUSES = new Set(["waiting", "cooldown", "locked"]);
 
   function statusIcon(status) {
     const value = (status || "").toLowerCase();
@@ -71,8 +71,26 @@
       const left = document.createElement("div");
       const titleEl = document.createElement("div");
       titleEl.className = "worker-title";
-      titleEl.textContent = `${statusIcon(worker.status)} ${worker.name || worker.key || "Worker"}`;
+      const badge = document.createElement("span");
+      const status = (worker.status || "").toLowerCase();
+      badge.className = `worker-status-pill worker-status-${status}`;
+      badge.textContent = (status === "waiting" ? "Waiting" : status === "error" ? "Error" : "OK").toUpperCase();
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = `${statusIcon(worker.status)} ${worker.name || worker.key || "Worker"}`;
+
+      titleEl.appendChild(nameSpan);
+      titleEl.appendChild(badge);
       left.appendChild(titleEl);
+
+      const reasonTextValue = worker.reason || worker.details;
+      if (reasonTextValue) {
+        const reason = document.createElement("div");
+        reason.className = "worker-reason";
+        const reasonText = worker.reason_code === "ok" ? reasonTextValue : `Waiting: ${reasonTextValue}`;
+        reason.textContent = reasonText;
+        left.appendChild(reason);
+      }
 
       if (worker.what) {
         const what = document.createElement("div");
@@ -171,10 +189,25 @@
     function openModal() {
       backdrop.style.display = "flex";
       fetchStatus(true);
+      startAutoRefresh();
     }
 
     function closeModal() {
       backdrop.style.display = "none";
+      stopAutoRefresh();
+    }
+
+    let refreshTimer = null;
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      refreshTimer = setInterval(() => fetchStatus(false), 10000);
+    }
+
+    function stopAutoRefresh() {
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
     }
 
     button.addEventListener("click", openModal);

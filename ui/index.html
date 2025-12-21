@@ -94,9 +94,14 @@
     .worker-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
     .worker-row:first-of-type { border-top:none; padding-top:0; margin-top:0; }
     .worker-title { font-weight:700; display:flex; align-items:center; gap:6px; }
+    .worker-reason { font-size:12px; color:#1f2937; margin-top:2px; }
     .worker-meta { font-size:12px; color:var(--muted); text-align:right; }
     .worker-what { font-size:12px; color:var(--muted); margin-top:2px; }
     .worker-details { font-size:12px; color:#b45309; margin-top:4px; }
+    .worker-status-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:10px; font-weight:800; letter-spacing:0.04em; }
+    .worker-status-ok { background:#dcfce7; color:#166534; }
+    .worker-status-waiting { background:#f1f5f9; color:#1d4ed8; }
+    .worker-status-error { background:#fee2e2; color:#b91c1c; }
     /* modal */
     .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
@@ -6013,7 +6018,7 @@
           <div id="workers-last-checked" class="muted-text" style="font-size:12px;">Last checked: -</div>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-outline-secondary" id="workers-refresh-btn" type="button">Refresh Status</button>
+          <button class="btn btn-outline-secondary" id="workers-refresh-btn" type="button">↻ Refresh Status</button>
           <button class="btn" id="workers-close-btn" type="button">Close</button>
         </div>
       </header>
