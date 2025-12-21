@@ -1,8 +1,14 @@
 (function () {
-  const WAITING_STATUSES = new Set(["cooldown", "locked"]);
+  const WAITING_STATUSES = new Set(["cooldown", "locked", "waiting"]);
+
+  function statusClass(status) {
+    const value = (status || "").toLowerCase();
+    return `worker-status-${value}`;
+  }
 
   function statusIcon(status) {
     const value = (status || "").toLowerCase();
+    if (value === "overdue") return "🟠";
     if (value === "error") return "🔴";
     if (WAITING_STATUSES.has(value)) return "🟡";
     if (value === "ok") return "🟢";
@@ -33,10 +39,17 @@
     const errorCount = summary && typeof summary.error_count === "number"
       ? summary.error_count
       : workers.filter((w) => (w.status || "").toLowerCase() === "error").length;
-    const overall = (summary && summary.overall) || (errorCount ? "error" : waitingCount ? "waiting" : "ok");
+    const overdueCount = summary && typeof summary.overdue_count === "number"
+      ? summary.overdue_count
+      : workers.filter((w) => (w.status || "").toLowerCase() === "overdue").length;
+    const overall = (summary && summary.overall) || (errorCount ? "error" : overdueCount ? "overdue" : waitingCount ? "waiting" : "ok");
 
     if (overall === "error" || errorCount > 0) {
       return "🛠 Workers: ERROR";
+    }
+    if (overall === "overdue" || overdueCount > 0) {
+      const count = overdueCount || 1;
+      return `🛠 Workers: ${count} Overdue`;
     }
     if (overall === "waiting" || waitingCount > 0) {
       const count = waitingCount || 1;
@@ -68,10 +81,32 @@
       const row = document.createElement("div");
       row.className = "worker-row";
 
+      const status = (worker.status || "").toLowerCase();
+      const overdueBy = Number(worker.overdue_by_minutes || 0);
+
       const left = document.createElement("div");
       const titleEl = document.createElement("div");
       titleEl.className = "worker-title";
-      titleEl.textContent = `${statusIcon(worker.status)} ${worker.name || worker.key || "Worker"}`;
+      const titleText = document.createElement("span");
+      titleText.textContent = `${statusIcon(worker.status)} ${worker.name || worker.key || "Worker"}`;
+      titleEl.appendChild(titleText);
+
+      const pill = document.createElement("span");
+      pill.className = `worker-status-pill ${statusClass(status)}`.trim();
+      if (status === "overdue" && overdueBy > 0) {
+        pill.textContent = `Overdue by ${overdueBy}m`;
+      } else if (status === "waiting") {
+        pill.textContent = "Waiting";
+      } else if (status === "cooldown") {
+        pill.textContent = "Cooldown";
+      } else if (status === "locked") {
+        pill.textContent = "Locked";
+      } else if (status === "error") {
+        pill.textContent = "Error";
+      } else {
+        pill.textContent = "OK";
+      }
+      titleEl.appendChild(pill);
       left.appendChild(titleEl);
 
       if (worker.what) {
@@ -79,6 +114,13 @@
         what.className = "worker-what";
         what.textContent = worker.what;
         left.appendChild(what);
+      }
+
+      if (overdueBy > 0) {
+        const overdue = document.createElement("div");
+        overdue.className = "worker-details";
+        overdue.textContent = `Overdue by ${overdueBy} minutes`;
+        left.appendChild(overdue);
       }
 
       if (worker.details) {

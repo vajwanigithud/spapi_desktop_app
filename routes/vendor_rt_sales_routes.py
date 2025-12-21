@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, FastAPI, Query
 
@@ -31,20 +31,50 @@ def _parse_iso_or_none(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _coerce_utc_datetime(value: Optional[Union[str, datetime]]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _coerce_utc_iso(value: Optional[Union[str, datetime]]) -> Optional[str]:
+    dt = _coerce_utc_datetime(value)
+    return dt.isoformat() if dt else None
+
+
 @router.get("/status")
 def get_vendor_rt_sales_status(
     marketplace_id: Optional[str] = Query(None, description="Marketplace ID (defaults to primary)")
 ) -> dict:
     resolved_marketplace = marketplace_id or DEFAULT_MARKETPLACE_ID
-    now_utc = datetime.now(timezone.utc)
-    ledger_summary = get_ledger_summary(resolved_marketplace, now_utc=now_utc)
+    now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+    ledger_summary_raw = get_ledger_summary(resolved_marketplace, now_utc=now_utc)
+
+    ledger_summary = dict(ledger_summary_raw) if isinstance(ledger_summary_raw, dict) else {}
+    for key, value in list(ledger_summary.items()):
+        if key.endswith("_utc"):
+            coerced = _coerce_utc_iso(value)
+            if coerced:
+                ledger_summary[key] = coerced
+
     lock_row = get_worker_lock(resolved_marketplace)
     expires_iso = lock_row.get("expires_at") if lock_row else None
     expires_dt = _parse_iso_or_none(expires_iso)
     worker_lock = {
         "held": bool(lock_row),
         "owner": lock_row.get("owner") if lock_row else None,
-        "expires_utc": expires_iso,
+        "expires_utc": _coerce_utc_iso(expires_iso) or expires_iso,
         "stale": bool(lock_row) and (expires_dt is None or expires_dt <= now_utc),
     }
 
@@ -53,7 +83,7 @@ def get_vendor_rt_sales_status(
     cooldown_until = None
     cooldown_until_dt = vendor_rt_sales.get_quota_cooldown_until()
     if cooldown_active and cooldown_until_dt:
-        cooldown_until = cooldown_until_dt.isoformat()
+        cooldown_until = _coerce_utc_iso(cooldown_until_dt)
 
     if not cooldown_active and worker_lock["held"] and not worker_lock["stale"]:
         cooldown_active = True
