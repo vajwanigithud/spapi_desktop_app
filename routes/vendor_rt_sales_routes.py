@@ -74,7 +74,7 @@ def get_vendor_rt_sales_status(
     worker_lock = {
         "held": bool(lock_row),
         "owner": lock_row.get("owner") if lock_row else None,
-        "expires_utc": _coerce_utc_iso(expires_iso) or expires_iso,
+        "expires_utc": _coerce_utc_iso(expires_iso),
         "stale": bool(lock_row) and (expires_dt is None or expires_dt <= now_utc),
     }
 
@@ -99,7 +99,7 @@ def get_vendor_rt_sales_status(
     return {
         "ok": True,
         "marketplace_id": resolved_marketplace,
-        "now_utc": now_utc.replace(microsecond=0).isoformat(),
+        "now_utc": now_utc.isoformat(),
         "cooldown": cooldown,
         "worker_lock": worker_lock,
         "ledger_summary": ledger_summary,
