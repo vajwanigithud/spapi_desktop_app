@@ -284,6 +284,7 @@ register_print_log_routes(app)
 register_vendor_inventory_realtime_routes(app)
 register_vendor_rt_inventory_routes(app)
 register_vendor_rt_sales_routes(app)
+register_worker_status_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
