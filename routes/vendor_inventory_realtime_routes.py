@@ -276,9 +276,8 @@ def _refresh_snapshot_payload() -> Dict[str, Any]:
         sync_callable=_refresh_singleflight_callable,
     )
 
-    should_materialize = result.get("status") != "refreshed"
     try:
-        snapshot = get_cached_realtime_inventory_snapshot(materialize=should_materialize)
+        snapshot = get_cached_realtime_inventory_snapshot(materialize=True)
     except TypeError:
         # Test stubs may not accept the optional materialize kwarg; fall back to default behavior.
         snapshot = get_cached_realtime_inventory_snapshot()
