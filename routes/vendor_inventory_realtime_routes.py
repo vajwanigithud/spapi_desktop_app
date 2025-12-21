@@ -276,7 +276,12 @@ def _refresh_snapshot_payload() -> Dict[str, Any]:
         sync_callable=_refresh_singleflight_callable,
     )
 
-    snapshot = get_cached_realtime_inventory_snapshot()
+    should_materialize = result.get("status") != "refreshed"
+    try:
+        snapshot = get_cached_realtime_inventory_snapshot(materialize=should_materialize)
+    except TypeError:
+        # Test stubs may not accept the optional materialize kwarg; fall back to default behavior.
+        snapshot = get_cached_realtime_inventory_snapshot()
     snapshot.setdefault("marketplace_id", marketplace_id)
 
     refresh_meta = result.get("refresh") or {}

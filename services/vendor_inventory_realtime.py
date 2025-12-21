@@ -624,7 +624,11 @@ def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THR
     return age > timedelta(hours=threshold_hours)
 
 
-def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) -> Dict[str, Any]:
+def get_cached_realtime_inventory_snapshot(
+    cache_path: Optional[Path] = None,
+    *,
+    materialize: bool = True,
+) -> Dict[str, Any]:
     snapshot = _load_snapshot_from_db()
     if snapshot.get("generated_at"):
         logger.info(
@@ -632,7 +636,8 @@ def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) ->
             snapshot.get("generated_at"),
         )
         decorated = _decorate_snapshot(snapshot)
-        materialize_vendor_inventory_snapshot(decorated, source="db_snapshot_load")
+        if materialize:
+            materialize_vendor_inventory_snapshot(decorated, source="db_snapshot_load")
         return decorated
 
     path = cache_path or DEFAULT_CACHE_PATH
@@ -648,7 +653,8 @@ def get_cached_realtime_inventory_snapshot(cache_path: Optional[Path] = None) ->
             except Exception as exc:
                 logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
             decorated = _decorate_snapshot(json_snapshot)
-            materialize_vendor_inventory_snapshot(decorated, source="json_bootstrap")
+            if materialize:
+                materialize_vendor_inventory_snapshot(decorated, source="json_bootstrap")
             return decorated
 
     logger.info("[VendorRtInventory] No cached realtime snapshot found; returning blank snapshot")
