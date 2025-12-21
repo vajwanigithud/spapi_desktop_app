@@ -531,6 +531,37 @@ def _materialize_rows_for_vendor_inventory(
     return rows
 
 
+def _warn_on_multiple_end_dates(conn, marketplace_id: str) -> None:
+    """
+    Defensive invariant: log a warning if multiple end_date windows exist post-materialization.
+    """
+    try:
+        end_date_rows = conn.execute(
+            "SELECT DISTINCT end_date FROM vendor_inventory_asin WHERE marketplace_id = ?",
+            (marketplace_id,),
+        ).fetchall()
+        distinct_end_dates = sorted(
+            {row["end_date"] for row in end_date_rows},
+            key=lambda value: "" if value is None else str(value),
+        )
+        total_row = conn.execute(
+            "SELECT COUNT(*) AS total_rows FROM vendor_inventory_asin WHERE marketplace_id = ?",
+            (marketplace_id,),
+        ).fetchone()
+        total_rows = int(total_row["total_rows"] or 0) if total_row and total_row["total_rows"] is not None else 0
+    except Exception as exc:
+        logger.debug("[VendorRtInventory] Skipping end_date invariant check for %s: %s", marketplace_id, exc)
+        return
+
+    if len(distinct_end_dates) > 1:
+        logger.warning(
+            "[VendorRtInventory] Multiple end_date windows detected after materialization for %s: %s (rows=%s)",
+            marketplace_id,
+            distinct_end_dates,
+            total_rows,
+        )
+
+
 def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: str) -> int:
     """
     Replace vendor_inventory_asin rows using realtime snapshot items.
@@ -567,6 +598,7 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
         ensure_vendor_inventory_table()
         with get_db_connection() as conn:
             replace_vendor_inventory_snapshot(conn, marketplace_id, rows)
+            _warn_on_multiple_end_dates(conn, marketplace_id)
         logger.info(
             "[VendorRtInventory] Materialized realtime snapshot (%s) into vendor_inventory_asin: %s rows",
             source,
