@@ -40,21 +40,47 @@ def _sample_snapshot():
                 "sellable": 7,
                 "startTime": now_iso,
                 "endTime": now_iso,
-            }
+            },
+            {
+                "asin": "B0TEST5678",
+                "sellable": 5,
+                "startTime": now_iso,
+                "endTime": now_iso,
+            },
         ],
     }
 
 
-def test_materialize_snapshot_writes_vendor_inventory_rows(temp_db):
+def test_materialize_snapshot_writes_vendor_inventory_rows(temp_db, monkeypatch):
+    monkeypatch.delenv("INVENTORY_RT_PRUNE_MIN_KEEP", raising=False)
     snapshot = _sample_snapshot()
     prune_meta = materialize_vendor_inventory_snapshot(snapshot, source="test")
     assert isinstance(prune_meta, dict)
-    assert prune_meta.get("prune_attempted") in (True, False)
-    assert prune_meta.get("prune_min_keep_count") is not None
-    assert prune_meta.get("pruned_rows") is not None
+    for key in (
+        "prune_attempted",
+        "prune_skipped_reason",
+        "prune_min_keep_count",
+        "pruned_rows",
+        "prune_kept_count",
+        "prune_before_count",
+    ):
+        assert key in prune_meta
+
+    assert prune_meta["prune_kept_count"] == 2
+    assert prune_meta["prune_min_keep_count"] == 20
+    assert prune_meta["prune_attempted"] is False
+    assert prune_meta["prune_skipped_reason"] == "below_threshold"
+    assert prune_meta["pruned_rows"] == 0
+
+    refresh_meta = snapshot.get("refresh") or {}
+    assert refresh_meta.get("prune_kept_count") == prune_meta["prune_kept_count"]
+    assert refresh_meta.get("prune_min_keep_count") == prune_meta["prune_min_keep_count"]
+    assert refresh_meta.get("prune_before_count") == prune_meta["prune_before_count"]
+
     with get_db_connection() as conn:
         rows = get_vendor_inventory_snapshot(conn, snapshot["marketplace_id"])
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["asin"] == "B0TEST1234"
-    assert row["sellable_onhand_units"] == 7
+    assert len(rows) == 2
+    asins = {row["asin"] for row in rows}
+    assert {"B0TEST1234", "B0TEST5678"} == asins
+    for row in rows:
+        assert row["sellable_onhand_units"] in (7, 5)
