@@ -387,7 +387,7 @@ def _fetch_purchase_orders_from_api(
             {
                 "method": "GET",
                 "path": DF_ORDERS_PATH,
-                "dataElements": ["purchaseOrders"],
+                # dataElements intentionally omitted; DF Orders rejects purchaseOrders as a data element
             }
         ]
     )
