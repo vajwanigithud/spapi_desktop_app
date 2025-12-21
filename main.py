@@ -111,6 +111,7 @@ from routes.printer_routes import register_printer_routes
 from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
 from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
+from routes.worker_status_routes import register_worker_status_routes
 from services import spapi_reports
 from services.async_utils import run_single_arg
 from services.catalog_images import attach_image_urls
