@@ -97,6 +97,19 @@
     .worker-meta { font-size:12px; color:var(--muted); text-align:right; }
     .worker-what { font-size:12px; color:var(--muted); margin-top:2px; }
     .worker-details { font-size:12px; color:#b45309; margin-top:4px; }
+    /* DF Payments */
+    #df-payments-tab table { font-size:13px; }
+    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
+    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
+    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-mini-table { width:100%; border-collapse: collapse; }
+    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
+    .dfp-table-wrap { padding:12px; overflow:auto; }
+    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
     /* modal */
     .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
@@ -630,6 +643,7 @@
         <button id="tab-btn-vrt-trends" class="tab-btn" data-tab="vrt-trends" onclick="showTab('vrt-trends')">Vendor Real Time Trends</button>
         <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" onclick="showTab('vrt-audit')">Vendor Real Time Audit</button>
         <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
+        <button class="tab-btn" data-tab="df-payments" onclick="showTab('df-payments')">DF Payments</button>
         <!-- <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button> -->
         <!-- <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button> -->
       </div>
@@ -778,6 +792,67 @@
       </div>
     </div>
   </div>
+    <div class="panel" id="df-payments-tab" style="display:none; margin-top:14px;">
+      <h2>DF Payments</h2>
+      <div class="dfp-controls">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
+          Lookback
+          <select id="dfp-lookback">
+            <option value="90" selected>90 days</option>
+            <option value="60">60 days</option>
+            <option value="30">30 days</option>
+            <option value="7">7 days</option>
+          </select>
+        </label>
+        <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
+        <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
+      </div>
+
+      <div class="dfp-dashboard">
+        <div class="dfp-card">
+          <div class="dfp-card-title">Invoices (incl VAT)</div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Total Sales (incl VAT)</th></tr>
+            </thead>
+            <tbody id="dfp-invoices-body">
+              <tr><td colspan="2" class="empty">No invoices yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="dfp-card">
+          <div class="dfp-card-title">Cash Flow Projection <span class="dfp-badge-muted">(reconciliation not enabled yet)</span></div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Unpaid from prev month</th></tr>
+            </thead>
+            <tbody id="dfp-cashflow-body">
+              <tr><td colspan="2" class="empty">Projection unavailable</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="dfp-table-wrap">
+        <table id="dfp-orders-table">
+          <thead>
+            <tr>
+              <th>PO</th>
+              <th>Order Date</th>
+              <th>Status</th>
+              <th style="text-align:right;">Units</th>
+              <th style="text-align:right;">Subtotal</th>
+              <th style="text-align:right;">VAT</th>
+              <th>Currency</th>
+              <th>SKU List</th>
+            </tr>
+          </thead>
+          <tbody id="dfp-orders-body">
+            <tr><td colspan="8" class="empty">No DF orders yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
     <!--
     <div class="panel" id="tester-tab" style="display:none; margin-top:14px;">
       <h2>SP-API Endpoint Tester</h2>
@@ -5947,6 +6022,7 @@
         { id: "tab-vrt-trends", tab: "vrt-trends" },
         { id: "tab-vrt-audit", tab: "vrt-audit" },
         { id: "inventory-tab", tab: "inventory" },
+        { id: "df-payments-tab", tab: "df-payments" },
       ];
       panels.forEach(({ id, tab }) => {
         const panelEl = document.getElementById(id);
@@ -5975,6 +6051,14 @@
       }
       if (tabName === "vrt-audit") {
         refreshAuditCalendar();
+      }
+      if (tabName === "df-payments") {
+        if (typeof initDfPaymentsTab === "function") {
+          initDfPaymentsTab();
+        }
+        if (typeof loadDfPaymentsState === "function") {
+          loadDfPaymentsState();
+        }
       }
       if (tabName === "pos") {
         refreshVendorPoStatus();
@@ -6028,6 +6112,7 @@
       </div>
     </div>
   </div>
+  <script src="/ui/js/df_payments.js"></script>
   <script src="/ui/js/workers_status.js"></script>
   <div class="backdrop" id="printer-settings-modal" style="display:none;">
     <div class="modal" style="max-width:720px;">

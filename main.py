@@ -105,6 +105,7 @@ import services.vendor_realtime_sales as vendor_realtime_sales_service
 from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
+from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.printer_routes import register_printer_routes
@@ -286,6 +287,7 @@ register_vendor_inventory_realtime_routes(app)
 register_vendor_rt_inventory_routes(app)
 register_vendor_rt_sales_routes(app)
 register_worker_status_routes(app)
+register_df_payments_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
