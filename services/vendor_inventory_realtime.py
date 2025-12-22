@@ -641,6 +641,14 @@ def load_accumulated_inventory(marketplace_id: str) -> Dict[str, Any]:
             except Exception:
                 as_of_utc = None
             rows = get_vendor_inventory_snapshot(conn, marketplace_id)
+            try:
+                sales_map = load_sales_30d_map(marketplace_id)
+                decorate_items_with_sales(rows, sales_map)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[VendorRtInventory] Failed to decorate accumulated inventory with sales_30d: %s",
+                    exc,
+                )
             if not as_of_utc:
                 candidates = [r.get("updated_at") for r in rows if r.get("updated_at")]
                 if candidates:
