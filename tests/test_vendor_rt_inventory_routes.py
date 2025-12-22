@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 
 import pytest
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from routes import vendor_inventory_realtime_routes as realtime_routes
 from routes import vendor_rt_inventory_routes as legacy_routes
 from services.spapi_reports import SpApiQuotaError
+from services import vendor_inventory_realtime as inventory_service
 
 
 def _build_app(include_legacy: bool = False) -> FastAPI:
@@ -89,6 +91,34 @@ def test_realtime_snapshot_endpoint_includes_catalog_and_sales(monkeypatch: pyte
     sales_map = {item["asin"]: item["sales_30d"] for item in data["items"]}
     assert sales_map["B0TEST001"] == 12
     assert sales_map["B0TEST002"] == 0
+
+
+def test_accumulated_endpoint_includes_sales_map(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app()
+
+    as_of = "2025-12-20T00:00:00Z"
+    rows = [
+        {
+            "asin": "B0SALES",
+            "sellable_onhand_units": 5,
+            "updated_at": as_of,
+        }
+    ]
+
+    monkeypatch.setattr(inventory_service, "ensure_vendor_inventory_table", lambda: None)
+    monkeypatch.setattr(inventory_service, "get_db_connection", lambda: contextlib.nullcontext(object()))
+    monkeypatch.setattr(inventory_service, "get_app_kv", lambda *_args, **_kwargs: as_of)
+    monkeypatch.setattr(inventory_service, "get_vendor_inventory_snapshot", lambda _conn, _mp: list(rows))
+    monkeypatch.setattr(inventory_service, "load_sales_30d_map", lambda _mp: {"B0SALES": 9})
+
+    client = TestClient(app)
+    resp = client.get("/api/vendor-inventory/realtime/accumulated")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["rows"][0]["sales_30d"] == 9
+    assert data["count"] == 1
+    assert data["as_of_utc"] == as_of
 
 
 def test_refresh_endpoint_handles_quota_error(monkeypatch: pytest.MonkeyPatch):
