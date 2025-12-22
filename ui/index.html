@@ -805,12 +805,15 @@
           </select>
         </label>
         <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
+        <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
         <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
+        <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
+        <div id="dfp-auto-status" class="dfp-status">Auto incremental: waiting…</div>
       </div>
 
       <div class="dfp-dashboard">
         <div class="dfp-card">
-          <div class="dfp-card-title">Invoices (incl VAT)</div>
+          <div class="dfp-card-title">Invoices (last 2 months)</div>
           <table class="dfp-mini-table">
             <thead>
               <tr><th>Month</th><th>Total Sales (incl VAT)</th></tr>
@@ -821,10 +824,10 @@
           </table>
         </div>
         <div class="dfp-card">
-          <div class="dfp-card-title">Cash Flow Projection <span class="dfp-badge-muted">(reconciliation not enabled yet)</span></div>
+          <div class="dfp-card-title">Cash Flow Projection (expected payments, 30d terms)</div>
           <table class="dfp-mini-table">
             <thead>
-              <tr><th>Month</th><th>Unpaid from prev month</th></tr>
+              <tr><th>Month</th><th>Expected payment</th></tr>
             </thead>
             <tbody id="dfp-cashflow-body">
               <tr><td colspan="2" class="empty">Projection unavailable</td></tr>
@@ -6108,6 +6111,7 @@
           <div class="worker-card" id="workers-section-inventory"></div>
           <div class="worker-card" id="workers-section-rt-sales"></div>
           <div class="worker-card" id="workers-section-vendor-po"></div>
+          <div class="worker-card" id="workers-section-df-payments"></div>
         </div>
       </div>
     </div>

@@ -53,6 +53,36 @@
     const rowsLabel = rowsCount != null ? rowsCount : state?.rows_90d || 0;
     const errorLabel = state?.last_error ? safe(state.last_error) : "None";
     setStatus(`Last fetch: ${lastLabel} | Rows (90d): ${rowsLabel} | Error: ${errorLabel}`);
+
+    const autoEl = document.getElementById("dfp-auto-status");
+    if (autoEl) {
+      const lastInc = state?.incremental_last_success_at_utc
+        || state?.last_incremental_finished_at
+        || state?.last_incremental_started_at;
+      const nextAuto = state?.incremental_next_eligible_at_utc;
+      const nextLabel = nextAuto ? formatUaeLabel(nextAuto) : "—";
+      const statusLabel = state?.incremental_worker_status || state?.last_incremental_status || "—";
+      const reason = state?.incremental_wait_reason || state?.incremental_worker_details || "";
+      const enabled = state?.incremental_auto_enabled !== false;
+      autoEl.textContent = enabled
+        ? `Auto incremental: ${statusLabel} | last: ${lastInc ? formatUaeLabel(lastInc) : "—"} | next: ${nextLabel}${reason ? ` (${reason})` : ""}`
+        : "Auto incremental: disabled until baseline Fetch Orders runs";
+    }
+  }
+
+  function renderDiagnostics(diagnostics) {
+    const el = document.getElementById("dfp-range");
+    if (!el) return;
+    if (!diagnostics) {
+      el.textContent = "Loaded: — orders | Range: — → — (UTC)";
+      return;
+    }
+    const count = diagnostics.orders_count != null ? diagnostics.orders_count : "—";
+    const minDate = diagnostics.min_order_date_utc || "—";
+    const maxDate = diagnostics.max_order_date_utc || "—";
+    const pages = diagnostics.pages_fetched != null ? diagnostics.pages_fetched : "—";
+    const lookback = diagnostics.lookback_days_applied != null ? diagnostics.lookback_days_applied : "—";
+    el.textContent = `Loaded: ${count} orders | Range: ${minDate} → ${maxDate} (UTC) | Pages: ${pages} | Lookback applied: ${lookback}d`;
   }
 
   function renderInvoices(invoices) {
@@ -81,8 +111,9 @@
     tbody.innerHTML = rows
       .map(row => {
         const month = escapeHtmlLocal(row.month || "—");
-        const unpaid = formatAmount(row.unpaid_amount);
-        return `<tr><td>${month}</td><td style="text-align:right;">${unpaid}</td></tr>`;
+        const amountRaw = row.expected_payment_amount != null ? row.expected_payment_amount : row.unpaid_amount;
+        const amount = formatAmount(amountRaw);
+        return `<tr><td>${month}</td><td style="text-align:right;">${amount}</td></tr>`;
       })
       .join("");
   }
@@ -127,8 +158,10 @@
     const orders = data?.orders || [];
     const dashboard = data?.dashboard || {};
     const state = data?.state || {};
+    const diagnostics = state?.diagnostics;
 
     renderStatus(state, orders.length);
+    renderDiagnostics(diagnostics);
     renderInvoices(dashboard.invoices_by_month || []);
     renderCashflow(dashboard.cashflow_projection || []);
     renderOrders(orders);
@@ -155,12 +188,14 @@
 
   async function triggerFetch() {
     const btn = document.getElementById("dfp-fetch-btn");
+    const incBtn = document.getElementById("dfp-incremental-btn");
     const lookbackSel = document.getElementById("dfp-lookback");
     const lookback = lookbackSel ? Number(lookbackSel.value || 90) : 90;
     if (btn) {
       btn.disabled = true;
       btn.textContent = "Fetching…";
     }
+    if (incBtn) incBtn.disabled = true;
     setStatus("Fetching DF orders…");
     try {
       const resp = await fetch("/api/df-payments/fetch", {
@@ -182,6 +217,49 @@
         btn.disabled = false;
         btn.textContent = "Fetch Orders";
       }
+      if (incBtn) incBtn.disabled = false;
+    }
+  }
+
+  async function triggerIncremental() {
+    const btn = document.getElementById("dfp-incremental-btn");
+    const fetchBtn = document.getElementById("dfp-fetch-btn");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Scanning…";
+    }
+    if (fetchBtn) fetchBtn.disabled = true;
+    setStatus("Incremental scan in progress…");
+    try {
+      const resp = await fetch("/api/df-payments/incremental", { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok === false) {
+        const detail = data?.detail || data?.error || resp.statusText;
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+
+      const status = (data.status || "").toLowerCase();
+      if (status === "incremental_refreshed") {
+        setStatus(`Incremental scan: +${data.orders_upserted ?? 0} orders`);
+      } else if (status === "cooldown") {
+        const next = data.next_eligible_utc ? formatUaeLabel(data.next_eligible_utc) : "later";
+        setStatus(`Incremental scan: cooldown until ${next}`);
+      } else if (status === "waiting" && (data.reason || "") === "baseline_required") {
+        setStatus("Incremental scan: Run Fetch Orders once to enable auto scans");
+      } else if (status === "locked") {
+        setStatus("Incremental scan already running");
+      } else {
+        setStatus(`Incremental scan status: ${status || "unknown"}`);
+      }
+      await loadDfPaymentsState();
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, true);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Incremental Scan";
+      }
+      if (fetchBtn) fetchBtn.disabled = false;
     }
   }
 
@@ -190,6 +268,10 @@
     const btn = document.getElementById("dfp-fetch-btn");
     if (btn) {
       btn.addEventListener("click", triggerFetch);
+    }
+    const incBtn = document.getElementById("dfp-incremental-btn");
+    if (incBtn) {
+      incBtn.addEventListener("click", triggerIncremental);
     }
     dfpInitialized = true;
   }

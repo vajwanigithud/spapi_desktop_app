@@ -8,7 +8,11 @@ from pydantic import BaseModel, Field
 
 from config import MARKETPLACE_ID
 from services.db import ensure_df_payments_tables
-from services.df_payments import get_df_payments_state, refresh_df_payments
+from services.df_payments import (
+    get_df_payments_state,
+    incremental_refresh_df_payments,
+    refresh_df_payments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,22 @@ def fetch_orders(payload: FetchRequest = Body(default_factory=FetchRequest)) -> 
         raise
     except Exception as exc:
         logger.error("[DF Payments] Fetch failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/incremental")
+def incremental_scan() -> dict:
+    try:
+        result = incremental_refresh_df_payments(
+            DEFAULT_MARKETPLACE_ID,
+            triggered_by="manual",
+            force=True,
+        )
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[DF Payments] Incremental scan failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

@@ -689,7 +689,22 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
         last_fetch_status TEXT,
         last_error TEXT,
         last_lookback_days INTEGER,
-        rows_90d INTEGER
+        rows_90d INTEGER,
+        pages_fetched INTEGER,
+        fetched_orders_total INTEGER,
+        unique_po_total INTEGER,
+        rows_in_db_window INTEGER,
+        limit_used INTEGER,
+        last_incremental_started_at TEXT,
+        last_incremental_finished_at TEXT,
+        last_incremental_status TEXT,
+        last_incremental_error TEXT,
+        last_seen_order_date_utc TEXT,
+        last_incremental_orders_upserted INTEGER,
+        last_incremental_pages_fetched INTEGER,
+        incremental_last_attempt_at_utc TEXT,
+        incremental_last_success_at_utc TEXT,
+        incremental_cooldown_until_utc TEXT
     )
     """
 
@@ -703,6 +718,30 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
             conn.execute(orders_sql)
             conn.execute(state_sql)
             conn.execute(index_sql)
+            try:
+                conn.execute("ALTER TABLE df_payments_state ADD COLUMN pages_fetched INTEGER")
+            except Exception:
+                pass
+            for col in (
+                "fetched_orders_total INTEGER",
+                "unique_po_total INTEGER",
+                "rows_in_db_window INTEGER",
+                "limit_used INTEGER",
+                "last_incremental_started_at TEXT",
+                "last_incremental_finished_at TEXT",
+                "last_incremental_status TEXT",
+                "last_incremental_error TEXT",
+                "last_seen_order_date_utc TEXT",
+                "last_incremental_orders_upserted INTEGER",
+                "last_incremental_pages_fetched INTEGER",
+                "incremental_last_attempt_at_utc TEXT",
+                "incremental_last_success_at_utc TEXT",
+                "incremental_cooldown_until_utc TEXT",
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE df_payments_state ADD COLUMN {col}")
+                except Exception:
+                    pass
             conn.commit()
 
 
