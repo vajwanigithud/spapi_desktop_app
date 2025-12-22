@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 
 from routes import vendor_inventory_realtime_routes as realtime_routes
 from routes import vendor_rt_inventory_routes as legacy_routes
-from services.spapi_reports import SpApiQuotaError
 from services import vendor_inventory_realtime as inventory_service
+from services.spapi_reports import SpApiQuotaError
 
 
 def _build_app(include_legacy: bool = False) -> FastAPI:
