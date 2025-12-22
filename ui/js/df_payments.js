@@ -122,7 +122,7 @@
     const tbody = document.getElementById("dfp-orders-body");
     if (!tbody) return;
     if (!orders || !orders.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No DF orders yet</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty">No DF orders yet</td></tr>';
       return;
     }
 
@@ -136,6 +136,9 @@
       const currency = escapeHtmlLocal(order.currency_code || "AED");
       const skuList = safe(order.sku_list || "");
       const truncated = truncateText(skuList, 80);
+      const paymentStatus = escapeHtmlLocal(order.payment_status || "—");
+      const paymentDate = escapeHtmlLocal(order.payment_date || "—");
+      const remittanceIds = escapeHtmlLocal(order.remittance_ids || "—");
 
       return `
         <tr>
@@ -146,12 +149,60 @@
           <td style="text-align:right;">${subtotal}</td>
           <td style="text-align:right;">${vat}</td>
           <td>${currency}</td>
+          <td>${paymentStatus}</td>
+          <td>${paymentDate}</td>
+          <td>${remittanceIds}</td>
           <td title="${escapeHtmlLocal(skuList)}"><span class="dfp-sku">${escapeHtmlLocal(truncated)}</span></td>
         </tr>
       `;
     });
 
     tbody.innerHTML = rows.join("");
+  }
+
+  async function triggerReconcile() {
+    const btn = document.getElementById("dfp-reconcile-btn");
+    const fetchBtn = document.getElementById("dfp-fetch-btn");
+    const incBtn = document.getElementById("dfp-incremental-btn");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Reconciling…";
+    }
+    if (fetchBtn) fetchBtn.disabled = true;
+    if (incBtn) incBtn.disabled = true;
+    setStatus("Reconciling payments from Gmail…");
+    try {
+      const resp = await fetch("/api/df-payments/remittances/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ importFirst: true }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data?.ok === false) {
+        const detail = data?.detail || data?.error || resp.statusText;
+        throw new Error(detail || `HTTP ${resp.status}`);
+      }
+
+      const importBlock = data.import || {};
+      if (importBlock.status === "disabled") {
+        setStatus("Remittance import disabled: configure Gmail IMAP env vars", true);
+      } else {
+        const inserted = importBlock.rows_inserted ?? 0;
+        const processed = importBlock.messages_processed ?? importBlock.messages_found ?? 0;
+        setStatus(`Reconciled: ${data.orders_updated ?? 0} orders | imported ${inserted} rows from ${processed} messages`);
+      }
+
+      await loadDfPaymentsState();
+    } catch (err) {
+      setStatus(`Error: ${err.message}`, true);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Reconcile Paid (Gmail)";
+      }
+      if (fetchBtn) fetchBtn.disabled = false;
+      if (incBtn) incBtn.disabled = false;
+    }
   }
 
   function renderState(data) {
@@ -272,6 +323,10 @@
     const incBtn = document.getElementById("dfp-incremental-btn");
     if (incBtn) {
       incBtn.addEventListener("click", triggerIncremental);
+    }
+    const recBtn = document.getElementById("dfp-reconcile-btn");
+    if (recBtn) {
+      recBtn.addEventListener("click", triggerReconcile);
     }
     dfpInitialized = true;
   }

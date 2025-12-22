@@ -3,14 +3,20 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
-from services.db import ensure_df_payments_tables, get_db_connection_for_path
+from services.db import (
+    df_remittances_insert_many,
+    ensure_df_payments_tables,
+    get_db_connection_for_path,
+)
 from services.df_payments import (
     _fetch_purchase_orders_from_api,
     compute_incremental_eligibility,
     get_df_payments_state,
     incremental_refresh_df_payments,
+    reconcile_df_payments_from_remittances,
     refresh_df_payments,
 )
+from services.df_remittances_gmail import parse_remittance_email_body
 
 MARKETPLACE_ID = "A2TEST-DFP"
 
@@ -631,3 +637,147 @@ def test_incremental_lock_prevents_overlap(tmp_path):
 
     release_evt.set()
     thread.join(timeout=2)
+
+
+def test_parse_remittance_email_body_matches_gas():
+    body = (
+        "Payment number : REM-123\n"
+        "Payment date : 05-JAN-2025\n"
+        "Payment currency : USD\n\n"
+        "INV001 01-JAN-2025 PO123/ABC 100.00 0.00\n"
+        "INV002 02-JAN-2025 PO999/XYZ 200,000.50 0.00\n"
+    )
+
+    rows = parse_remittance_email_body(body)
+
+    assert len(rows) == 2
+    assert rows[0]["invoice_number"] == "INV001"
+    assert rows[0]["purchase_order_number"] == "PO123"
+    assert rows[0]["payment_date"] == "05-JAN-2025"
+    assert rows[0]["currency"] == "USD"
+    assert rows[0]["remittance_id"] == "REM-123"
+    assert round(rows[0]["paid_amount"], 2) == 100.0
+
+    assert rows[1]["invoice_number"] == "INV002"
+    assert rows[1]["purchase_order_number"] == "PO999"
+    assert round(rows[1]["paid_amount"], 2) == 200000.5
+
+
+def test_reconcile_marks_paid(tmp_path):
+    db_path = tmp_path / "df_payments_reconcile.db"
+    ensure_df_payments_tables(db_path)
+
+    now_iso = datetime(2025, 1, 5, tzinfo=timezone.utc).isoformat()
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-PAID",
+                "CO-PAID",
+                now_iso,
+                "OPEN",
+                1,
+                1,
+                100.0,
+                5.0,
+                "AED",
+                "SKU-PAID",
+                now_iso,
+            ),
+        )
+        conn.commit()
+
+    df_remittances_insert_many(
+        [
+            {
+                "invoice_number": "INV-PAID",
+                "purchase_order_number": "PO-PAID",
+                "payment_date": "2025-01-05",
+                "paid_amount": 105.0,
+                "currency": "AED",
+                "remittance_id": "REM-1",
+                "gmail_message_id": "gm-1",
+                "imported_at_utc": now_iso,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    result = reconcile_df_payments_from_remittances(MARKETPLACE_ID, db_path=db_path)
+    assert result["status"] == "reconciled"
+
+    with get_db_connection_for_path(db_path) as conn:
+        row = conn.execute(
+            "SELECT payment_status, payment_date, remittance_ids FROM df_payments_orders WHERE purchase_order_number = ?",
+            ("PO-PAID",),
+        ).fetchone()
+
+    assert row["payment_status"] == "PAID"
+    assert row["payment_date"] == "2025-01-05"
+    assert row["remittance_ids"] == "REM-1"
+
+
+def test_currency_mismatch_is_ignored(tmp_path):
+    db_path = tmp_path / "df_payments_currency.db"
+    ensure_df_payments_tables(db_path)
+
+    now_iso = datetime(2025, 2, 1, tzinfo=timezone.utc).isoformat()
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-CURR",
+                "CO-CURR",
+                now_iso,
+                "OPEN",
+                1,
+                1,
+                50.0,
+                5.0,
+                "AED",
+                "SKU-CURR",
+                now_iso,
+            ),
+        )
+        conn.commit()
+
+    df_remittances_insert_many(
+        [
+            {
+                "invoice_number": "INV-CURR",
+                "purchase_order_number": "PO-CURR",
+                "payment_date": "2025-02-02",
+                "paid_amount": 55.0,
+                "currency": "USD",
+                "remittance_id": "REM-CURR",
+                "gmail_message_id": "gm-curr",
+                "imported_at_utc": now_iso,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    result = reconcile_df_payments_from_remittances(MARKETPLACE_ID, db_path=db_path)
+    assert result["orders_checked"] == 1
+
+    with get_db_connection_for_path(db_path) as conn:
+        row = conn.execute(
+            "SELECT payment_status, payment_date, remittance_ids FROM df_payments_orders WHERE purchase_order_number = ?",
+            ("PO-CURR",),
+        ).fetchone()
+
+    assert row["payment_status"] == "UNPAID"
+    assert row["payment_date"] == ""
+    assert row["remittance_ids"] == ""

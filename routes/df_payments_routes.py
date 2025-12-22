@@ -11,8 +11,10 @@ from services.db import ensure_df_payments_tables
 from services.df_payments import (
     get_df_payments_state,
     incremental_refresh_df_payments,
+    reconcile_df_payments_from_remittances,
     refresh_df_payments,
 )
+from services.df_remittances_gmail import import_df_remittances_from_gmail
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,13 @@ class FetchRequest(BaseModel):
     lookback_days: Optional[int] = Field(90, ge=1, le=90)
     ship_from_party_id: Optional[str] = Field(None, alias="shipFromPartyId")
     limit: Optional[int] = Field(50, ge=1, le=100)
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class ReconcileRequest(BaseModel):
+    import_first: bool = Field(False, alias="importFirst")
 
     class Config:
         allow_population_by_field_name = True
@@ -64,6 +73,36 @@ def incremental_scan() -> dict:
         raise
     except Exception as exc:
         logger.error("[DF Payments] Incremental scan failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/remittances/import")
+def import_remittances() -> dict:
+    try:
+        result = import_df_remittances_from_gmail()
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[DF Payments] Remittance import failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/remittances/reconcile")
+def reconcile(payload: ReconcileRequest = Body(default_factory=ReconcileRequest)) -> dict:
+    try:
+        import_result = None
+        if payload.import_first:
+            import_result = import_df_remittances_from_gmail()
+        reconcile_result = reconcile_df_payments_from_remittances()
+        response = {"ok": True, **reconcile_result}
+        if import_result is not None:
+            response["import"] = import_result
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[DF Payments] Reconcile failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
