@@ -59,6 +59,8 @@ def incremental_scan() -> dict:
             triggered_by="manual",
             force=True,
         )
+        if (result.get("status") or "").lower() == "locked":
+            raise HTTPException(status_code=409, detail=result.get("reason") or "Incremental scan already running")
         return {"ok": True, **result}
     except HTTPException:
         raise

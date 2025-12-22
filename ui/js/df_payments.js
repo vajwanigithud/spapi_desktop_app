@@ -32,6 +32,19 @@
     return numberFormatter.format(value);
   }
 
+  function formatUtcLabel(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return `${ts} UTC`;
+    const pad = v => String(v).padStart(2, "0");
+    const year = d.getUTCFullYear();
+    const month = pad(d.getUTCMonth() + 1);
+    const day = pad(d.getUTCDate());
+    const hours = pad(d.getUTCHours());
+    const mins = pad(d.getUTCMinutes());
+    return `${year}-${month}-${day} ${hours}:${mins} UTC`;
+  }
+
   function formatUaeLabel(ts) {
     if (!ts) return "—";
     if (typeof formatUaeTime === "function") {
@@ -49,7 +62,7 @@
 
   function renderStatus(state, rowsCount) {
     const lastFetch = state?.last_fetch_finished_at || state?.last_fetch_started_at;
-    const lastLabel = lastFetch ? formatUaeLabel(lastFetch) : "—";
+    const lastLabel = lastFetch ? formatUtcLabel(lastFetch) : "—";
     const rowsLabel = rowsCount != null ? rowsCount : state?.rows_90d || 0;
     const errorLabel = state?.last_error ? safe(state.last_error) : "None";
     setStatus(`Last fetch: ${lastLabel} | Rows (90d): ${rowsLabel} | Error: ${errorLabel}`);
@@ -60,13 +73,20 @@
         || state?.last_incremental_finished_at
         || state?.last_incremental_started_at;
       const nextAuto = state?.incremental_next_eligible_at_utc;
-      const nextLabel = nextAuto ? formatUaeLabel(nextAuto) : "—";
+      const nextLabel = nextAuto ? formatUtcLabel(nextAuto) : "—";
       const statusLabel = state?.incremental_worker_status || state?.last_incremental_status || "—";
-      const reason = state?.incremental_wait_reason || state?.incremental_worker_details || "";
+      const reasonRaw = state?.incremental_wait_reason || state?.incremental_worker_details || "";
+      const reasonLower = reasonRaw.toLowerCase();
       const enabled = state?.incremental_auto_enabled !== false;
-      autoEl.textContent = enabled
-        ? `Auto incremental: ${statusLabel} | last: ${lastInc ? formatUaeLabel(lastInc) : "—"} | next: ${nextLabel}${reason ? ` (${reason})` : ""}`
-        : "Auto incremental: disabled until baseline Fetch Orders runs";
+      if (enabled === false && reasonLower.includes("disabled")) {
+        autoEl.textContent = "Auto incremental: disabled by config";
+        return;
+      }
+      if (!enabled || reasonLower.includes("fetch orders")) {
+        autoEl.textContent = "Auto incremental: disabled until baseline Fetch Orders runs";
+        return;
+      }
+      autoEl.textContent = `Auto incremental: ${statusLabel} | last: ${lastInc ? formatUtcLabel(lastInc) : "—"} | next: ${nextLabel}${reasonRaw ? ` (${reasonRaw})` : ""}`;
     }
   }
 
@@ -78,8 +98,8 @@
       return;
     }
     const count = diagnostics.orders_count != null ? diagnostics.orders_count : "—";
-    const minDate = diagnostics.min_order_date_utc || "—";
-    const maxDate = diagnostics.max_order_date_utc || "—";
+    const minDate = diagnostics.min_order_date_utc ? formatUtcLabel(diagnostics.min_order_date_utc) : "—";
+    const maxDate = diagnostics.max_order_date_utc ? formatUtcLabel(diagnostics.max_order_date_utc) : "—";
     const pages = diagnostics.pages_fetched != null ? diagnostics.pages_fetched : "—";
     const lookback = diagnostics.lookback_days_applied != null ? diagnostics.lookback_days_applied : "—";
     el.textContent = `Loaded: ${count} orders | Range: ${minDate} → ${maxDate} (UTC) | Pages: ${pages} | Lookback applied: ${lookback}d`;
@@ -128,7 +148,7 @@
 
     const rows = orders.map(order => {
       const po = escapeHtmlLocal(order.purchase_order_number || "—");
-      const date = escapeHtmlLocal(order.order_date_utc || "—");
+      const date = formatUtcLabel(order.order_date_utc || "");
       const status = escapeHtmlLocal(order.order_status || "—");
       const units = Number(order.total_units || 0);
       const subtotal = formatAmount(order.subtotal_amount);
@@ -242,7 +262,7 @@
       if (status === "incremental_refreshed") {
         setStatus(`Incremental scan: +${data.orders_upserted ?? 0} orders`);
       } else if (status === "cooldown") {
-        const next = data.next_eligible_utc ? formatUaeLabel(data.next_eligible_utc) : "later";
+        const next = data.next_eligible_utc ? formatUtcLabel(data.next_eligible_utc) : "later";
         setStatus(`Incremental scan: cooldown until ${next}`);
       } else if (status === "waiting" && (data.reason || "") === "baseline_required") {
         setStatus("Incremental scan: Run Fetch Orders once to enable auto scans");

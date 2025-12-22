@@ -15,6 +15,13 @@ from services.df_payments import (
 MARKETPLACE_ID = "A2TEST-DFP"
 
 
+def _assert_utc_iso(value: str):
+    assert value is not None
+    assert value.endswith("+00:00")
+    dt = datetime.fromisoformat(value)
+    assert dt.tzinfo == timezone.utc
+
+
 def _sample_payload(now_utc: datetime) -> dict:
     recent = (now_utc - timedelta(days=2)).isoformat()
     old = (now_utc - timedelta(days=120)).isoformat()
@@ -460,6 +467,10 @@ def test_df_payments_incremental_uses_buffer(monkeypatch, tmp_path):
     state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
     assert state["state"]["rows_90d"] == 2
     assert state["state"]["last_seen_order_date_utc"]
+    _assert_utc_iso(state["state"]["last_seen_order_date_utc"])
+    _assert_utc_iso(state["state"]["incremental_last_success_at_utc"])
+    if state["state"].get("incremental_next_eligible_at_utc"):
+        _assert_utc_iso(state["state"]["incremental_next_eligible_at_utc"])
     po_numbers = {o["purchase_order_number"] for o in state["orders"]}
     assert po_numbers == {"PO-INIT", "PO-NEW"}
 
@@ -526,10 +537,15 @@ def test_manual_success_resets_auto_timer(tmp_path):
     state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=manual_now)
     last_success_iso = state["state"].get("incremental_last_success_at_utc")
     assert last_success_iso and last_success_iso.startswith(manual_now.replace(microsecond=0).isoformat())
+    _assert_utc_iso(last_success_iso)
     next_auto_iso = state["state"].get("incremental_next_eligible_at_utc")
     assert next_auto_iso
+    _assert_utc_iso(next_auto_iso)
     next_auto = datetime.fromisoformat(next_auto_iso)
     assert next_auto == manual_now.replace(microsecond=0) + timedelta(minutes=10)
+    last_seen = state["state"].get("last_seen_order_date_utc")
+    if last_seen:
+        _assert_utc_iso(last_seen)
 
 
 def test_auto_waits_for_baseline(tmp_path):
@@ -581,6 +597,21 @@ def test_auto_allows_when_rows_exist_without_fetch_state(tmp_path):
     eligibility = compute_incremental_eligibility(state["state"], fixed_now)
     assert eligibility["eligible"] is True
     assert eligibility["auto_enabled"] is True
+
+
+def test_auto_disabled_by_flag():
+    fixed_now = datetime(2025, 9, 1, 12, 0, tzinfo=timezone.utc)
+    state = {
+        "last_fetch_status": "SUCCESS",
+        "last_fetch_finished_at": fixed_now.isoformat(),
+        "rows_90d": 1,
+    }
+
+    eligibility = compute_incremental_eligibility(state, fixed_now, auto_enabled_flag=False)
+
+    assert eligibility["auto_enabled"] is False
+    assert (eligibility.get("reason") or "").lower().find("disabled") != -1
+    assert eligibility.get("worker_status") in {"disabled", "waiting"}
 
 
 def test_incremental_lock_prevents_overlap(tmp_path):

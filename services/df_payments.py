@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -31,6 +32,7 @@ DF_PAYMENTS_TERMS_DAYS = 30
 INCREMENTAL_COOLDOWN_SECONDS = 600
 INCREMENTAL_FAILURE_BACKOFF_SECONDS = int(os.getenv("DF_PAYMENTS_FAILURE_BACKOFF_SECONDS", "180"))
 INCREMENTAL_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("DF_PAYMENTS_SCHEDULER_INTERVAL_SECONDS", "45"))
+DFP_AUTO_INCREMENTAL_ENABLED = os.getenv("DFP_AUTO_INCREMENTAL_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
 
 _incremental_lock = Lock()
 _dfp_scheduler_thread: Optional[threading.Thread] = None
@@ -219,7 +221,7 @@ def _build_order_summary(order: Dict[str, Any], *, now_utc: datetime) -> Optiona
         "vat_amount": float(vat_amount),
         "currency_code": currency_code or "AED",
         "sku_list": ", ".join(seen_skus),
-        "last_updated_utc": now_utc.replace(microsecond=0).isoformat(),
+        "last_updated_utc": _iso(now_utc),
     }
 
 
@@ -271,7 +273,7 @@ def _upsert_orders(
 
 
 def _prune_old_orders(marketplace_id: str, *, now_utc: datetime, db_path: Path) -> int:
-    cutoff_iso = (now_utc - timedelta(days=MAX_LOOKBACK_DAYS)).replace(microsecond=0).isoformat()
+    cutoff_iso = _iso(now_utc - timedelta(days=MAX_LOOKBACK_DAYS))
     with _connection(db_path) as conn:
         cur = conn.execute(
             "DELETE FROM df_payments_orders WHERE marketplace_id = ? AND order_date_utc < ?",
@@ -302,8 +304,8 @@ def _count_orders_in_window(marketplace_id: str, *, db_path: Path, window_start:
             """,
             (
                 marketplace_id,
-                window_start.replace(microsecond=0).isoformat(),
-                window_end.replace(microsecond=0).isoformat(),
+                _iso(window_start),
+                _iso(window_end),
             ),
         ).fetchone()
         return int(row["c"] if hasattr(row, "keys") else row[0])
@@ -457,6 +459,7 @@ def compute_incremental_eligibility(
     *,
     cooldown_seconds: int = INCREMENTAL_COOLDOWN_SECONDS,
     failure_backoff_seconds: int = INCREMENTAL_FAILURE_BACKOFF_SECONDS,
+    auto_enabled_flag: bool = DFP_AUTO_INCREMENTAL_ENABLED,
 ) -> Dict[str, Any]:
     """Compute whether DF Payments incremental scan is eligible to run.
 
@@ -473,10 +476,15 @@ def compute_incremental_eligibility(
         or rows_in_window > 0
         or orders_count > 0
     )
-    auto_enabled = bool(baseline_ok)
+    auto_enabled = bool(baseline_ok) and bool(auto_enabled_flag)
 
     last_status = (state.get("last_incremental_status") or "").upper()
-    in_progress = last_status == "IN_PROGRESS" or (state.get("last_fetch_status") or "").upper() == "IN_PROGRESS"
+    lock_held = _incremental_lock.locked()
+    in_progress = (
+        last_status == "IN_PROGRESS"
+        or (state.get("last_fetch_status") or "").upper() == "IN_PROGRESS"
+        or lock_held
+    )
 
     last_attempt = _parse_iso_dt(state.get("incremental_last_attempt_at_utc") or state.get("last_incremental_started_at"))
     last_success = _parse_iso_dt(state.get("incremental_last_success_at_utc"))
@@ -501,7 +509,11 @@ def compute_incremental_eligibility(
     worker_status = "ok"
     worker_details: Optional[str] = None
 
-    if not baseline_ok:
+    if not auto_enabled_flag:
+        worker_status = "disabled"
+        reason = "disabled"
+        worker_details = "Auto incremental disabled via DFP_AUTO_INCREMENTAL_ENABLED"
+    elif not baseline_ok:
         worker_status = "waiting"
         reason = "Run Fetch Orders first"
     elif in_progress:
@@ -509,7 +521,7 @@ def compute_incremental_eligibility(
         reason = "Lock held by another scan"
     elif next_eligible_dt and next_eligible_dt > effective_now:
         worker_status = "waiting"
-        reason = f"cooldown until {next_eligible_dt.isoformat()}"
+        reason = f"cooldown until {_iso(next_eligible_dt)}"
 
     if last_status == "ERROR":
         worker_status = "error"
@@ -750,8 +762,8 @@ def _fetch_purchase_orders_from_api(
     effective_limit = max(1, min(int(limit or DEFAULT_LIMIT), 100))
     base_params = {
         "includeDetails": "true",
-        "createdAfter": created_after.isoformat(),
-        "createdBefore": created_before.isoformat(),
+        "createdAfter": _iso(created_after),
+        "createdBefore": _iso(created_before),
         "limit": effective_limit,
     }
     if ship_from_party_id:
@@ -850,7 +862,7 @@ def refresh_df_payments(
     lookback = _clamp_lookback(lookback_days)
     fetch_func = fetcher or _fetch_purchase_orders_from_api
 
-    started_iso = effective_now.replace(microsecond=0).isoformat()
+    started_iso = _iso(effective_now)
     _update_state(
         marketplace_id,
         db_path=db_path,
@@ -901,7 +913,7 @@ def refresh_df_payments(
             rows_in_window,
             fetched_meta.get("pages"),
         )
-        finished_iso = _now_utc().isoformat()
+        finished_iso = _iso(_now_utc())
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -935,7 +947,7 @@ def refresh_df_payments(
             "last_seen_order_date_utc": max_order_iso,
         }
     except Exception as exc:
-        finished_iso = _now_utc().isoformat()
+        finished_iso = _iso(_now_utc())
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -995,7 +1007,7 @@ def incremental_refresh_df_payments(
     created_after_dt = max(candidates) if candidates else fallback_start
     created_before_dt = effective_now
 
-    started_iso = effective_now.replace(microsecond=0).isoformat()
+    started_iso = _iso(effective_now)
     _update_state(
         marketplace_id,
         db_path=db_path,
@@ -1051,7 +1063,7 @@ def incremental_refresh_df_payments(
         db_max_iso = _max_order_date(marketplace_id, db_path=db_path)
         db_max_dt = _parse_iso_dt(db_max_iso) if db_max_iso else None
         chosen_max_dt = max([dt for dt in (fetched_max_dt, db_max_dt) if dt], default=None)
-        chosen_max_iso = chosen_max_dt.replace(microsecond=0).isoformat() if chosen_max_dt else state_row.get("last_seen_order_date_utc")
+        chosen_max_iso = _iso(chosen_max_dt) if chosen_max_dt else state_row.get("last_seen_order_date_utc")
 
         LOGGER.info(
             "[DF Payments] Incremental summary | trigger=%s | fetched_orders_total=%s | unique_po_total=%s | rows_in_db_window=%s | pages_fetched=%s",
@@ -1063,9 +1075,9 @@ def incremental_refresh_df_payments(
         )
 
         finished_dt = now_utc or _now_utc()
-        finished_iso = finished_dt.replace(microsecond=0).isoformat()
+        finished_iso = _iso(finished_dt)
         cooldown_until_dt = finished_dt + timedelta(seconds=cooldown_seconds)
-        cooldown_until_iso = cooldown_until_dt.replace(microsecond=0).isoformat()
+        cooldown_until_iso = _iso(cooldown_until_dt)
 
         _update_state(
             marketplace_id,
@@ -1108,7 +1120,7 @@ def incremental_refresh_df_payments(
         }
     except Exception as exc:
         finished_dt = now_utc or _now_utc()
-        finished_iso = finished_dt.replace(microsecond=0).isoformat()
+        finished_iso = _iso(finished_dt)
         last_success_dt = _parse_iso_dt(state_row.get("incremental_last_success_at_utc") or state_row.get("last_incremental_finished_at"))
         if not last_success_dt and baseline_ok:
             last_success_dt = _parse_iso_dt(state_row.get("last_fetch_finished_at"))
@@ -1226,6 +1238,10 @@ def start_df_payments_incremental_scheduler(
 ):
     """Start the background scheduler that triggers incremental scans when eligible."""
     global _dfp_scheduler_thread, _dfp_scheduler_stop
+
+    if not DFP_AUTO_INCREMENTAL_ENABLED:
+        LOGGER.info("[DF Payments] Scheduler not started (DFP_AUTO_INCREMENTAL_ENABLED disabled)")
+        return
 
     if _dfp_scheduler_thread and _dfp_scheduler_thread.is_alive():
         LOGGER.debug("[DF Payments] Scheduler already running; skipping start")
