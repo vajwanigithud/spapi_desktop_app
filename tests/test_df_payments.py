@@ -19,6 +19,7 @@ from services.df_payments import (
 from services.df_remittances_gmail import (
     import_df_remittances_from_gmail,
     parse_remittance_email_body,
+    parse_remittance_email_html,
 )
 
 MARKETPLACE_ID = "A2TEST-DFP"
@@ -691,6 +692,32 @@ def test_parse_remittance_email_body_html_table():
     assert rows[0]["purchase_order_number"] == "3Y51V7KY"
 
 
+def test_parse_remittance_email_html():
+    body = """
+    <html><body>
+    <table>
+    <tr><td>Payment number:</td><td>REM-9001</td></tr>
+    <tr><td>Payment date:</td><td>2025-01-10</td></tr>
+    <tr><td>Payment currency:</td><td>AED</td></tr>
+    </table>
+    <table>
+    <tr><td>Invoice Number</td><td>Invoice Date</td><td>Invoice Description</td><td>Discount Taken</td><td>Amount Paid</td><td>Amount Remaining</td></tr>
+    <tr><td>INV-1</td><td>01-Jan-2025</td><td>XYZ123/LOC1/ Widgets</td><td>0.00</td><td>1,000.50</td><td>0.00</td></tr>
+    <tr><td>INV-2</td><td>02-Jan-2025</td><td>ABC987/LOC2/ Parts</td><td>0.00</td><td>50</td><td>0.00</td></tr>
+    </table>
+    </body></html>
+    """
+
+    rows = parse_remittance_email_html(body)
+
+    assert len(rows) == 2
+    assert rows[0]["remittance_id"] == "REM-9001"
+    assert rows[0]["payment_date"] == "2025-01-10"
+    assert rows[0]["currency"] == "AED"
+    assert rows[0]["purchase_order_number"] == "XYZ123"
+    assert round(rows[0]["paid_amount"], 2) == 1000.5
+
+
 def test_reconcile_marks_paid(tmp_path):
     db_path = tmp_path / "df_payments_reconcile.db"
     ensure_df_payments_tables(db_path)
@@ -749,6 +776,76 @@ def test_reconcile_marks_paid(tmp_path):
     assert row["payment_status"] == "PAID"
     assert row["payment_date"] == "2025-01-05"
     assert row["remittance_ids"] == "REM-1"
+
+
+def test_reconcile_by_po_totals(tmp_path):
+    db_path = tmp_path / "df_payments_po_totals.db"
+    ensure_df_payments_tables(db_path)
+
+    now_iso = datetime(2025, 1, 8, tzinfo=timezone.utc).isoformat()
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-XYZ",
+                "CO-XYZ",
+                now_iso,
+                "OPEN",
+                1,
+                1,
+                100.0,
+                5.0,
+                "AED",
+                "SKU-XYZ",
+                now_iso,
+            ),
+        )
+        conn.commit()
+
+    df_remittances_insert_many(
+        [
+            {
+                "invoice_number": "INV-X1",
+                "purchase_order_number": "PO-XYZ",
+                "payment_date": "2025-01-09",
+                "paid_amount": 55.0,
+                "currency": "AED",
+                "remittance_id": "REM-X1",
+                "gmail_message_id": "gm-x1",
+                "imported_at_utc": now_iso,
+            },
+            {
+                "invoice_number": "INV-X2",
+                "purchase_order_number": "PO-XYZ",
+                "payment_date": "2025-01-10",
+                "paid_amount": 50.0,
+                "currency": "AED",
+                "remittance_id": "REM-X2",
+                "gmail_message_id": "gm-x2",
+                "imported_at_utc": now_iso,
+            },
+        ],
+        db_path=db_path,
+    )
+
+    result = reconcile_df_payments_from_remittances(MARKETPLACE_ID, db_path=db_path)
+    assert result["status"] == "reconciled"
+
+    with get_db_connection_for_path(db_path) as conn:
+        row = conn.execute(
+            "SELECT payment_status, payment_date, remittance_ids FROM df_payments_orders WHERE purchase_order_number = ?",
+            ("PO-XYZ",),
+        ).fetchone()
+
+    assert row["payment_status"] == "PAID"
+    assert row["payment_date"] == "2025-01-10"
+    assert set((row["remittance_ids"] or "").split(",")) == {"REM-X1", "REM-X2"}
 
 
 def test_currency_mismatch_is_ignored(tmp_path):

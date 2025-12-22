@@ -105,6 +105,34 @@ def _get_plain_body(msg: Optional[Message]) -> str:
         return payload.decode(errors="replace") if payload else ""
 
 
+def _get_html_body(msg: Optional[Message]) -> Optional[str]:
+    """Return the raw HTML body (if present), without stripping tags."""
+    if msg is None:
+        return None
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = (part.get("Content-Disposition") or "").lower()
+            if ctype == "text/html" and "attachment" not in disp:
+                payload = part.get_payload(decode=True) or b""
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    return payload.decode(charset, errors="replace")
+                except Exception:
+                    return payload.decode(errors="replace") if payload else None
+
+    if msg.get_content_type() == "text/html":
+        payload = msg.get_payload(decode=True) or b""
+        charset = msg.get_content_charset() or "utf-8"
+        try:
+            return payload.decode(charset, errors="replace")
+        except Exception:
+            return payload.decode(errors="replace") if payload else None
+
+    return None
+
+
 def _clean_html_cell(cell: str) -> str:
     text = re.sub(r"<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>", " ", cell, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
@@ -112,52 +140,66 @@ def _clean_html_cell(cell: str) -> str:
     return html.unescape(text)
 
 
-def _parse_html_remittance(body: str) -> List[Dict[str, object]]:
-    cells = [_clean_html_cell(m) for m in re.findall(r"<td[^>]*>(.*?)</td>", body, flags=re.IGNORECASE | re.DOTALL)]
+def parse_remittance_email_html(body_html: str) -> List[Dict[str, object]]:
+    if not body_html:
+        return []
+
+    tables = re.findall(r"<table[^>]*>(.*?)</table>", body_html, flags=re.IGNORECASE | re.DOTALL)
+    if not tables:
+        return []
+
     remittance_id = None
     payment_date = None
     payment_currency = None
 
-    for idx, label in enumerate(cells):
-        lowered = label.lower()
-        if lowered.startswith("payment number") and idx + 1 < len(cells):
-            remittance_id = cells[idx + 1].strip()
-        elif lowered.startswith("payment date") and idx + 1 < len(cells):
-            payment_date = cells[idx + 1].strip()
-        elif lowered.startswith("payment currency") and idx + 1 < len(cells):
-            payment_currency = cells[idx + 1].strip()
+    def _extract_cells(fragment: str) -> List[str]:
+        return [_clean_html_cell(m) for m in re.findall(r"<td[^>]*>(.*?)</td>", fragment, flags=re.IGNORECASE | re.DOTALL)]
+
+    for tbl in tables:
+        cells = _extract_cells(tbl)
+        for idx, label in enumerate(cells):
+            lowered = label.lower()
+            if lowered.startswith("payment number") and idx + 1 < len(cells):
+                remittance_id = cells[idx + 1].strip()
+            elif lowered.startswith("payment date") and idx + 1 < len(cells):
+                payment_date = cells[idx + 1].strip()
+            elif lowered.startswith("payment currency") and idx + 1 < len(cells):
+                payment_currency = cells[idx + 1].strip()
 
     if not payment_currency:
         payment_currency = "AED"
 
+    invoice_rows: List[List[str]] = []
+    for tbl in tables:
+        tr_blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", tbl, flags=re.IGNORECASE | re.DOTALL)
+        if not tr_blocks:
+            continue
+        header_cells = _extract_cells(tr_blocks[0]) if tr_blocks else []
+        header_lower = [c.lower() for c in header_cells]
+        if header_lower and "invoice number" in header_lower[0] and any("amount paid" in h for h in header_lower):
+            for tr_content in tr_blocks[1:]:
+                invoice_rows.append(_extract_cells(tr_content))
+            break
+
     rows: List[Dict[str, object]] = []
-    for tr_content in re.findall(r"<tr[^>]*>(.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL):
-        td_values = [_clean_html_cell(m) for m in re.findall(r"<td[^>]*>(.*?)</td>", tr_content, flags=re.IGNORECASE | re.DOTALL)]
-        if not td_values:
+    for cols in invoice_rows:
+        if not cols or len(cols) < 5:
             continue
 
-        lowered_cells = [c.lower() for c in td_values]
-        if any(lbl.startswith(prefix) for lbl in lowered_cells for prefix in ("payment number", "payment date", "payment currency")):
-            continue
-        if any("invoice number" in lbl for lbl in lowered_cells):
-            continue
-        if len(td_values) < 4:
-            continue
+        invoice_number = cols[0].strip()
+        description = cols[2].strip() if len(cols) >= 3 else ""
+        paid_raw = cols[4].strip() if len(cols) >= 5 else (cols[-2].strip() if len(cols) >= 2 else "")
 
-        invoice_number = td_values[0].strip()
-        if not invoice_number:
-            continue
-
-        description = td_values[2].strip() if len(td_values) >= 3 else ""
-        paid_raw = td_values[-2].strip() if len(td_values) >= 2 else ""
-        paid_clean = re.sub(r"[ ,]", "", paid_raw) if paid_raw else ""
-        paid_clean = re.sub(r"[^0-9.\-]", "", paid_clean)
+        paid_clean = re.sub(r"[^0-9.\-]", "", paid_raw.replace(",", "")) if paid_raw else ""
         try:
             paid_amount = float(paid_clean) if paid_clean else 0.0
         except Exception:
             paid_amount = 0.0
 
         purchase_order_number = description.split("/")[0].strip() if description else ""
+
+        if not invoice_number and not purchase_order_number:
+            continue
 
         rows.append(
             {
@@ -184,7 +226,7 @@ def parse_remittance_email_body(body: str) -> List[Dict[str, object]]:
         return []
 
     if re.search(r"<\s*(table|tr|td)\b", body, flags=re.IGNORECASE):
-        html_rows = _parse_html_remittance(body)
+        html_rows = parse_remittance_email_html(body)
         if html_rows:
             return html_rows
 
@@ -351,9 +393,25 @@ def import_df_remittances_from_gmail(
                 continue
 
             body = _get_plain_body(msg)
-            rows = parse_remittance_email_body(body)
+            html_body = _get_html_body(msg)
+
+            rows: List[Dict[str, object]] = []
+            if html_body and re.search(r"<\s*(table|tr|td)\b", html_body, flags=re.IGNORECASE):
+                rows = parse_remittance_email_html(html_body)
+            if not rows and body and re.search(r"<\s*(table|tr|td)\b", body, flags=re.IGNORECASE):
+                rows = parse_remittance_email_html(body)
+            if not rows:
+                rows = parse_remittance_email_body(body)
             if not rows:
                 continue
+
+            sample_pos = [r.get("purchase_order_number") for r in rows if r.get("purchase_order_number")]
+            LOGGER.info(
+                "[DF Remittances] Parsed rows=%s | sample_pos=%s | gmail_id=%s",
+                len(rows),
+                sample_pos[:3],
+                gmail_id,
+            )
 
             imported_at = datetime.now(timezone.utc).isoformat()
             for row in rows:

@@ -721,25 +721,25 @@ def reconcile_df_payments_from_remittances(
     orders = _load_orders(marketplace_id, db_path=db_path)
     remittances = _load_remittances(db_path=db_path)
 
-    rem_by_description_po: Dict[str, List[Dict[str, Any]]] = {}
-    rem_by_invoice_number: Dict[str, List[Dict[str, Any]]] = {}
+    rem_by_po: Dict[str, List[Dict[str, Any]]] = {}
+    rem_by_invoice: Dict[str, List[Dict[str, Any]]] = {}
     for rem in remittances:
         po_key = _norm(rem.get("purchase_order_number"))
         inv_key = _norm(rem.get("invoice_number"))
         if po_key:
-            rem_by_description_po.setdefault(po_key, []).append(rem)
+            rem_by_po.setdefault(po_key, []).append(rem)
         if inv_key:
-            rem_by_invoice_number.setdefault(inv_key, []).append(rem)
+            rem_by_invoice.setdefault(inv_key, []).append(rem)
 
     updates: List[tuple] = []
     tol = Decimal("0.01")
+    orders_with_paid = 0
+    orders_marked_paid = 0
 
     for order in orders:
         po_key = _norm(order.get("purchase_order_number"))
         order_currency = _norm(order.get("currency_code"))
-        rem_list = rem_by_invoice_number.get(po_key, [])
-        if not rem_list:
-            rem_list = rem_by_description_po.get(po_key, [])
+        rem_list = rem_by_po.get(po_key, []) or rem_by_invoice.get(po_key, [])
 
         total_paid = Decimal("0")
         latest_payment_date: Optional[str] = None
@@ -763,18 +763,16 @@ def reconcile_df_payments_from_remittances(
         expected_total = _coerce_decimal(order.get("subtotal_amount")) + _coerce_decimal(order.get("vat_amount"))
 
         status = "UNPAID"
-        if total_paid == 0:
-            status = "UNPAID"
-        else:
+        if total_paid > 0:
+            orders_with_paid += 1
             diff = abs(total_paid - expected_total)
             if diff <= tol:
                 status = "PAID"
+                orders_marked_paid += 1
             elif total_paid > expected_total:
                 status = "OVERPAID"
-            elif total_paid < expected_total:
-                status = "PARTIAL"
             else:
-                status = "UNPAID"
+                status = "PARTIAL"
 
         updates.append(
             (
@@ -785,6 +783,13 @@ def reconcile_df_payments_from_remittances(
                 order["purchase_order_number"],
             )
         )
+
+    LOGGER.info(
+        "[DF Payments] Reconcile by PO | orders_checked=%s | orders_with_paid=%s | orders_marked_paid=%s",
+        len(orders),
+        orders_with_paid,
+        orders_marked_paid,
+    )
 
     if updates:
         with _connection(db_path) as conn:
