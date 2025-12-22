@@ -822,3 +822,61 @@ def test_remittance_env_vars_prevent_missing_config(monkeypatch, tmp_path):
     assert "missing" not in result
     assert captured.get("user") == "user-x"
     assert captured.get("password") == "pass-x"
+
+
+def test_reconcile_prefers_invoice_number_match(tmp_path):
+    db_path = tmp_path / "df_payments_invoice_first.db"
+    ensure_df_payments_tables(db_path)
+
+    now_iso = datetime(2025, 3, 1, tzinfo=timezone.utc).isoformat()
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "Tnr5PtpLk",
+                "CO-INV",
+                now_iso,
+                "OPEN",
+                1,
+                1,
+                90.0,
+                10.0,
+                "AED",
+                "SKU-INV",
+                now_iso,
+            ),
+        )
+        conn.commit()
+
+    df_remittances_insert_many(
+        [
+            {
+                "invoice_number": "Tnr5PtpLk",
+                "purchase_order_number": "4G5G1ADY",
+                "payment_date": "2025-03-02",
+                "paid_amount": 100.0,
+                "currency": "AED",
+                "remittance_id": "REM-INV-1",
+                "gmail_message_id": "gm-inv-1",
+                "imported_at_utc": now_iso,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    reconcile_df_payments_from_remittances(MARKETPLACE_ID, db_path=db_path)
+
+    with get_db_connection_for_path(db_path) as conn:
+        row = conn.execute(
+            "SELECT payment_status, remittance_ids FROM df_payments_orders WHERE purchase_order_number = ?",
+            ("Tnr5PtpLk",),
+        ).fetchone()
+
+    assert row["payment_status"] == "PAID"
+    assert row["remittance_ids"] == "REM-INV-1"

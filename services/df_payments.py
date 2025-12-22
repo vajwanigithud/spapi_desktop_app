@@ -721,15 +721,15 @@ def reconcile_df_payments_from_remittances(
     orders = _load_orders(marketplace_id, db_path=db_path)
     remittances = _load_remittances(db_path=db_path)
 
-    rem_by_po: Dict[str, List[Dict[str, Any]]] = {}
-    rem_by_invoice: Dict[str, List[Dict[str, Any]]] = {}
+    rem_by_description_po: Dict[str, List[Dict[str, Any]]] = {}
+    rem_by_invoice_number: Dict[str, List[Dict[str, Any]]] = {}
     for rem in remittances:
         po_key = _norm(rem.get("purchase_order_number"))
         inv_key = _norm(rem.get("invoice_number"))
         if po_key:
-            rem_by_po.setdefault(po_key, []).append(rem)
+            rem_by_description_po.setdefault(po_key, []).append(rem)
         if inv_key:
-            rem_by_invoice.setdefault(inv_key, []).append(rem)
+            rem_by_invoice_number.setdefault(inv_key, []).append(rem)
 
     updates: List[tuple] = []
     tol = Decimal("0.01")
@@ -737,9 +737,9 @@ def reconcile_df_payments_from_remittances(
     for order in orders:
         po_key = _norm(order.get("purchase_order_number"))
         order_currency = _norm(order.get("currency_code"))
-        rem_list = rem_by_po.get(po_key, [])
+        rem_list = rem_by_invoice_number.get(po_key, [])
         if not rem_list:
-            rem_list = rem_by_invoice.get(po_key, [])  # GAS quirk: lookup by PO in invoice map
+            rem_list = rem_by_description_po.get(po_key, [])
 
         total_paid = Decimal("0")
         latest_payment_date: Optional[str] = None
