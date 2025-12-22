@@ -806,6 +806,7 @@
         </label>
         <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
         <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
+        <button class="btn" id="dfp-reconcile-btn" type="button" style="background:#0f766e;">Reconcile Paid (Gmail)</button>
         <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
         <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
         <div id="dfp-auto-status" class="dfp-status">Auto incremental: waiting…</div>
@@ -847,11 +848,14 @@
               <th style="text-align:right;">Subtotal</th>
               <th style="text-align:right;">VAT</th>
               <th>Currency</th>
+              <th>Payment Status</th>
+              <th>Payment Date</th>
+              <th>Remittance IDs</th>
               <th>SKU List</th>
             </tr>
           </thead>
           <tbody id="dfp-orders-body">
-            <tr><td colspan="8" class="empty">No DF orders yet</td></tr>
+            <tr><td colspan="11" class="empty">No DF orders yet</td></tr>
           </tbody>
         </table>
       </div>

@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
@@ -588,8 +589,99 @@ def set_app_kv(conn, key: str, value: str) -> None:
         raise
 
 
+def ensure_df_remittances_table(db_path: Path = CATALOG_DB_PATH) -> None:
+    """Ensure the DF remittances table exists for Gmail imports."""
+    create_sql = """
+    CREATE TABLE IF NOT EXISTS df_remittances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_number TEXT,
+        purchase_order_number TEXT,
+        payment_date TEXT,
+        paid_amount REAL,
+        currency TEXT,
+        remittance_id TEXT,
+        gmail_message_id TEXT,
+        imported_at_utc TEXT
+    )
+    """
+    unique_sql = """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_df_remittances_unique
+    ON df_remittances (gmail_message_id, invoice_number, remittance_id)
+    """
+    gmail_idx_sql = """
+    CREATE INDEX IF NOT EXISTS idx_df_remittances_gmail
+    ON df_remittances (gmail_message_id)
+    """
+
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            conn.execute(create_sql)
+            conn.execute(unique_sql)
+            conn.execute(gmail_idx_sql)
+            conn.commit()
+
+
+def df_remittances_get_imported_message_ids(limit: int = 5000, *, db_path: Path = CATALOG_DB_PATH) -> set[str]:
+    """Return a set of Gmail message IDs already imported (bounded for fast dedupe)."""
+    ensure_df_remittances_table(db_path)
+    with get_db_connection_for_path(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT gmail_message_id
+            FROM df_remittances
+            WHERE gmail_message_id IS NOT NULL AND trim(gmail_message_id) != ''
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return {row[0] for row in rows if row and row[0]}
+
+
+def df_remittances_insert_many(rows: list[dict], *, db_path: Path = CATALOG_DB_PATH) -> int:
+    """Insert remittance rows transactionally with dedupe via UNIQUE index."""
+    if not rows:
+        return 0
+
+    ensure_df_remittances_table(db_path)
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            before = conn.total_changes
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO df_remittances (
+                    invoice_number,
+                    purchase_order_number,
+                    payment_date,
+                    paid_amount,
+                    currency,
+                    remittance_id,
+                    gmail_message_id,
+                    imported_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.get("invoice_number"),
+                        row.get("purchase_order_number"),
+                        row.get("payment_date"),
+                        row.get("paid_amount"),
+                        row.get("currency"),
+                        row.get("remittance_id"),
+                        row.get("gmail_message_id"),
+                        row.get("imported_at_utc") or now_iso,
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+            return conn.total_changes - before
+
+
 def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
     """Ensure DF Payments tables exist for the given database path."""
+    ensure_df_remittances_table(db_path)
     orders_sql = """
     CREATE TABLE IF NOT EXISTS df_payments_orders (
         marketplace_id TEXT NOT NULL,
@@ -603,6 +695,9 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
         vat_amount REAL,
         currency_code TEXT,
         sku_list TEXT,
+        payment_status TEXT,
+        payment_date TEXT,
+        remittance_ids TEXT,
         last_updated_utc TEXT,
         PRIMARY KEY (marketplace_id, purchase_order_number)
     )
@@ -645,6 +740,15 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
             conn.execute(orders_sql)
             conn.execute(state_sql)
             conn.execute(index_sql)
+            for col in (
+                "payment_status TEXT",
+                "payment_date TEXT",
+                "remittance_ids TEXT",
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE df_payments_orders ADD COLUMN {col}")
+                except Exception:
+                    pass
             try:
                 conn.execute("ALTER TABLE df_payments_state ADD COLUMN pages_fetched INTEGER")
             except Exception:

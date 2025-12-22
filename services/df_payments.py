@@ -16,7 +16,11 @@ import requests
 from auth.spapi_auth import SpApiAuth
 from config import MARKETPLACE_ID
 from services.catalog_service import DEFAULT_CATALOG_DB_PATH
-from services.db import ensure_df_payments_tables, get_db_connection_for_path
+from services.db import (
+    ensure_df_payments_tables,
+    ensure_df_remittances_table,
+    get_db_connection_for_path,
+)
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MARKETPLACE_ID = MARKETPLACE_ID
@@ -329,6 +333,19 @@ def _load_orders(marketplace_id: str, *, db_path: Path) -> List[Dict[str, Any]]:
             (marketplace_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _load_remittances(*, db_path: Path) -> List[Dict[str, Any]]:
+    ensure_df_remittances_table(db_path)
+    with _connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM df_remittances ORDER BY id DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def _norm(value: Any) -> str:
+    return str(value or "").strip().upper()
 
 
 def _month_key(dt: datetime) -> str:
@@ -690,6 +707,102 @@ def get_df_payments_state(
         "dashboard": dashboard,
         "state": state_row,
         "diagnostics": diagnostics,
+    }
+
+
+def reconcile_df_payments_from_remittances(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> Dict[str, Any]:
+    ensure_df_payments_tables(db_path)
+    ensure_df_remittances_table(db_path)
+
+    orders = _load_orders(marketplace_id, db_path=db_path)
+    remittances = _load_remittances(db_path=db_path)
+
+    rem_by_po: Dict[str, List[Dict[str, Any]]] = {}
+    rem_by_invoice: Dict[str, List[Dict[str, Any]]] = {}
+    for rem in remittances:
+        po_key = _norm(rem.get("purchase_order_number"))
+        inv_key = _norm(rem.get("invoice_number"))
+        if po_key:
+            rem_by_po.setdefault(po_key, []).append(rem)
+        if inv_key:
+            rem_by_invoice.setdefault(inv_key, []).append(rem)
+
+    updates: List[tuple] = []
+    tol = Decimal("0.01")
+
+    for order in orders:
+        po_key = _norm(order.get("purchase_order_number"))
+        order_currency = _norm(order.get("currency_code"))
+        rem_list = rem_by_po.get(po_key, [])
+        if not rem_list:
+            rem_list = rem_by_invoice.get(po_key, [])  # GAS quirk: lookup by PO in invoice map
+
+        total_paid = Decimal("0")
+        latest_payment_date: Optional[str] = None
+        remittance_ids: List[str] = []
+
+        for rem in rem_list:
+            rem_curr = _norm(rem.get("currency"))
+            if rem_curr and order_currency and rem_curr != order_currency:
+                continue
+
+            total_paid += _coerce_decimal(rem.get("paid_amount"))
+
+            pay_date = (rem.get("payment_date") or "").strip()
+            if pay_date and (latest_payment_date is None or pay_date > latest_payment_date):
+                latest_payment_date = pay_date
+
+            rem_id = (rem.get("remittance_id") or "").strip()
+            if rem_id and rem_id not in remittance_ids:
+                remittance_ids.append(rem_id)
+
+        expected_total = _coerce_decimal(order.get("subtotal_amount")) + _coerce_decimal(order.get("vat_amount"))
+
+        status = "UNPAID"
+        if total_paid == 0:
+            status = "UNPAID"
+        else:
+            diff = abs(total_paid - expected_total)
+            if diff <= tol:
+                status = "PAID"
+            elif total_paid > expected_total:
+                status = "OVERPAID"
+            elif total_paid < expected_total:
+                status = "PARTIAL"
+            else:
+                status = "UNPAID"
+
+        updates.append(
+            (
+                status,
+                latest_payment_date or "",
+                ",".join(remittance_ids),
+                order["marketplace_id"],
+                order["purchase_order_number"],
+            )
+        )
+
+    if updates:
+        with _connection(db_path) as conn:
+            conn.executemany(
+                """
+                UPDATE df_payments_orders
+                SET payment_status = ?, payment_date = ?, remittance_ids = ?
+                WHERE marketplace_id = ? AND purchase_order_number = ?
+                """,
+                updates,
+            )
+            conn.commit()
+
+    return {
+        "status": "reconciled",
+        "orders_checked": len(orders),
+        "orders_updated": len(updates),
+        "remittances_seen": len(remittances),
     }
 
 
