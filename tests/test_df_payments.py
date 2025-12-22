@@ -16,7 +16,10 @@ from services.df_payments import (
     reconcile_df_payments_from_remittances,
     refresh_df_payments,
 )
-from services.df_remittances_gmail import parse_remittance_email_body
+from services.df_remittances_gmail import (
+    import_df_remittances_from_gmail,
+    parse_remittance_email_body,
+)
 
 MARKETPLACE_ID = "A2TEST-DFP"
 
@@ -781,3 +784,41 @@ def test_currency_mismatch_is_ignored(tmp_path):
     assert row["payment_status"] == "UNPAID"
     assert row["payment_date"] == ""
     assert row["remittance_ids"] == ""
+
+
+def test_remittance_env_vars_prevent_missing_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("DF_REMITTANCE_IMAP_USER", "user-x")
+    monkeypatch.setenv("DF_REMITTANCE_IMAP_PASS", "pass-x")
+    monkeypatch.setenv("DF_REMITTANCE_GMAIL_LABEL", "label-x")
+
+    captured: dict = {}
+
+    class DummyImap:
+        def __init__(self, host):
+            captured["host"] = host
+
+        def login(self, user, password):
+            captured["user"] = user
+            captured["password"] = password
+            return "OK"
+
+        def select(self, mailbox, readonly=True):
+            captured["mailbox"] = mailbox
+            return ("OK", [b""])
+
+        def search(self, *args):
+            captured["search_args"] = args
+            return ("OK", [b""])
+
+        def logout(self):
+            captured["logout"] = True
+            return "OK"
+
+    monkeypatch.setattr("services.df_remittances_gmail.imaplib.IMAP4_SSL", DummyImap)
+
+    result = import_df_remittances_from_gmail(db_path=tmp_path / "env_remit.db")
+
+    assert result.get("status") != "disabled"
+    assert "missing" not in result
+    assert captured.get("user") == "user-x"
+    assert captured.get("password") == "pass-x"

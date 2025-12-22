@@ -201,6 +201,16 @@ def import_df_remittances_from_gmail(
         cap = DEFAULT_MAX_MESSAGES
     cap = max(1, cap)
 
+    LOGGER.info(
+        "[DF Remittances] Import start | host=%s | mailbox=%s | label=%s | cap=%s | user_present=%s | pass_present=%s",
+        imap_host,
+        mailbox_name,
+        gmail_label,
+        cap,
+        bool(imap_user),
+        bool(imap_pass),
+    )
+
     missing = [k for k, v in {
         "DF_REMITTANCE_IMAP_USER": imap_user,
         "DF_REMITTANCE_IMAP_PASS": imap_pass,
@@ -215,18 +225,26 @@ def import_df_remittances_from_gmail(
     skipped_existing = 0
 
     imap = None
+    stage = "connect"
     try:
         imap = imaplib.IMAP4_SSL(imap_host)
+        stage = "login"
         imap.login(imap_user, imap_pass)
+        LOGGER.info("[DF Remittances] IMAP login ok | host=%s", imap_host)
+
+        stage = "select"
         status, _ = imap.select(mailbox_name, readonly=True)
         if status != "OK":
             raise RuntimeError(f"Failed to select mailbox {mailbox_name}")
+        LOGGER.info("[DF Remittances] IMAP select ok | mailbox=%s", mailbox_name)
 
+        stage = "search"
         status, data = imap.search(None, "X-GM-LABELS", f'"{gmail_label}"')
         if status != "OK":
             raise RuntimeError(f"Failed to search for label {gmail_label}")
 
         msg_nums = data[0].split() if data and data[0] else []
+        LOGGER.info("[DF Remittances] Search ok | messages_found=%s", len(msg_nums))
         if not msg_nums:
             return {
                 "status": "ok",
@@ -239,6 +257,11 @@ def import_df_remittances_from_gmail(
             }
 
         capped = list(reversed(msg_nums[-max(cap, 1):]))
+        LOGGER.info(
+            "[DF Remittances] Fetch loop start | total=%s | capped=%s",
+            len(msg_nums),
+            len(capped),
+        )
         for num in capped:
             status, msg_data = imap.fetch(num, "(X-GM-MSGID BODY.PEEK[])")
             if status != "OK" or not msg_data:
@@ -263,6 +286,9 @@ def import_df_remittances_from_gmail(
             parsed_rows.extend(rows)
             existing_ids.add(gmail_id)
             processed_msgs += 1
+    except Exception as exc:
+        LOGGER.error("[DF Remittances] IMAP %s failed: %s", stage, exc, exc_info=True)
+        return {"status": "error", "reason": "imap_error", "stage": stage, "message": str(exc)}
     finally:
         try:
             if imap:
