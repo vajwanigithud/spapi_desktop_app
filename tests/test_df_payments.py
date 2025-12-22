@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
-from services.db import ensure_df_payments_tables
+from services.db import ensure_df_payments_tables, get_db_connection_for_path
 from services.df_payments import (
     _fetch_purchase_orders_from_api,
     compute_incremental_eligibility,
@@ -140,7 +140,7 @@ def test_df_payments_materialize_and_prune(tmp_path):
     assert [row["month"] for row in cashflow] == ["2025-01", "2025-02"]
     assert round(cashflow[0]["unpaid_amount"], 2) == 0.0
     assert round(cashflow[1]["unpaid_amount"], 2) == 36.75
-    assert "reconciliation" in (cashflow[0]["note"] or "").lower()
+    assert "expected payments" in (cashflow[0]["note"] or "").lower()
 
     assert state["state"]["rows_90d"] == 1
 
@@ -541,6 +541,46 @@ def test_auto_waits_for_baseline(tmp_path):
     eligibility = compute_incremental_eligibility(state["state"], fixed_now)
     assert eligibility["eligible"] is False
     assert "Fetch Orders" in (eligibility.get("reason") or "")
+
+
+def test_auto_allows_when_rows_exist_without_fetch_state(tmp_path):
+    db_path = tmp_path / "df_payments_auto_rows.db"
+    ensure_df_payments_tables(db_path)
+
+    fixed_now = datetime(2025, 8, 1, 10, 0, tzinfo=timezone.utc)
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-SEED",
+                "CO-SEED",
+                fixed_now.isoformat(),
+                "OPEN",
+                1,
+                1,
+                10.0,
+                0.5,
+                "AED",
+                "SKU-PO-SEED",
+                fixed_now.isoformat(),
+            ),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO df_payments_state (marketplace_id, rows_90d) VALUES (?, ?)",
+            (MARKETPLACE_ID, 1),
+        )
+        conn.commit()
+
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
+    eligibility = compute_incremental_eligibility(state["state"], fixed_now)
+    assert eligibility["eligible"] is True
+    assert eligibility["auto_enabled"] is True
 
 
 def test_incremental_lock_prevents_overlap(tmp_path):

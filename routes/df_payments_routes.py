@@ -59,11 +59,6 @@ def incremental_scan() -> dict:
             triggered_by="manual",
             force=True,
         )
-        status = (result.get("status") or "").lower()
-        if status == "locked":
-            raise HTTPException(status_code=409, detail="DF Payments incremental scan already running")
-        if status == "waiting":
-            raise HTTPException(status_code=409, detail=result.get("reason") or "Incremental scan not eligible yet")
         return {"ok": True, **result}
     except HTTPException:
         raise

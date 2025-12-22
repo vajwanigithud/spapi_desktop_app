@@ -111,8 +111,9 @@
     tbody.innerHTML = rows
       .map(row => {
         const month = escapeHtmlLocal(row.month || "—");
-        const unpaid = formatAmount(row.unpaid_amount);
-        return `<tr><td>${month}</td><td style="text-align:right;">${unpaid}</td></tr>`;
+        const amountRaw = row.expected_payment_amount != null ? row.expected_payment_amount : row.unpaid_amount;
+        const amount = formatAmount(amountRaw);
+        return `<tr><td>${month}</td><td style="text-align:right;">${amount}</td></tr>`;
       })
       .join("");
   }
@@ -236,8 +237,21 @@
         const detail = data?.detail || data?.error || resp.statusText;
         throw new Error(detail || `HTTP ${resp.status}`);
       }
+
+      const status = (data.status || "").toLowerCase();
+      if (status === "incremental_refreshed") {
+        setStatus(`Incremental scan: +${data.orders_upserted ?? 0} orders`);
+      } else if (status === "cooldown") {
+        const next = data.next_eligible_utc ? formatUaeLabel(data.next_eligible_utc) : "later";
+        setStatus(`Incremental scan: cooldown until ${next}`);
+      } else if (status === "waiting" && (data.reason || "") === "baseline_required") {
+        setStatus("Incremental scan: Run Fetch Orders once to enable auto scans");
+      } else if (status === "locked") {
+        setStatus("Incremental scan already running");
+      } else {
+        setStatus(`Incremental scan status: ${status || "unknown"}`);
+      }
       await loadDfPaymentsState();
-      setStatus(`Incremental scan: +${data.orders_upserted ?? 0} orders`);
     } catch (err) {
       setStatus(`Error: ${err.message}`, true);
     } finally {

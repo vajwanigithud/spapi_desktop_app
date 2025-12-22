@@ -390,7 +390,7 @@ def _build_cashflow_projection(
 ) -> List[Dict[str, Any]]:
     current_month = _month_key(now_utc)
     next_month = _month_key(_add_months(now_utc, 1))
-    ordered_months = [current_month, next_month]
+    prev_month = _month_key(_add_months(now_utc, -1))
     shift_months = _terms_shift_months(payment_terms_days)
 
     expected_totals: Dict[str, float] = {}
@@ -398,14 +398,19 @@ def _build_cashflow_projection(
         target_month = _shift_month_key(month_key, shift_months)
         expected_totals[target_month] = expected_totals.get(target_month, 0.0) + float(total)
 
-    return [
-        {
-            "month": m,
-            "unpaid_amount": float(expected_totals.get(m, 0.0)),
-            "note": "(reconciliation not enabled yet)",
-        }
-        for m in ordered_months
-    ]
+    rows = []
+    for month in (current_month, next_month):
+        rows.append(
+            {
+                "month": month,
+                "expected_payment_amount": float(expected_totals.get(month, 0.0)),
+                "unpaid_amount": float(expected_totals.get(month, 0.0)),  # backward compatibility
+                "note": "Expected payments (30d terms)",
+                "source_month": prev_month if month == current_month else current_month,
+            }
+        )
+
+    return rows
 
 
 def _get_state_row(marketplace_id: str, *, db_path: Path) -> Dict[str, Any]:
@@ -459,7 +464,15 @@ def compute_incremental_eligibility(
     """
 
     effective_now = now_utc or _now_utc()
-    baseline_ok = (state.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state.get("last_fetch_finished_at"))
+    rows_90d = state.get("rows_90d") or 0
+    rows_in_window = state.get("rows_in_db_window") or 0
+    orders_count = state.get("orders_count") or 0
+    baseline_ok = (
+        ((state.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state.get("last_fetch_finished_at")))
+        or rows_90d > 0
+        or rows_in_window > 0
+        or orders_count > 0
+    )
     auto_enabled = bool(baseline_ok)
 
     last_status = (state.get("last_incremental_status") or "").upper()
@@ -636,6 +649,7 @@ def get_df_payments_state(
         ),
     }
     state_row = _get_state_row(marketplace_id, db_path=db_path)
+    state_row["orders_count"] = len(orders)
     state_row["rows_90d"] = state_row.get("rows_90d") or len(orders)
     order_dates = [o.get("order_date_utc") for o in orders if o.get("order_date_utc")]
     eligibility = compute_incremental_eligibility(state_row, effective_now)
@@ -685,6 +699,10 @@ def get_df_payments_worker_metadata(
 ) -> Dict[str, Any]:
     ensure_df_payments_tables(db_path)
     state = _get_state_row(marketplace_id, db_path=db_path)
+    try:
+        state["orders_count"] = _count_orders(marketplace_id, db_path=db_path)
+    except Exception:
+        state["orders_count"] = None
     eligibility = compute_incremental_eligibility(state, _now_utc())
     state["incremental_next_eligible_at_utc"] = _iso(eligibility.get("next_eligible_at"))
     state["incremental_wait_reason"] = eligibility.get("reason")
@@ -952,7 +970,17 @@ def incremental_refresh_df_payments(
     ensure_df_payments_tables(db_path)
     effective_now = now_utc or _now_utc()
     state_row = _get_state_row(marketplace_id, db_path=db_path)
-    baseline_ok = (state_row.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state_row.get("last_fetch_finished_at"))
+    existing_rows = state_row.get("rows_90d") or 0
+    if not existing_rows:
+        try:
+            existing_rows = _count_orders(marketplace_id, db_path=db_path)
+        except Exception:
+            existing_rows = 0
+    baseline_ok = (
+        ((state_row.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state_row.get("last_fetch_finished_at")))
+        or existing_rows > 0
+        or (state_row.get("rows_in_db_window") or 0) > 0
+    )
 
     if not baseline_ok and not force:
         return {"status": "waiting", "reason": "baseline_required"}
