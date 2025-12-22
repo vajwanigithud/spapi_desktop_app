@@ -138,6 +138,10 @@ from services.catalog_service import (
     update_catalog_barcode,
     upsert_spapi_catalog,
 )
+from services.df_payments import (
+    start_df_payments_incremental_scheduler,
+    stop_df_payments_incremental_scheduler,
+)
 from services.json_cache import (
     load_asin_cache,
     load_oos_state,
@@ -306,9 +310,19 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
+        start_df_payments_incremental_scheduler()
         logger.info("[Startup] Background tasks initialized successfully")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Signal background workers to stop."""
+    try:
+        stop_df_payments_incremental_scheduler()
+    except Exception as exc:
+        logger.warning(f"[Shutdown] Failed to stop DF Payments scheduler cleanly: {exc}")
 
 
 # -------------------------------

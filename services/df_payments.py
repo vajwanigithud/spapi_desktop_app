@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -26,6 +28,13 @@ MAX_PAGES = 50
 DEFAULT_LIMIT = 50
 VAT_RATE = Decimal("0.05")
 DF_PAYMENTS_TERMS_DAYS = 30
+INCREMENTAL_COOLDOWN_SECONDS = 600
+INCREMENTAL_FAILURE_BACKOFF_SECONDS = int(os.getenv("DF_PAYMENTS_FAILURE_BACKOFF_SECONDS", "180"))
+INCREMENTAL_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("DF_PAYMENTS_SCHEDULER_INTERVAL_SECONDS", "45"))
+
+_incremental_lock = Lock()
+_dfp_scheduler_thread: Optional[threading.Thread] = None
+_dfp_scheduler_stop = False
 
 FetchFunc = Callable[..., Dict[str, Any]]
 
@@ -99,6 +108,20 @@ def _parse_iso_dt(value: Any) -> Optional[datetime]:
     else:
         dt = dt.astimezone(timezone.utc)
     return dt
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _iso(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(microsecond=0).isoformat()
 
 
 def _extract_purchase_orders(payload: Any) -> List[dict]:
@@ -389,7 +412,7 @@ def _get_state_row(marketplace_id: str, *, db_path: Path) -> Dict[str, Any]:
     with _connection(db_path) as conn:
         row = conn.execute(
             """
-            SELECT marketplace_id, last_fetch_started_at, last_fetch_finished_at, last_fetch_status, last_error, last_lookback_days, rows_90d, pages_fetched, fetched_orders_total, unique_po_total, rows_in_db_window, limit_used, last_incremental_started_at, last_incremental_finished_at, last_incremental_status, last_incremental_error, last_seen_order_date_utc, last_incremental_orders_upserted, last_incremental_pages_fetched
+            SELECT marketplace_id, last_fetch_started_at, last_fetch_finished_at, last_fetch_status, last_error, last_lookback_days, rows_90d, pages_fetched, fetched_orders_total, unique_po_total, rows_in_db_window, limit_used, last_incremental_started_at, last_incremental_finished_at, last_incremental_status, last_incremental_error, last_seen_order_date_utc, last_incremental_orders_upserted, last_incremental_pages_fetched, incremental_last_attempt_at_utc, incremental_last_success_at_utc, incremental_cooldown_until_utc
             FROM df_payments_state
             WHERE marketplace_id = ?
             """,
@@ -416,8 +439,79 @@ def _get_state_row(marketplace_id: str, *, db_path: Path) -> Dict[str, Any]:
             "last_seen_order_date_utc": None,
             "last_incremental_orders_upserted": None,
             "last_incremental_pages_fetched": None,
+            "incremental_last_attempt_at_utc": None,
+            "incremental_last_success_at_utc": None,
+            "incremental_cooldown_until_utc": None,
         }
     return dict(row)
+
+
+def compute_incremental_eligibility(
+    state: Dict[str, Any],
+    now_utc: Optional[datetime] = None,
+    *,
+    cooldown_seconds: int = INCREMENTAL_COOLDOWN_SECONDS,
+    failure_backoff_seconds: int = INCREMENTAL_FAILURE_BACKOFF_SECONDS,
+) -> Dict[str, Any]:
+    """Compute whether DF Payments incremental scan is eligible to run.
+
+    Returns a dict with eligibility flag, reason, next_eligible_at, worker_status, and auto_enabled.
+    """
+
+    effective_now = now_utc or _now_utc()
+    baseline_ok = (state.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state.get("last_fetch_finished_at"))
+    auto_enabled = bool(baseline_ok)
+
+    last_status = (state.get("last_incremental_status") or "").upper()
+    in_progress = last_status == "IN_PROGRESS" or (state.get("last_fetch_status") or "").upper() == "IN_PROGRESS"
+
+    last_attempt = _parse_iso_dt(state.get("incremental_last_attempt_at_utc") or state.get("last_incremental_started_at"))
+    last_success = _parse_iso_dt(state.get("incremental_last_success_at_utc"))
+    if not last_success and last_status == "SUCCESS":
+        last_success = _parse_iso_dt(state.get("last_incremental_finished_at"))
+    if not last_success and baseline_ok:
+        last_success = _parse_iso_dt(state.get("last_fetch_finished_at"))
+
+    stored_cooldown = _parse_iso_dt(state.get("incremental_cooldown_until_utc"))
+    anchor_cooldown = last_success + timedelta(seconds=cooldown_seconds) if last_success else None
+    failure_cooldown = (
+        last_attempt + timedelta(seconds=failure_backoff_seconds)
+        if last_attempt and last_status == "ERROR"
+        else None
+    )
+
+    next_dt_candidates = [dt for dt in (stored_cooldown, anchor_cooldown, failure_cooldown) if dt]
+    next_eligible_dt = max(next_dt_candidates) if next_dt_candidates else None
+    eligible = bool(baseline_ok) and not in_progress and (not next_eligible_dt or next_eligible_dt <= effective_now)
+
+    reason: Optional[str] = None
+    worker_status = "ok"
+    worker_details: Optional[str] = None
+
+    if not baseline_ok:
+        worker_status = "waiting"
+        reason = "Run Fetch Orders first"
+    elif in_progress:
+        worker_status = "locked"
+        reason = "Lock held by another scan"
+    elif next_eligible_dt and next_eligible_dt > effective_now:
+        worker_status = "waiting"
+        reason = f"cooldown until {next_eligible_dt.isoformat()}"
+
+    if last_status == "ERROR":
+        worker_status = "error"
+        worker_details = state.get("last_incremental_error") or "Last incremental scan failed"
+
+    return {
+        "eligible": eligible,
+        "reason": reason,
+        "next_eligible_at": next_eligible_dt,
+        "auto_enabled": auto_enabled,
+        "worker_status": worker_status,
+        "worker_details": worker_details,
+        "last_success_at": last_success,
+        "last_attempt_at": last_attempt,
+    }
 
 
 def _update_state(
@@ -442,6 +536,9 @@ def _update_state(
     last_seen_order_date_utc: Optional[str] = None,
     last_incremental_orders_upserted: Optional[int] = None,
     last_incremental_pages_fetched: Optional[int] = None,
+    incremental_last_attempt_at_utc: Optional[str] = None,
+    incremental_last_success_at_utc: Optional[str] = None,
+    incremental_cooldown_until_utc: Optional[str] = None,
 ) -> None:
     with _connection(db_path) as conn:
         conn.execute(
@@ -465,8 +562,11 @@ def _update_state(
                 last_incremental_error,
                 last_seen_order_date_utc,
                 last_incremental_orders_upserted,
-                last_incremental_pages_fetched
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_incremental_pages_fetched,
+                incremental_last_attempt_at_utc,
+                incremental_last_success_at_utc,
+                incremental_cooldown_until_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(marketplace_id) DO UPDATE SET
                 last_fetch_started_at=excluded.last_fetch_started_at,
                 last_fetch_finished_at=excluded.last_fetch_finished_at,
@@ -485,7 +585,10 @@ def _update_state(
                 last_incremental_error=excluded.last_incremental_error,
                 last_seen_order_date_utc=excluded.last_seen_order_date_utc,
                 last_incremental_orders_upserted=excluded.last_incremental_orders_upserted,
-                last_incremental_pages_fetched=excluded.last_incremental_pages_fetched
+                last_incremental_pages_fetched=excluded.last_incremental_pages_fetched,
+                incremental_last_attempt_at_utc=excluded.incremental_last_attempt_at_utc,
+                incremental_last_success_at_utc=excluded.incremental_last_success_at_utc,
+                incremental_cooldown_until_utc=excluded.incremental_cooldown_until_utc
             """,
             (
                 marketplace_id,
@@ -507,6 +610,9 @@ def _update_state(
                 last_seen_order_date_utc,
                 last_incremental_orders_upserted,
                 last_incremental_pages_fetched,
+                incremental_last_attempt_at_utc,
+                incremental_last_success_at_utc,
+                incremental_cooldown_until_utc,
             ),
         )
         conn.commit()
@@ -532,6 +638,12 @@ def get_df_payments_state(
     state_row = _get_state_row(marketplace_id, db_path=db_path)
     state_row["rows_90d"] = state_row.get("rows_90d") or len(orders)
     order_dates = [o.get("order_date_utc") for o in orders if o.get("order_date_utc")]
+    eligibility = compute_incremental_eligibility(state_row, effective_now)
+    state_row["incremental_next_eligible_at_utc"] = _iso(eligibility.get("next_eligible_at"))
+    state_row["incremental_wait_reason"] = eligibility.get("reason")
+    state_row["incremental_auto_enabled"] = eligibility.get("auto_enabled")
+    state_row["incremental_worker_status"] = eligibility.get("worker_status")
+    state_row["incremental_worker_details"] = eligibility.get("worker_details")
     diagnostics = {
         "orders_count": len(orders),
         "min_order_date_utc": min(order_dates) if order_dates else None,
@@ -549,6 +661,13 @@ def get_df_payments_state(
         "last_seen_order_date_utc": state_row.get("last_seen_order_date_utc"),
         "last_incremental_orders_upserted": state_row.get("last_incremental_orders_upserted"),
         "last_incremental_pages_fetched": state_row.get("last_incremental_pages_fetched"),
+        "incremental_last_attempt_at_utc": state_row.get("incremental_last_attempt_at_utc"),
+        "incremental_last_success_at_utc": state_row.get("incremental_last_success_at_utc"),
+        "incremental_cooldown_until_utc": state_row.get("incremental_cooldown_until_utc"),
+        "incremental_next_eligible_at_utc": state_row.get("incremental_next_eligible_at_utc"),
+        "incremental_auto_enabled": state_row.get("incremental_auto_enabled"),
+        "incremental_worker_status": state_row.get("incremental_worker_status"),
+        "incremental_worker_details": state_row.get("incremental_worker_details"),
     }
     state_row["diagnostics"] = diagnostics
     return {
@@ -565,7 +684,14 @@ def get_df_payments_worker_metadata(
     db_path: Path = DEFAULT_CATALOG_DB_PATH,
 ) -> Dict[str, Any]:
     ensure_df_payments_tables(db_path)
-    return _get_state_row(marketplace_id, db_path=db_path)
+    state = _get_state_row(marketplace_id, db_path=db_path)
+    eligibility = compute_incremental_eligibility(state, _now_utc())
+    state["incremental_next_eligible_at_utc"] = _iso(eligibility.get("next_eligible_at"))
+    state["incremental_wait_reason"] = eligibility.get("reason")
+    state["incremental_auto_enabled"] = eligibility.get("auto_enabled")
+    state["incremental_worker_status"] = eligibility.get("worker_status")
+    state["incremental_worker_details"] = eligibility.get("worker_details")
+    return state
 
 
 def _fetch_purchase_orders_from_api(
@@ -757,7 +883,7 @@ def refresh_df_payments(
             rows_in_window,
             fetched_meta.get("pages"),
         )
-        finished_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        finished_iso = _now_utc().isoformat()
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -791,7 +917,7 @@ def refresh_df_payments(
             "last_seen_order_date_utc": max_order_iso,
         }
     except Exception as exc:
-        finished_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        finished_iso = _now_utc().isoformat()
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -818,25 +944,21 @@ def incremental_refresh_df_payments(
     db_path: Path = DEFAULT_CATALOG_DB_PATH,
     fetcher: Optional[FetchFunc] = None,
     now_utc: Optional[datetime] = None,
+    triggered_by: str = "manual",
+    force: bool = False,
+    cooldown_seconds: int = INCREMENTAL_COOLDOWN_SECONDS,
+    failure_backoff_seconds: int = INCREMENTAL_FAILURE_BACKOFF_SECONDS,
 ) -> Dict[str, Any]:
     ensure_df_payments_tables(db_path)
-    effective_now = now_utc or datetime.now(timezone.utc)
+    effective_now = now_utc or _now_utc()
     state_row = _get_state_row(marketplace_id, db_path=db_path)
+    baseline_ok = (state_row.get("last_fetch_status") or "").upper() == "SUCCESS" and bool(state_row.get("last_fetch_finished_at"))
 
-    if (state_row.get("last_fetch_status") or "").upper() == "IN_PROGRESS":
-        return {"status": "locked", "reason": "full_fetch_in_progress"}
-    if (state_row.get("last_incremental_status") or "").upper() == "IN_PROGRESS":
-        return {"status": "locked", "reason": "incremental_in_progress"}
+    if not baseline_ok and not force:
+        return {"status": "waiting", "reason": "baseline_required"}
 
-    last_inc_finished_dt = _parse_iso_dt(state_row.get("last_incremental_finished_at"))
-    cooldown_until = None
-    if last_inc_finished_dt:
-        cooldown_until = last_inc_finished_dt + timedelta(minutes=10)
-    if cooldown_until and cooldown_until > effective_now:
-        return {
-            "status": "cooldown",
-            "next_eligible_utc": cooldown_until.replace(microsecond=0).isoformat(),
-        }
+    if not _incremental_lock.acquire(blocking=False):
+        return {"status": "locked", "reason": "lock_held"}
 
     last_seen_dt = _parse_iso_dt(state_row.get("last_seen_order_date_utc"))
     fallback_start = effective_now - timedelta(days=7)
@@ -852,6 +974,8 @@ def incremental_refresh_df_payments(
         last_incremental_started_at=started_iso,
         last_incremental_status="IN_PROGRESS",
         last_incremental_error=None,
+        incremental_last_attempt_at_utc=started_iso,
+        incremental_cooldown_until_utc=None,
     )
 
     fetch_limit = limit or DEFAULT_LIMIT
@@ -902,14 +1026,19 @@ def incremental_refresh_df_payments(
         chosen_max_iso = chosen_max_dt.replace(microsecond=0).isoformat() if chosen_max_dt else state_row.get("last_seen_order_date_utc")
 
         LOGGER.info(
-            "[DF Payments] Incremental summary | fetched_orders_total=%s | unique_po_total=%s | rows_in_db_window=%s | pages_fetched=%s",
+            "[DF Payments] Incremental summary | trigger=%s | fetched_orders_total=%s | unique_po_total=%s | rows_in_db_window=%s | pages_fetched=%s",
+            triggered_by,
             len(orders_payload),
             len(summaries),
             rows_in_window,
             fetched_meta.get("pages"),
         )
 
-        finished_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        finished_dt = now_utc or _now_utc()
+        finished_iso = finished_dt.replace(microsecond=0).isoformat()
+        cooldown_until_dt = finished_dt + timedelta(seconds=cooldown_seconds)
+        cooldown_until_iso = cooldown_until_dt.replace(microsecond=0).isoformat()
+
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -926,6 +1055,9 @@ def incremental_refresh_df_payments(
             unique_po_total=len(summaries),
             rows_in_db_window=rows_in_window,
             limit_used=fetched_meta.get("limit_used") if fetched_meta.get("limit_used") else fetch_limit,
+            incremental_last_attempt_at_utc=started_iso,
+            incremental_last_success_at_utc=finished_iso,
+            incremental_cooldown_until_utc=cooldown_until_iso,
         )
 
         return {
@@ -943,9 +1075,21 @@ def incremental_refresh_df_payments(
             "rows_in_db_window": rows_in_window,
             "limit_used": fetched_meta.get("limit_used") if fetched_meta.get("limit_used") else fetch_limit,
             "last_seen_order_date_utc": chosen_max_iso,
+            "next_eligible_utc": cooldown_until_iso,
+            "triggered_by": triggered_by,
         }
     except Exception as exc:
-        finished_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        finished_dt = now_utc or _now_utc()
+        finished_iso = finished_dt.replace(microsecond=0).isoformat()
+        last_success_dt = _parse_iso_dt(state_row.get("incremental_last_success_at_utc") or state_row.get("last_incremental_finished_at"))
+        if not last_success_dt and baseline_ok:
+            last_success_dt = _parse_iso_dt(state_row.get("last_fetch_finished_at"))
+        cooldown_candidates = [
+            last_success_dt + timedelta(seconds=cooldown_seconds) if last_success_dt else None,
+            finished_dt + timedelta(seconds=failure_backoff_seconds),
+        ]
+        cooldown_candidates = [dt for dt in cooldown_candidates if dt]
+        cooldown_until_dt = max(cooldown_candidates) if cooldown_candidates else None
         _update_state(
             marketplace_id,
             db_path=db_path,
@@ -956,6 +1100,130 @@ def incremental_refresh_df_payments(
             last_seen_order_date_utc=state_row.get("last_seen_order_date_utc"),
             last_incremental_orders_upserted=len(summaries) if "summaries" in locals() else None,
             last_incremental_pages_fetched=fetched_meta.get("pages") if "fetched_meta" in locals() else None,
+            incremental_last_attempt_at_utc=started_iso,
+            incremental_last_success_at_utc=state_row.get("incremental_last_success_at_utc"),
+            incremental_cooldown_until_utc=_iso(cooldown_until_dt),
         )
-        LOGGER.error("[DF Payments] Incremental refresh failed: %s", exc, exc_info=True)
+        LOGGER.error("[DF Payments] Incremental refresh failed (%s): %s", triggered_by, exc, exc_info=True)
         raise
+    finally:
+        _incremental_lock.release()
+
+
+def maybe_run_df_payments_incremental_auto(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    now_utc: Optional[datetime] = None,
+    fetcher: Optional[FetchFunc] = None,
+) -> Dict[str, Any]:
+    """Run DF Payments incremental scan automatically if eligible.
+
+    Returns a dict with status of the attempt (ran / waiting / locked / error).
+    """
+
+    effective_now = now_utc or _now_utc()
+    state_row = _get_state_row(marketplace_id, db_path=db_path)
+    eligibility = compute_incremental_eligibility(state_row, effective_now)
+
+    if not eligibility.get("auto_enabled"):
+        return {
+            "status": "waiting",
+            "reason": eligibility.get("reason") or "auto_disabled",
+            "next_eligible_at": eligibility.get("next_eligible_at"),
+        }
+
+    if not eligibility.get("eligible"):
+        return {
+            "status": "waiting",
+            "reason": eligibility.get("reason") or "cooldown",
+            "next_eligible_at": eligibility.get("next_eligible_at"),
+        }
+
+    result = incremental_refresh_df_payments(
+        marketplace_id,
+        db_path=db_path,
+        fetcher=fetcher,
+        now_utc=effective_now,
+        triggered_by="auto",
+        force=False,
+    )
+    return {"status": result.get("status") or "ran", **result}
+
+
+def _dfp_scheduler_loop(
+    marketplace_id: str,
+    *,
+    db_path: Path,
+    interval_seconds: int,
+):
+    global _dfp_scheduler_stop
+    LOGGER.info(
+        "[DF Payments] Incremental scheduler started (interval=%ss, marketplace=%s)",
+        interval_seconds,
+        marketplace_id,
+    )
+    while not _dfp_scheduler_stop:
+        try:
+            outcome = maybe_run_df_payments_incremental_auto(
+                marketplace_id,
+                db_path=db_path,
+            )
+            status = (outcome.get("status") or "waiting").lower()
+            if status == "waiting":
+                reason = outcome.get("reason") or "cooldown"
+                LOGGER.debug("[DF Payments] Auto-scan waiting: %s", reason)
+            elif status == "locked":
+                LOGGER.debug("[DF Payments] Auto-scan skipped (lock held)")
+            elif status == "error":
+                LOGGER.warning("[DF Payments] Auto-scan error: %s", outcome.get("error"))
+            else:
+                LOGGER.info(
+                    "[DF Payments] Auto-scan completed | status=%s | orders_upserted=%s",
+                    status,
+                    outcome.get("orders_upserted"),
+                )
+        except Exception as exc:  # pragma: no cover - scheduler safety
+            LOGGER.error("[DF Payments] Auto-scheduler tick failed: %s", exc, exc_info=True)
+        finally:
+            time.sleep(interval_seconds)
+    LOGGER.info("[DF Payments] Incremental scheduler stopped")
+
+
+def start_df_payments_incremental_scheduler(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    interval_seconds: int = INCREMENTAL_SCHEDULER_INTERVAL_SECONDS,
+):
+    """Start the background scheduler that triggers incremental scans when eligible."""
+    global _dfp_scheduler_thread, _dfp_scheduler_stop
+
+    if _dfp_scheduler_thread and _dfp_scheduler_thread.is_alive():
+        LOGGER.debug("[DF Payments] Scheduler already running; skipping start")
+        return
+
+    _dfp_scheduler_stop = False
+    thread = threading.Thread(
+        target=_dfp_scheduler_loop,
+        name="DfPaymentsIncrementalScheduler",
+        kwargs={
+            "marketplace_id": marketplace_id,
+            "db_path": db_path,
+            "interval_seconds": max(10, interval_seconds),
+        },
+        daemon=True,
+    )
+    thread.start()
+    _dfp_scheduler_thread = thread
+    LOGGER.info("[DF Payments] Scheduler thread started")
+
+
+def stop_df_payments_incremental_scheduler(timeout: float = 2.0) -> None:
+    """Signal the scheduler to stop and wait briefly for shutdown."""
+    global _dfp_scheduler_stop, _dfp_scheduler_thread
+    _dfp_scheduler_stop = True
+    thread = _dfp_scheduler_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=timeout)
+    _dfp_scheduler_thread = None

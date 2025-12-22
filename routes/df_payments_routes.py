@@ -54,7 +54,16 @@ def fetch_orders(payload: FetchRequest = Body(default_factory=FetchRequest)) -> 
 @router.post("/incremental")
 def incremental_scan() -> dict:
     try:
-        result = incremental_refresh_df_payments(DEFAULT_MARKETPLACE_ID)
+        result = incremental_refresh_df_payments(
+            DEFAULT_MARKETPLACE_ID,
+            triggered_by="manual",
+            force=True,
+        )
+        status = (result.get("status") or "").lower()
+        if status == "locked":
+            raise HTTPException(status_code=409, detail="DF Payments incremental scan already running")
+        if status == "waiting":
+            raise HTTPException(status_code=409, detail=result.get("reason") or "Incremental scan not eligible yet")
         return {"ok": True, **result}
     except HTTPException:
         raise

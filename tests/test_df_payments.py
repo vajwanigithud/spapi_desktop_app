@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 from services.db import ensure_df_payments_tables
 from services.df_payments import (
     _fetch_purchase_orders_from_api,
+    compute_incremental_eligibility,
     get_df_payments_state,
     incremental_refresh_df_payments,
     refresh_df_payments,
@@ -496,3 +498,96 @@ def test_df_payments_month_totals_across_boundary(tmp_path):
     assert [row["month"] for row in cashflow] == ["2025-12", "2026-01"]
     assert round(cashflow[0]["unpaid_amount"], 2) == 105.0
     assert round(cashflow[1]["unpaid_amount"], 2) == 210.0
+
+
+def test_manual_success_resets_auto_timer(tmp_path):
+    db_path = tmp_path / "df_payments_auto_timer.db"
+    ensure_df_payments_tables(db_path)
+
+    base_now = datetime(2025, 5, 1, 10, 0, tzinfo=timezone.utc)
+    refresh_df_payments(
+        MARKETPLACE_ID,
+        lookback_days=5,
+        db_path=db_path,
+        fetcher=lambda **kwargs: {"purchaseOrders": []},
+        now_utc=base_now,
+    )
+
+    manual_now = base_now + timedelta(minutes=2)
+    incremental_refresh_df_payments(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        fetcher=lambda **kwargs: {"purchaseOrders": []},
+        now_utc=manual_now,
+        triggered_by="manual",
+        force=True,
+    )
+
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=manual_now)
+    last_success_iso = state["state"].get("incremental_last_success_at_utc")
+    assert last_success_iso and last_success_iso.startswith(manual_now.replace(microsecond=0).isoformat())
+    next_auto_iso = state["state"].get("incremental_next_eligible_at_utc")
+    assert next_auto_iso
+    next_auto = datetime.fromisoformat(next_auto_iso)
+    assert next_auto == manual_now.replace(microsecond=0) + timedelta(minutes=10)
+
+
+def test_auto_waits_for_baseline(tmp_path):
+    db_path = tmp_path / "df_payments_auto_baseline.db"
+    ensure_df_payments_tables(db_path)
+
+    fixed_now = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
+    eligibility = compute_incremental_eligibility(state["state"], fixed_now)
+    assert eligibility["eligible"] is False
+    assert "Fetch Orders" in (eligibility.get("reason") or "")
+
+
+def test_incremental_lock_prevents_overlap(tmp_path):
+    db_path = tmp_path / "df_payments_lock.db"
+    ensure_df_payments_tables(db_path)
+
+    base_now = datetime(2025, 7, 1, 9, 0, tzinfo=timezone.utc)
+    refresh_df_payments(
+        MARKETPLACE_ID,
+        lookback_days=3,
+        db_path=db_path,
+        fetcher=lambda **kwargs: {"purchaseOrders": []},
+        now_utc=base_now,
+    )
+
+    start_evt = threading.Event()
+    release_evt = threading.Event()
+
+    def slow_fetch(**kwargs):
+        start_evt.set()
+        release_evt.wait(timeout=2)
+        return {"purchaseOrders": [_make_order("PO-SLOW", base_now, 10)]}
+
+    thread = threading.Thread(
+        target=incremental_refresh_df_payments,
+        kwargs={
+            "marketplace_id": MARKETPLACE_ID,
+            "db_path": db_path,
+            "fetcher": slow_fetch,
+            "now_utc": base_now + timedelta(minutes=1),
+            "force": True,
+            "triggered_by": "manual",
+        },
+        daemon=True,
+    )
+    thread.start()
+    start_evt.wait(timeout=1)
+
+    blocked = incremental_refresh_df_payments(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        fetcher=lambda **kwargs: {"purchaseOrders": []},
+        now_utc=base_now + timedelta(minutes=2),
+        force=True,
+        triggered_by="manual",
+    )
+    assert blocked["status"] == "locked"
+
+    release_evt.set()
+    thread.join(timeout=2)

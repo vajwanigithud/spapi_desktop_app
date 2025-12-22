@@ -53,6 +53,21 @@
     const rowsLabel = rowsCount != null ? rowsCount : state?.rows_90d || 0;
     const errorLabel = state?.last_error ? safe(state.last_error) : "None";
     setStatus(`Last fetch: ${lastLabel} | Rows (90d): ${rowsLabel} | Error: ${errorLabel}`);
+
+    const autoEl = document.getElementById("dfp-auto-status");
+    if (autoEl) {
+      const lastInc = state?.incremental_last_success_at_utc
+        || state?.last_incremental_finished_at
+        || state?.last_incremental_started_at;
+      const nextAuto = state?.incremental_next_eligible_at_utc;
+      const nextLabel = nextAuto ? formatUaeLabel(nextAuto) : "—";
+      const statusLabel = state?.incremental_worker_status || state?.last_incremental_status || "—";
+      const reason = state?.incremental_wait_reason || state?.incremental_worker_details || "";
+      const enabled = state?.incremental_auto_enabled !== false;
+      autoEl.textContent = enabled
+        ? `Auto incremental: ${statusLabel} | last: ${lastInc ? formatUaeLabel(lastInc) : "—"} | next: ${nextLabel}${reason ? ` (${reason})` : ""}`
+        : "Auto incremental: disabled until baseline Fetch Orders runs";
+    }
   }
 
   function renderDiagnostics(diagnostics) {

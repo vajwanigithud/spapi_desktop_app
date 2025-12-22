@@ -251,30 +251,27 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
     last_status = None
     last_error = None
     last_started = None
+    last_success = None
 
     if isinstance(meta, dict):
         last_finished = meta.get("last_incremental_finished_at")
         last_started = meta.get("last_incremental_started_at")
         last_status = meta.get("last_incremental_status")
         last_error = meta.get("last_incremental_error")
+        next_eligible_dt = _parse_iso_datetime(meta.get("incremental_next_eligible_at_utc"))
+        details = meta.get("incremental_worker_details") or meta.get("incremental_wait_reason") or details
+        status = meta.get("incremental_worker_status") or status
+        last_success = meta.get("incremental_last_success_at_utc")
 
     last_finished_dt = _parse_iso_datetime(last_finished)
     last_started_dt = _parse_iso_datetime(last_started)
+    last_success_dt = _parse_iso_datetime(last_success)
 
-    if (last_status or "").upper() == "IN_PROGRESS":
-        status = "locked"
-    elif (last_status or "").upper() == "ERROR":
+    if (last_status or "").upper() == "ERROR" and status == "ok":
         status = "error"
-        details = last_error or "Last incremental scan failed"
+        details = details or last_error or "Last incremental scan failed"
 
-    if last_finished_dt:
-        cooldown_until = last_finished_dt + timedelta(minutes=10)
-        if cooldown_until > now_utc:
-            if status == "ok":
-                status = "cooldown"
-            next_eligible_dt = cooldown_until
-
-    last_run_display = _fmt_uae(last_finished_dt or last_finished or last_started_dt)
+    last_run_display = _fmt_uae(last_success_dt or last_finished_dt or last_finished or last_started_dt)
     workers.append(
         {
             "key": "df_payments_incremental",
@@ -283,7 +280,7 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
             "last_run_at_uae": last_run_display,
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt) if next_eligible_dt else None,
             "details": details,
-            "what": "Fetches new DF orders (10m cooldown, DB-first)",
+            "what": "Incrementally fetches new DF orders since last successful scan (10-min cadence)",
         }
     )
 

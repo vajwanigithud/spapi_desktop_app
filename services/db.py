@@ -701,7 +701,10 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
         last_incremental_error TEXT,
         last_seen_order_date_utc TEXT,
         last_incremental_orders_upserted INTEGER,
-        last_incremental_pages_fetched INTEGER
+        last_incremental_pages_fetched INTEGER,
+        incremental_last_attempt_at_utc TEXT,
+        incremental_last_success_at_utc TEXT,
+        incremental_cooldown_until_utc TEXT
     )
     """
 
@@ -731,6 +734,9 @@ def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
                 "last_seen_order_date_utc TEXT",
                 "last_incremental_orders_upserted INTEGER",
                 "last_incremental_pages_fetched INTEGER",
+                "incremental_last_attempt_at_utc TEXT",
+                "incremental_last_success_at_utc TEXT",
+                "incremental_cooldown_until_utc TEXT",
             ):
                 try:
                     conn.execute(f"ALTER TABLE df_payments_state ADD COLUMN {col}")
