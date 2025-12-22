@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import email
+import html
 import imaplib
 import logging
 import os
@@ -104,6 +105,76 @@ def _get_plain_body(msg: Optional[Message]) -> str:
         return payload.decode(errors="replace") if payload else ""
 
 
+def _clean_html_cell(cell: str) -> str:
+    text = re.sub(r"<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>", " ", cell, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return html.unescape(text)
+
+
+def _parse_html_remittance(body: str) -> List[Dict[str, object]]:
+    cells = [_clean_html_cell(m) for m in re.findall(r"<td[^>]*>(.*?)</td>", body, flags=re.IGNORECASE | re.DOTALL)]
+    remittance_id = None
+    payment_date = None
+    payment_currency = None
+
+    for idx, label in enumerate(cells):
+        lowered = label.lower()
+        if lowered.startswith("payment number") and idx + 1 < len(cells):
+            remittance_id = cells[idx + 1].strip()
+        elif lowered.startswith("payment date") and idx + 1 < len(cells):
+            payment_date = cells[idx + 1].strip()
+        elif lowered.startswith("payment currency") and idx + 1 < len(cells):
+            payment_currency = cells[idx + 1].strip()
+
+    if not payment_currency:
+        payment_currency = "AED"
+
+    rows: List[Dict[str, object]] = []
+    for tr_content in re.findall(r"<tr[^>]*>(.*?)</tr>", body, flags=re.IGNORECASE | re.DOTALL):
+        td_values = [_clean_html_cell(m) for m in re.findall(r"<td[^>]*>(.*?)</td>", tr_content, flags=re.IGNORECASE | re.DOTALL)]
+        if not td_values:
+            continue
+
+        lowered_cells = [c.lower() for c in td_values]
+        if any(lbl.startswith(prefix) for lbl in lowered_cells for prefix in ("payment number", "payment date", "payment currency")):
+            continue
+        if any("invoice number" in lbl for lbl in lowered_cells):
+            continue
+        if len(td_values) < 4:
+            continue
+
+        invoice_number = td_values[0].strip()
+        if not invoice_number:
+            continue
+
+        description = td_values[2].strip() if len(td_values) >= 3 else ""
+        paid_raw = td_values[-2].strip() if len(td_values) >= 2 else ""
+        paid_clean = re.sub(r"[ ,]", "", paid_raw) if paid_raw else ""
+        paid_clean = re.sub(r"[^0-9.\-]", "", paid_clean)
+        try:
+            paid_amount = float(paid_clean) if paid_clean else 0.0
+        except Exception:
+            paid_amount = 0.0
+
+        purchase_order_number = description.split("/")[0].strip() if description else ""
+
+        rows.append(
+            {
+                "invoice_number": invoice_number,
+                "purchase_order_number": purchase_order_number,
+                "payment_date": payment_date or "",
+                "paid_amount": paid_amount,
+                "currency": payment_currency or "AED",
+                "remittance_id": remittance_id or "",
+                "gmail_message_id": None,
+                "imported_at_utc": None,
+            }
+        )
+
+    return rows
+
+
 def parse_remittance_email_body(body: str) -> List[Dict[str, object]]:
     """
     Parse a remittance email body using the GAS-compatible rules.
@@ -111,6 +182,11 @@ def parse_remittance_email_body(body: str) -> List[Dict[str, object]]:
     """
     if body is None:
         return []
+
+    if re.search(r"<\s*(table|tr|td)\b", body, flags=re.IGNORECASE):
+        html_rows = _parse_html_remittance(body)
+        if html_rows:
+            return html_rows
 
     lines = re.split(r"\r?\n", body)
     remittance_id = None

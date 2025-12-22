@@ -666,6 +666,31 @@ def test_parse_remittance_email_body_matches_gas():
     assert round(rows[1]["paid_amount"], 2) == 200000.5
 
 
+def test_parse_remittance_email_body_html_table():
+    body = """
+    <html><body>
+    <table>
+    <tr><td><b>Payment number:</b></td><td>REM-HTML-1</td></tr>
+    <tr><td><b>Payment date:</b></td><td>05-Jan-2025</td></tr>
+    <tr><td><b>Payment currency:</b></td><td>AED</td></tr>
+    </table>
+    <table>
+    <tr><td>Invoice Number</td><td>Invoice Date</td><td>Description</td><td>Other</td><td>Amount Paid</td><td>Amount Remaining</td></tr>
+    <tr><td>INV-HTML-1</td><td>01-Jan-2025</td><td>3Y51V7KY/DXB5/ Item 1</td><td>Misc</td><td>1,234.50</td><td>0.00</td></tr>
+    <tr><td>INV-HTML-2</td><td>02-Jan-2025</td><td>ABCD1234/ZZZ Item 2</td><td>Misc</td><td>200</td><td>0.00</td></tr>
+    </table>
+    </body></html>
+    """
+
+    rows = parse_remittance_email_body(body)
+
+    assert len(rows) >= 2
+    assert rows[0]["remittance_id"] == "REM-HTML-1"
+    assert rows[0]["payment_date"] == "05-Jan-2025"
+    assert rows[0]["currency"] == "AED"
+    assert rows[0]["purchase_order_number"] == "3Y51V7KY"
+
+
 def test_reconcile_marks_paid(tmp_path):
     db_path = tmp_path / "df_payments_reconcile.db"
     ensure_df_payments_tables(db_path)
