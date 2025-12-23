@@ -100,6 +100,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     status = "ok"
     details: Optional[str] = None
     cooldown_until_dt: Optional[datetime] = None
+    next_eligible_dt: Optional[datetime] = None
     last_run_iso: Optional[str] = None
     last_run_dt: Optional[datetime] = None
     refresh_meta: Dict[str, Any] = {}
@@ -117,6 +118,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         last_run_dt = last_refresh_dt
         last_run_iso = last_refresh_dt.isoformat()
         cooldown_until_dt = last_refresh_dt + timedelta(hours=getattr(rt_inventory, "COOLDOWN_HOURS", 1))
+        next_eligible_dt = cooldown_until_dt
         if cooldown_until_dt > now_utc:
             status = "cooldown"
 
@@ -135,16 +137,20 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         last_run_iso = refresh_last_finished
         last_run_dt = _parse_iso_datetime(refresh_last_finished) or last_run_dt
 
-    if refresh_status == "FAILED":
-        status = "error"
-        details = refresh_error or "Last refresh failed"
-
+    refresh_failed = refresh_status == "FAILED"
     if refresh_in_progress and status == "ok":
         status = "locked"
         details = "Refresh in progress"
+    elif refresh_failed and status != "cooldown":
+        status = "error"
+        details = refresh_error or "Last refresh failed"
 
     if status == "cooldown" and cooldown_until_dt:
         details = details or f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
+
+    if status not in {"error", "locked", "cooldown"} and next_eligible_dt is None:
+        status = "error"
+        details = details or "No schedule available"
 
     workers.append(
         {
@@ -153,8 +159,8 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "status": status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
-            "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else None,
-            "next_run_utc": _fmt_iso_utc(cooldown_until_dt if status == "cooldown" else None),
+            "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else _fmt_uae(next_eligible_dt),
+            "next_run_utc": _fmt_iso_utc(cooldown_until_dt if status == "cooldown" else next_eligible_dt),
             "details": details,
             "message": details,
             "expected_interval_minutes": None,
@@ -220,6 +226,8 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         cooldown_active = rt_sales.is_in_quota_cooldown(now_utc)
         if cooldown_active:
             cooldown_until_dt = rt_sales.get_quota_cooldown_until()
+            if cooldown_until_dt and not isinstance(cooldown_until_dt, datetime):
+                cooldown_until_dt = _parse_iso_datetime(str(cooldown_until_dt))
     except Exception:
         cooldown_active = False
         cooldown_until_dt = None
@@ -238,7 +246,10 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
                 next_eligible_dt = max(next_eligible_dt, cooldown_until_dt)
             else:
                 next_eligible_dt = cooldown_until_dt
-        details = "Quota cooldown active"
+        if cooldown_until_dt:
+            details = f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
+        else:
+            details = "Quota cooldown active"
     elif lock_row:
         if lock_stale:
             status = "error"
@@ -261,6 +272,10 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         overdue_by_minutes = overdue_delta
         if overdue_by_minutes and not details:
             details = f"Overdue by {overdue_by_minutes} minutes"
+
+    if status == "ok" and next_eligible_dt is None:
+        status = "error"
+        details = details or "No schedule available"
 
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
     if not next_eligible_dt and last_run_dt:
@@ -516,8 +531,6 @@ def get_worker_status() -> Dict[str, Any]:
         overall = "error"
     elif overdue_count:
         overall = "overdue"
-    elif waiting_count:
-        overall = "waiting"
     else:
         overall = "ok"
 

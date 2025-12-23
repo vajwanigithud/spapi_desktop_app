@@ -110,6 +110,12 @@
     .worker-card-desc { font-size:12px; color:var(--muted); margin-bottom:6px; }
     .worker-card-message { font-size:12px; color:#b45309; }
     .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px; margin-bottom:4px; }
+    .worker-card[data-status="ok"] .worker-card-status-line { color:#15803d; }
+    .worker-card[data-status="waiting"] .worker-card-status-line,
+    .worker-card[data-status="cooldown"] .worker-card-status-line,
+    .worker-card[data-status="locked"] .worker-card-status-line { color:#b45309; }
+    .worker-card[data-status="overdue"] .worker-card-status-line { color:#c2410c; }
+    .worker-card[data-status="error"] .worker-card-status-line { color:#b91c1c; }
     /* DF Payments */
     #df-payments-tab table { font-size:13px; }
     .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }

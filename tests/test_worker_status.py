@@ -15,7 +15,16 @@ def _build_app() -> FastAPI:
     return app
 
 
-def _stub_worker_status_dependencies(monkeypatch, *, now_utc: datetime, last_applied_iso: str) -> None:
+def _stub_worker_status_dependencies(
+    monkeypatch,
+    *,
+    now_utc: datetime,
+    last_applied_iso: str | None,
+    ledger_failed: int = 0,
+    cooldown: bool = False,
+    cooldown_until_iso: str | None = None,
+    lock_row: dict | None = None,
+) -> None:
     monkeypatch.setattr(routes, "_utcnow", lambda: now_utc)
     monkeypatch.setattr(routes, "get_db_connection", lambda: contextlib.nullcontext(None))
     monkeypatch.setattr(routes, "ensure_app_kv_table", lambda: None)
@@ -39,14 +48,14 @@ def _stub_worker_status_dependencies(monkeypatch, *, now_utc: datetime, last_app
             "requested": 0,
             "downloaded": 0,
             "applied": 1,
-            "failed": 0,
+            "failed": ledger_failed,
             "next_claimable_hour_utc": None,
             "last_applied_hour_utc": last_applied_iso,
         },
     )
-    monkeypatch.setattr(routes, "get_worker_lock", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(rt_sales, "is_in_quota_cooldown", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(rt_sales, "get_quota_cooldown_until", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(routes, "get_worker_lock", lambda *_args, **_kwargs: lock_row)
+    monkeypatch.setattr(rt_sales, "is_in_quota_cooldown", lambda *_args, **_kwargs: cooldown)
+    monkeypatch.setattr(rt_sales, "get_quota_cooldown_until", lambda *_args, **_kwargs: cooldown_until_iso)
     monkeypatch.setattr(routes, "get_vendor_po_status_payload", lambda *_args, **_kwargs: {"last_success_at": None})
 
 
@@ -122,4 +131,71 @@ def test_rt_sales_worker_waiting_before_next(monkeypatch):
     worker = next(w for w in data["domains"]["rt_sales"]["workers"] if w["key"] == "rt_sales_sync")
     assert worker["status"] == "waiting"
     assert worker["overdue_by_minutes"] == 0
-    assert data["summary"]["overall"] == "waiting"
+    assert data["summary"]["overall"] == "ok"
+
+
+def test_rt_sales_cooldown_not_error(monkeypatch):
+    now_utc = datetime(2025, 12, 21, 15, 5, tzinfo=timezone.utc)
+    cooldown_until = "2025-12-21T15:20:00+00:00"
+    _stub_worker_status_dependencies(
+        monkeypatch,
+        now_utc=now_utc,
+        last_applied_iso="2025-12-21T15:00:00+00:00",
+        cooldown=True,
+        cooldown_until_iso=cooldown_until,
+    )
+
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/workers/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    worker = next(w for w in data["domains"]["rt_sales"]["workers"] if w["key"] == "rt_sales_sync")
+    assert worker["status"] == "cooldown"
+    assert worker["message"].startswith("Cooldown until")
+    assert worker["next_run_utc"] is not None
+    assert data["summary"]["error_count"] == 0
+    assert data["summary"]["overall"] == "ok"
+
+
+def test_overall_prioritizes_error(monkeypatch):
+    now_utc = datetime(2025, 12, 21, 16, 40, tzinfo=timezone.utc)
+    _stub_worker_status_dependencies(
+        monkeypatch,
+        now_utc=now_utc,
+        last_applied_iso="2025-12-21T15:15:00+00:00",
+        ledger_failed=1,
+    )
+
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/workers/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["summary"]["error_count"] == 1
+    assert data["summary"]["overall"] == "error"
+
+
+def test_missing_schedule_marks_error(monkeypatch):
+    now_utc = datetime(2025, 12, 21, 15, 5, tzinfo=timezone.utc)
+    _stub_worker_status_dependencies(
+        monkeypatch,
+        now_utc=now_utc,
+        last_applied_iso=None,
+    )
+
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/workers/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    worker = next(w for w in data["domains"]["rt_sales"]["workers"] if w["key"] == "rt_sales_sync")
+    assert worker["status"] == "error"
+    assert "schedule" in (worker["message"] or "").lower()
+    assert data["summary"]["overall"] == "error"

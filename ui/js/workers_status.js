@@ -153,19 +153,19 @@
     const statuses = groups.map((g) => g.status);
     if (statuses.some((s) => s === "error")) return "error";
     if (statuses.some((s) => s === "overdue")) return "overdue";
-    if (statuses.some((s) => WAITING_STATUSES.has(s) || s === "locked" || s === "cooldown")) return "waiting";
     return "ok";
   };
 
   const overallLabel = (status, counts) => {
-    if (status === "error" || (counts && counts.error_count)) return "🛠 Workers: ERROR";
-    if (status === "overdue" || (counts && counts.overdue_count)) {
-      const cnt = (counts && counts.overdue_count) || 1;
-      return `🛠 Workers: ${cnt} Overdue`;
+    const errors = (counts && counts.error_count) || 0;
+    const overdue = (counts && counts.overdue_count) || 0;
+
+    if (status === "error" || errors) {
+      const suffix = errors === 1 ? " Error" : " Errors";
+      return `🛠 Workers: ${errors || 1}${suffix}`;
     }
-    if (status === "waiting" || (counts && counts.waiting_count)) {
-      const cnt = (counts && counts.waiting_count) || 1;
-      return `🛠 Workers: ${cnt} Waiting`;
+    if (status === "overdue" || overdue) {
+      return `🛠 Workers: ${overdue || 1} Overdue`;
     }
     return "🛠 Workers: OK";
   };
@@ -204,14 +204,21 @@
     const refs = ensureCard(card);
     if (!refs) return;
 
-    if (refs.title) refs.title.textContent = `${statusIcon(state.status)} ${state.label}`;
+    const statusValue = (state.status || "unknown").toLowerCase();
+    card.dataset.status = statusValue;
+
+    if (refs.title) refs.title.textContent = `${statusIcon(statusValue)} ${state.label}`;
     if (refs.mode) refs.mode.textContent = state.mode === "auto" ? "Automatic" : "Manual";
     if (refs.status) {
       const overdueText = state.overdueMinutes > 0 ? ` • Overdue by ${state.overdueMinutes}m` : "";
-      refs.status.textContent = `Status: ${state.status.toUpperCase()}${overdueText}`;
+      refs.status.textContent = `Status: ${statusValue.toUpperCase()}${overdueText}`;
     }
     if (refs.last) refs.last.textContent = `Last run: ${state.lastRun || "—"}`;
-    if (refs.next) refs.next.textContent = `Next run: ${state.mode === "manual" ? "—" : state.nextRun || "—"}`;
+    if (refs.next) {
+      const nextLabel = statusValue === "cooldown" ? "Cooldown until" : "Next run";
+      const nextValue = state.mode === "manual" ? "—" : state.nextRun || "—";
+      refs.next.textContent = `${nextLabel}: ${nextValue}`;
+    }
     if (refs.desc) refs.desc.textContent = state.description;
     if (refs.message) {
       if (state.message) {
@@ -257,7 +264,7 @@
     const applyData = (data) => {
       const workerMap = buildWorkerMap(data);
       const groupStates = GROUPS.map((g) => computeGroupState(g, workerMap));
-      const overall = overallStatusFromGroups(groupStates);
+      const overall = (data && data.summary && data.summary.overall) || overallStatusFromGroups(groupStates);
 
       groupStates.forEach((state) => {
         const card = sectionMap.get(state.id);
@@ -302,7 +309,10 @@
     };
 
     const startPolling = () => {
-      if (pollHandle) return;
+      if (pollHandle) {
+        window.clearInterval(pollHandle);
+        pollHandle = null;
+      }
       fetchStatus();
       pollHandle = window.setInterval(fetchStatus, POLL_MS);
     };
@@ -332,7 +342,6 @@
     if (closeBtn) closeBtn.addEventListener("click", closeModal);
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
-        stopPolling();
         startPolling();
       });
     }
