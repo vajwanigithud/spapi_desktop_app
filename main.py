@@ -2993,13 +2993,9 @@ async def api_vendor_rt_sales_fill_day(
     try:
         payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
     except ValidationError as exc:
-        detail_messages = [err.get("msg", "Invalid request body") for err in exc.errors()]
-        detail = (
-            detail_messages
-            if len(detail_messages) > 1
-            else (detail_messages[0] if detail_messages else "Invalid request body")
-        )
-        raise HTTPException(status_code=400, detail=detail)
+        err_messages = [err.get("msg", "Invalid request body") for err in exc.errors()]
+        detail = err_messages if len(err_messages) > 1 else (err_messages[0] if err_messages else "Invalid request body")
+        raise HTTPException(status_code=400, detail=detail) from exc
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid request body")
 
