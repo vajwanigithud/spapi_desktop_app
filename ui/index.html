@@ -20,30 +20,6 @@
     th, td { user-select: text; }
     tbody tr:hover { background:#f1f5f9; cursor:pointer; }
     .empty { padding:14px; color:var(--muted); text-align:center; }
-    .product-thumb {
-      display:block;
-      border-radius:6px;
-      object-fit:cover;
-      background:#f8fafc;
-      border:1px solid var(--border);
-      overflow:hidden;
-      flex-shrink:0;
-    }
-    .product-thumb.thumb-40 { width:40px; height:40px; }
-    .product-thumb.thumb-50 { width:50px; height:50px; }
-    .product-thumb.thumb-60 { width:60px; height:60px; }
-    .product-thumb.thumb-80 { width:80px; height:80px; }
-    .img-fallback {
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      background:#e5e7eb;
-      color:#94a3b8;
-      font-size:10px;
-      text-transform:uppercase;
-      letter-spacing:0.03em;
-    }
-    .thumb-muted { opacity:0.5; }
     select.po-status-select { padding:8px 12px; border-radius:8px; font-size:15px; font-weight:700; min-width:170px; }
     input.po-date-input { padding:6px 10px; border-radius:8px; font-size:15px; font-weight:700; border:1px solid var(--border); }
     .rt-sales-sortable-header { cursor:pointer; user-select:none; transition: background-color 0.15s ease; }
@@ -113,6 +89,46 @@
     .tabs { display:flex; gap:8px; margin:6px 0 0; }
     .tab-btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:600; }
     .tab-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .workers-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:8px; }
+    .worker-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+    .worker-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
+    .worker-row:first-of-type { border-top:none; padding-top:0; margin-top:0; }
+    .worker-title { font-weight:700; display:flex; align-items:center; gap:6px; }
+    .worker-meta { font-size:12px; color:var(--muted); text-align:right; }
+    .worker-what { font-size:12px; color:var(--muted); margin-top:2px; }
+    .worker-details { font-size:12px; color:#b45309; margin-top:4px; }
+    .worker-status-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; margin-left:6px; }
+    .worker-status-ok { background:#dcfce7; color:#166534; }
+    .worker-status-waiting { background:#e5e7eb; color:#1d4ed8; }
+    .worker-status-locked, .worker-status-cooldown { background:#e0f2fe; color:#0369a1; }
+    .worker-status-overdue { background:#fef3c7; color:#b45309; }
+    .worker-status-error { background:#fee2e2; color:#b91c1c; }
+    /* DF Payments */
+    #df-payments-tab table { font-size:13px; }
+    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
+    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
+    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-mini-table { width:100%; border-collapse: collapse; }
+    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
+    .dfp-table-wrap { padding:12px; overflow:auto; }
+    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
+    /* DF Payments */
+    #df-payments-tab table { font-size:13px; }
+    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
+    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
+    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-mini-table { width:100%; border-collapse: collapse; }
+    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
+    .dfp-table-wrap { padding:12px; overflow:auto; }
+    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
     /* modal */
     .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
@@ -231,9 +247,7 @@
       #catalog-table td {
         border: 1px solid var(--border);
         vertical-align: top;
-      }
-      #catalog-table th {
-        position: relative;
+        width: calc(100% / 6);
       }
       #catalog-table td:last-child {
         vertical-align: middle;
@@ -248,15 +262,34 @@
         background: #fff;
         font-size: 13px;
       }
-      .catalog-col-resize-handle {
-        position: absolute;
-        right: 0;
-        top: 0;
-        width: 6px;
-        height: 100%;
-        cursor: col-resize;
-        z-index: 2;
-        user-select: none;
+      #catalog-context-menu {
+        position: fixed;
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.2);
+        padding: 6px;
+        z-index: 40;
+        min-width: 210px;
+        display: none;
+      }
+      #catalog-context-menu button {
+        width: 100%;
+        display: block;
+        text-align: left;
+        background: #fff;
+        color: #0f172a;
+        border: none;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      #catalog-context-menu button:hover {
+        background: #f1f5f9;
+      }
+      #catalog-context-menu button.danger {
+        color: #b91c1c;
       }
       /* Conditional formatting for quantities */
       .qty-shortage { background-color: #fee2e2; color: #991b1b; font-weight: 600; }
@@ -285,6 +318,33 @@
       .rt-ledger-metric-title { font-size: 11px; text-transform: uppercase; color: #6b7280; margin-bottom: 4px; letter-spacing: 0.04em; }
       .rt-ledger-metric-value { font-size: 18px; font-weight: 700; color: #0f172a; }
       .rt-ledger-muted { font-size: 12px; color: #6b7280; font-weight: 500; }
+      /* Vendor RT Summary layout */
+      .rt-summary-layout { display: flex; gap: 16px; align-items: flex-start; padding: 12px; }
+      .rt-summary-left { flex: 0 0 32%; max-width: 420px; display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
+      .rt-summary-controls { display: flex; flex-direction: column; gap: 12px; }
+      .rt-summary-controls-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+      .rt-summary-metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+      .rt-summary-table-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; gap: 10px; }
+      .rt-summary-table-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+      .rt-summary-table-wrapper { border: 1px solid var(--border); border-radius: 10px; overflow: auto; max-height: 60vh; position: relative; background: #fff; }
+      .rt-summary-window-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #475569; }
+      .rt-summary-table-label { font-weight: 600; font-size: 14px; color: #0f172a; }
+      .rt-summary-asin-image { width: 72px; height: 72px; object-fit: contain; border-radius: 10px; background: #f8fafc; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+      #rt-sales-asin-table thead th,
+      #rt-sales-time-table thead th { position: sticky; top: 0; background: #f8fafc; z-index: 2; }
+      #rt-sales-asin-table th,
+      #rt-sales-asin-table td,
+      #rt-sales-time-table th,
+      #rt-sales-time-table td { padding: 10px; }
+      .rt-summary-detail-card { margin-top: 0; }
+      @media (max-width: 1100px) {
+        .rt-summary-layout { flex-direction: column; }
+        .rt-summary-left,
+        .rt-summary-right { max-width: none; width: 100%; }
+        .rt-summary-table-wrapper { max-height: none; }
+      }
       /* Out-of-Stock export status */
       .export-status-pending { font-weight: 600; color: #d97706; }
       .export-status-exported { opacity: 0.6; color: #6b7280; }
@@ -338,6 +398,11 @@
         opacity: 0.8;
       }
 
+      .inv-asof {
+        text-decoration: underline dotted;
+        cursor: help;
+      }
+
       .inventory-mode-toggle {
         display: flex;
         flex-wrap: wrap;
@@ -388,6 +453,15 @@
       }
       .inv-unhealthy {
         background-color: #ffeaea !important;
+      }
+      .inv-row-zero {
+        /* placeholder for zero inventory rows */
+      }
+      .inv-row-aged {
+        /* placeholder for aged rows */
+      }
+      .inv-row-unhealthy {
+        /* placeholder for unhealthy rows */
       }
       .text-right {
         text-align: right;
@@ -568,6 +642,9 @@
       <div id="vendor-po-status" style="font-size:12px; color:#6b7280; margin-right:12px;">
         <span id="vendor-po-status-label">PO Sync: Loading...</span>
       </div>
+      <button class="btn btn-outline-secondary" id="workers-status-btn" type="button" style="height:36px;">
+        🛠 Workers: OK
+      </button>
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
@@ -585,6 +662,7 @@
         <button id="tab-btn-vrt-trends" class="tab-btn" data-tab="vrt-trends" onclick="showTab('vrt-trends')">Vendor Real Time Trends</button>
         <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" onclick="showTab('vrt-audit')">Vendor Real Time Audit</button>
         <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
+        <button class="tab-btn" data-tab="df-payments" onclick="showTab('df-payments')">DF Payments</button>
         <!-- <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button> -->
         <!-- <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button> -->
       </div>
@@ -689,11 +767,11 @@
           <table id="catalog-table">
             <thead>
               <tr>
-                <th style="width:22%;">ASIN</th>
-                <th style="width:22%;">SKU</th>
-                <th style="width:18%;">Barcode</th>
-                <th style="width:26%;">Title</th>
-                <th style="width:12%;">Image</th>
+                <th>ASIN</th>
+                <th>SKU</th>
+                <th>Barcode</th>
+                <th>Title</th>
+                <th>Image</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -733,6 +811,74 @@
       </div>
     </div>
   </div>
+    <div class="panel" id="df-payments-tab" style="display:none; margin-top:14px;">
+      <h2>DF Payments</h2>
+      <div class="dfp-controls">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
+          Lookback
+          <select id="dfp-lookback">
+            <option value="90" selected>90 days</option>
+            <option value="60">60 days</option>
+            <option value="30">30 days</option>
+            <option value="7">7 days</option>
+          </select>
+        </label>
+        <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
+        <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
+        <button class="btn" id="dfp-reconcile-btn" type="button" style="background:#0f766e;">Reconcile Paid (Gmail)</button>
+        <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
+        <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
+        <div id="dfp-auto-status" class="dfp-status">Auto incremental: waiting…</div>
+      </div>
+
+      <div class="dfp-dashboard">
+        <div class="dfp-card">
+          <div class="dfp-card-title">Invoices (last 2 months)</div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Total Sales (incl VAT)</th></tr>
+            </thead>
+            <tbody id="dfp-invoices-body">
+              <tr><td colspan="2" class="empty">No invoices yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="dfp-card">
+          <div class="dfp-card-title">Cash Flow Projection (expected payments, 30d terms)</div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Expected payment</th></tr>
+            </thead>
+            <tbody id="dfp-cashflow-body">
+              <tr><td colspan="2" class="empty">Projection unavailable</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="dfp-table-wrap">
+        <table id="dfp-orders-table">
+          <thead>
+            <tr>
+              <th>PO</th>
+              <th>Order Date</th>
+              <th>Status</th>
+              <th style="text-align:right;">Units</th>
+              <th style="text-align:right;">Subtotal</th>
+              <th style="text-align:right;">VAT</th>
+              <th>Currency</th>
+              <th>Payment Status</th>
+              <th>Payment Date</th>
+              <th>Remittance IDs</th>
+              <th>SKU List</th>
+            </tr>
+          </thead>
+          <tbody id="dfp-orders-body">
+            <tr><td colspan="11" class="empty">No DF orders yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
     <!--
     <div class="panel" id="tester-tab" style="display:none; margin-top:14px;">
       <h2>SP-API Endpoint Tester</h2>
@@ -813,120 +959,138 @@
 
     <div class="panel" id="tab-vrt-summary" style="display:none; margin-top:14px;">
       <h2>Vendor Real Time Summary</h2>
-      <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <label style="font-size:14px; font-weight:600;">Lookback:</label>
-          <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
-            <option value="2">Trailing 2 hours</option>
-            <option value="4">Trailing 4 hours</option>
-            <option value="8">Trailing 8 hours</option>
-            <option value="12">Trailing 12 hours</option>
-            <option value="24">Trailing 24 hours</option>
-            <option value="48">Trailing 48 hours</option>
-          </select>
-          
-          <label style="font-size:14px; font-weight:600; margin-left:12px;">View By:</label>
-          <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
-            <option value="asin" selected>ASIN</option>
-            <option value="time">Time</option>
-          </select>
-          
-          <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()" style="margin-left:12px;">Refresh Now</button>
-        </div>
-        <div class="rt-sales-status-strip">
-          <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
-          <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
-        </div>
-        <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Missing</div>
-            <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
+      <div class="rt-summary-layout">
+        <div class="rt-summary-left">
+          <div class="rt-summary-card rt-summary-controls">
+            <div class="rt-summary-controls-row">
+              <label style="font-size:14px; font-weight:600;">Lookback:</label>
+              <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
+                <option value="2">Trailing 2 hours</option>
+                <option value="4">Trailing 4 hours</option>
+                <option value="8">Trailing 8 hours</option>
+                <option value="12">Trailing 12 hours</option>
+                <option value="24">Trailing 24 hours</option>
+                <option value="48">Trailing 48 hours</option>
+              </select>
+
+              <label style="font-size:14px; font-weight:600;">View By:</label>
+              <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
+                <option value="asin" selected>ASIN</option>
+                <option value="time">Time</option>
+              </select>
+
+              <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
+            </div>
+            <div class="rt-sales-status-strip">
+              <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
+              <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
+            </div>
           </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Requested</div>
-            <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
+
+          <div class="rt-summary-card">
+            <div id="rt-sales-summary" class="rt-summary-metrics-grid">
+              <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
+                <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
+                <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
+              </div>
+              <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
+                <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
+                <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
+              </div>
+            </div>
           </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Downloaded</div>
-            <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Applied</div>
-            <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Failed</div>
-            <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Last Applied Hour</div>
-            <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
-          </div>
-          <div class="rt-ledger-metric">
-            <div class="rt-ledger-metric-title">Next Claimable Hour</div>
-            <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+
+          <div class="rt-summary-card">
+            <div style="font-weight:600; margin-bottom:6px;">Ledger</div>
+            <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Missing</div>
+                <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Requested</div>
+                <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Downloaded</div>
+                <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Applied</div>
+                <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Failed</div>
+                <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Last Applied Hour</div>
+                <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+              </div>
+              <div class="rt-ledger-metric">
+                <div class="rt-ledger-metric-title">Next Claimable Hour</div>
+                <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div id="rt-sales-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
-          <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
-            <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
-            <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
+        <div class="rt-summary-right">
+          <div class="rt-summary-table-card">
+            <div class="rt-summary-table-head">
+              <div class="rt-summary-table-label" id="rt-sales-table-title">Top ASINs</div>
+            </div>
+            <div class="rt-summary-window-meta">
+              <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
+              <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
+            </div>
+            <div class="rt-summary-table-wrapper">
+              <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
+                <thead>
+                  <tr>
+                    <th style="width:26%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:22%; text-align:center; word-break:break-word;">Image</th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-top-asins-rows">
+                <tr><td colspan="4" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
+                </tbody>
+              </table>
+              <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
+                <thead>
+                  <tr>
+                    <th style="width:48%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('bucket_time')">Time Bucket (UAE) <span id="rt-sales-sort-bucket-time" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-time-units" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-time-revenue" class="rt-sales-sort-arrow"></span></th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-time-rows">
+                  <tr><td colspan="3" class="empty">No data available</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
-            <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
-            <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
-          </div>
-        </div>
 
-        <div style="font-weight:600; margin-top:8px;" id="rt-sales-table-title">Top ASINs</div>
-        <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
-        <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
-        <div style="overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:8px;">
-          <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
-            <thead>
-              <tr>
-                <th style="flex:1; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:center; word-break:break-word;">Image</th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
-              </tr>
-            </thead>
-            <tbody id="rt-sales-top-asins-rows">
-            <tr><td colspan="4" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
-            </tbody>
-          </table>
-          <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
-            <thead>
-              <tr>
-                <th style="flex:2; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('bucket_time')">Time Bucket (UAE) <span id="rt-sales-sort-bucket-time" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-time-units" class="rt-sales-sort-arrow"></span></th>
-                <th style="flex:1; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-time-revenue" class="rt-sales-sort-arrow"></span></th>
-              </tr>
-            </thead>
-            <tbody id="rt-sales-time-rows">
-              <tr><td colspan="3" class="empty">No data available</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div id="rt-sales-asin-detail" style="margin-top:16px; display:none;">
-          <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">-</span></div>
-          <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
-            <table>
-              <thead>
-                <tr>
-                  <th style="min-width:160px;">Hour (UTC)</th>
-                  <th style="text-align:right; width:80px;">Units</th>
-                  <th style="text-align:right; width:100px;">Revenue</th>
-                </tr>
-              </thead>
-              <tbody id="rt-sales-asin-detail-rows">
-                <tr><td colspan="3" class="empty">-</td></tr>
-              </tbody>
-            </table>
+          <div id="rt-sales-asin-detail" class="rt-summary-card rt-summary-detail-card" style="display:none;">
+            <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">-</span></div>
+            <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="min-width:160px;">Hour (UTC)</th>
+                    <th style="text-align:right; width:80px;">Units</th>
+                    <th style="text-align:right; width:100px;">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="rt-sales-asin-detail-rows">
+                  <tr><td colspan="3" class="empty">-</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
           </div>
-          <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
         </div>
       </div>
     </div>
@@ -980,7 +1144,9 @@
       <div style="padding:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
         <div style="font-size:14px; font-weight:600;">Last 30 days</div>
         <button id="audit-refresh-btn" class="btn btn-outline-secondary" onclick="refreshAuditCalendar()">Refresh Audit (DB Only)</button>
+        <button id="audit-repair-30d-btn" class="btn btn-outline-secondary" onclick="runAuditRepair30d()">Audit & Repair (Last 30 days)</button>
         <span id="audit-refresh-status" style="font-size:13px; color:#475569;"></span>
+        <span id="audit-repair-status" style="font-size:13px; color:#475569;"></span>
       </div>
       <div id="audit-calendar-grid" class="audit-calendar-grid"></div>
       <div id="audit-calendar-meta" style="font-size:13px; color:#6b7280; margin-top:8px;"></div>
@@ -1008,28 +1174,29 @@
       </div>
     </div>
   <div class="panel" id="inventory-tab" style="display:none; margin-top:14px;">
-    <h2>Vendor Inventory</h2>
+    <h2>Real-Time Inventory</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div class="inventory-mode-toggle">
-        <div style="display:flex; gap:6px;">
-          <button id="inventory-toggle-weekly" class="inventory-toggle-btn active" onclick="setInventoryMode('weekly')">Weekly Snapshot</button>
-          <button id="inventory-toggle-realtime" class="inventory-toggle-btn" onclick="setInventoryMode('realtime')">Real-time Snapshot</button>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <span id="inv-week-label" class="muted-text"></span>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
+            <a id="inv-coverage-why" href="#" style="font-size:12px; color:#2563eb; text-decoration:none; display:none;" onclick="openInventoryCoverageModal(); return false;">ⓘ Why coverage is low?</a>
+          </div>
+          <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
+            Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
+          </div>
         </div>
-        <span id="inv-week-label" class="muted-text"></span>
-      </div>
 
-      <!-- Controls row -->
-      <div class="inventory-controls">
-        <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Snapshot</button>
-        <button id="inv-download-btn" class="btn" style="background:#16a34a;" onclick="downloadVendorInventorySnapshotCsv()">Download CSV (current view)</button>
-        <span id="inv-status-label" class="muted-text"></span>
-      </div>
+        <!-- Controls row -->
+        <div class="inventory-controls">
+          <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Inventory</button>
+          <span id="inv-status-label" class="muted-text"></span>
+        </div>
 
       <!-- Inner subtabs -->
       <div class="inventory-subtabs" style="display:none;">
-        <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">Snapshot (All ASINs)</button>
-        <button id="inv-subtab-aged" class="inventory-subtab-button" onclick="setInventorySubtab('aged')">Legacy 90+ Days</button>
-        <button id="inv-subtab-unhealthy" class="inventory-subtab-button" onclick="setInventorySubtab('unhealthy')">Legacy Excess</button>
+        <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">All ASINs</button>
       </div>
 
       <!-- Search and Quick Filters -->
@@ -1101,6 +1268,22 @@
     </div>
   </div>
 
+  <!-- Inventory coverage explainer modal -->
+  <div class="backdrop" id="inventory-coverage-modal" style="display:none;">
+    <div class="modal" style="max-width:720px;">
+      <header>
+        <div id="inventory-coverage-title">Why real-time coverage can look low</div>
+        <button class="btn" style="background:#111827" onclick="closeInventoryCoverageModal()">Close</button>
+      </header>
+      <div class="modal-body" id="inventory-coverage-body"></div>
+    </div>
+  </div>
+
+  <div id="catalog-context-menu">
+    <button class="danger" onclick="handleCatalogContextDelete()">Delete from Catalog List</button>
+    <button onclick="closeCatalogContextMenu()">Cancel</button>
+  </div>
+
   <script>
     let vendorPOs = [];
     let filteredPOs = [];
@@ -1132,9 +1315,6 @@
       "Needs Catalog (Active)",
       "Blocked (Retries Exhausted)",
     ]);
-    const CATALOG_COL_WIDTH_KEY = "catalog_table_col_widths_v1";
-    let catalogColWidths = [];
-    let catalogResizeState = null;
     let activeTab = "pos";
     let oosItems = [];
     let selectedPoNumbers = [];
@@ -1149,24 +1329,17 @@
     let recentNotifications = [];
     let vendorInventorySnapshot = [];
     let vendorInventoryMeta = null;
-    let inventoryMode = 'weekly';
-    let weeklyInventorySnapshot = [];
-    let weeklyInventoryMeta = null;
-    let realtimeInventorySnapshot = [];
-    let realtimeInventoryMeta = null;
+    let inventoryMode = 'realtime';
     let currentInventorySubtab = 'snapshot';
     let invSortColumn = 'sellable';
     let invSortDirection = 'desc';
     let invQuickFilter = 'all';
     let invRealtimeRefreshInFlight = false;
-    let weeklyFetchInFlight = false;
-    let weeklyRefreshInFlight = false;
     let inventoryAutoRefreshRequested = false;
     let inventoryFetchInFlight = false;
     let inventoryFetchPromise = null;
     let lastRealtimeFetchAt = 0;
-    const INVENTORY_REFRESH_POLL_INTERVAL_MS = 15000;
-    const INVENTORY_FETCH_DEBOUNCE_MS = 60 * 1000;
+    const INVENTORY_REFRESH_POLL_INTERVAL_MS = 5 * 60 * 1000;    const INVENTORY_FETCH_DEBOUNCE_MS = 60 * 1000;
     let inventoryRefreshPollTimer = null;
     let inventoryRefreshPollingActive = false;
     let catalogAsinMapCache = null;
@@ -1176,6 +1349,7 @@
     let catalogHealthSummary = null;
     let catalogActionableOnly = false;
     let catalogSortMode = "bucket";
+    let catalogContextMenuAsin = null;
 
     const INTERNAL_STATUS_OPTIONS = [
       "Pending",
@@ -1183,31 +1357,6 @@
       "Appointment Scheduled",
       "Delivered",
     ];
-
-    function toAmazonThumb(url) {
-      if (typeof url !== "string") return url;
-      const trimmed = url.trim();
-      if (!trimmed) return url;
-      if (!trimmed.includes("m.media-amazon.com/images/")) return url;
-      if (/\._SL\d+_\.jpg/i.test(trimmed)) return trimmed;
-      return trimmed.replace(
-        /(\/I\/[^.]+)\.jpg(\?.*)?$/i,
-        (_, base, query = "") => `${base}._SL110_.jpg${query || ""}`
-      );
-    }
-
-    function handleImageError(imgEl) {
-      if (!imgEl || imgEl.dataset.fallbackApplied) return;
-      imgEl.dataset.fallbackApplied = "1";
-      const classes = Array.from(imgEl.classList || []);
-      if (!classes.includes("product-thumb")) classes.push("product-thumb");
-      if (!classes.some(cls => cls.startsWith("thumb-"))) classes.push("thumb-60");
-      classes.push("img-fallback");
-      const placeholder = document.createElement("div");
-      placeholder.className = classes.join(" ");
-      placeholder.setAttribute("aria-hidden", "true");
-      imgEl.replaceWith(placeholder);
-    }
 
     function getRowColorForStatus(status) {
       switch (status) {
@@ -1794,10 +1943,9 @@
         }
 
         const rawImageUrl = resolveImage(it);
-        const thumbSrc = rawImageUrl ? toAmazonThumb(rawImageUrl) : "";
         const img = rawImageUrl
-          ? `<img src="${thumbSrc}" alt="" class="product-thumb thumb-60" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
-          : `<div class="product-thumb thumb-60 img-fallback img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}">No image</div>`;
+          ? `<img src="${rawImageUrl}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`
+          : `<div class="img-placeholder" data-asin="${asin || ""}" data-sku="${vendorSku || ""}" style="width:60px; height:60px; background:#e5e7eb; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size:11px;">No image</div>`;
         const encodedImage = encodeURIComponent(rawImageUrl || "");
 
         return `<tr${rowClass} data-ean="${escapeAttr(lineEan)}" data-sku="${escapeAttr(vendorSku)}" data-prompt-if-missing="true" oncontextmenu="markItemOos(event, '${poNumber}', '${asin}', '${vendorSku}', '${po.purchaseOrderDate || d.purchaseOrderDate || ""}', '${shipTo}', '${qtyAmount}', '${encodedImage}')">
@@ -2013,8 +2161,7 @@
         const asin = ph.dataset.asin;
         const cached = catalogImageCache[asin];
         if (cached) {
-          const thumbSrc = toAmazonThumb(cached);
-          ph.outerHTML = `<img src="${thumbSrc}" alt="" class="product-thumb thumb-60" loading="lazy" decoding="async" onerror="handleImageError(this)" />`;
+          ph.outerHTML = `<img src="${cached}" alt="" style="max-width:60px;max-height:60px;border-radius:6px;object-fit:contain;" />`;
         }
       });
     }
@@ -2856,6 +3003,7 @@
     }
 
     async function loadAsinList(force = false) {
+      closeCatalogContextMenu();
       const tbody = document.getElementById("asin-rows");
       tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading...</td></tr>';
       try {
@@ -3052,122 +3200,6 @@
       return `catalog_audit_${stamp}.csv`;
     }
 
-    function initCatalogColumnResizing() {
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      const headers = table.querySelectorAll("th");
-      headers.forEach((th, index) => {
-        th.dataset.colIndex = index;
-        if (!th.querySelector(".catalog-col-resize-handle")) {
-          const handle = document.createElement("span");
-          handle.className = "catalog-col-resize-handle";
-          handle.dataset.colIndex = index;
-          handle.addEventListener("mousedown", onCatalogResizeMouseDown);
-          th.appendChild(handle);
-        }
-      });
-      try {
-        const saved = localStorage.getItem(CATALOG_COL_WIDTH_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            catalogColWidths = parsed;
-          }
-        }
-      } catch (err) {
-        catalogColWidths = [];
-      }
-      applyCatalogColumnWidths();
-    }
-
-    function onCatalogResizeMouseDown(event) {
-      event.preventDefault();
-      const handle = event.currentTarget;
-      const index = Number(handle.dataset.colIndex);
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      const header = table.querySelectorAll("th")[index];
-      if (!header) return;
-      catalogResizeState = {
-        columnIndex: index,
-        startX: event.pageX,
-        startWidth: header.offsetWidth,
-      };
-      document.body.style.cursor = "col-resize";
-      document.addEventListener("mousemove", onCatalogResizeMouseMove);
-      document.addEventListener("mouseup", onCatalogResizeMouseUp);
-    }
-
-    function onCatalogResizeMouseMove(event) {
-      if (!catalogResizeState) return;
-      const delta = event.pageX - catalogResizeState.startX;
-      const newWidth = Math.max(60, catalogResizeState.startWidth + delta);
-      setCatalogColumnWidth(catalogResizeState.columnIndex, newWidth);
-    }
-
-    function onCatalogResizeMouseUp() {
-      if (!catalogResizeState) return;
-      document.body.style.cursor = "";
-      document.removeEventListener("mousemove", onCatalogResizeMouseMove);
-      document.removeEventListener("mouseup", onCatalogResizeMouseUp);
-      try {
-        localStorage.setItem(CATALOG_COL_WIDTH_KEY, JSON.stringify(catalogColWidths));
-      } catch (err) {
-        console.warn("Failed to persist catalog widths", err);
-      }
-      catalogResizeState = null;
-    }
-
-    function setCatalogColumnWidth(index, width) {
-      if (typeof index !== "number" || index < 0) return;
-      const table = document.getElementById("catalog-table");
-      if (!table) return;
-      catalogColWidths[index] = width;
-      const headers = table.querySelectorAll("th");
-      const header = headers[index];
-      if (header) {
-        header.style.width = `${width}px`;
-        header.style.minWidth = `${width}px`;
-        header.style.maxWidth = `${width}px`;
-      }
-      const rows = table.querySelectorAll("tbody tr");
-      rows.forEach(row => {
-        const cell = row.children[index];
-        if (cell) {
-          cell.style.width = `${width}px`;
-          cell.style.minWidth = `${width}px`;
-          cell.style.maxWidth = `${width}px`;
-        }
-      });
-    }
-
-    function applyCatalogColumnWidths() {
-      const table = document.getElementById("catalog-table");
-      if (!table || !catalogColWidths || !catalogColWidths.length) return;
-      const headers = table.querySelectorAll("th");
-      headers.forEach((th, index) => {
-        const width = catalogColWidths[index];
-        if (width) {
-          th.style.width = `${width}px`;
-          th.style.minWidth = `${width}px`;
-          th.style.maxWidth = `${width}px`;
-        }
-      });
-      const rows = table.querySelectorAll("tbody tr");
-      rows.forEach(row => {
-        const cells = row.children;
-        catalogColWidths.forEach((width, idx) => {
-          if (!width) return;
-          const cell = cells[idx];
-          if (cell) {
-            cell.style.width = `${width}px`;
-            cell.style.minWidth = `${width}px`;
-            cell.style.maxWidth = `${width}px`;
-          }
-        });
-      });
-    }
-
     async function fetchAllMissing() {
       const tbody = document.getElementById("asin-rows");
       tbody.innerHTML = '<tr><td colspan="6" class="empty">Fetching all missing... this may take time.</td></tr>';
@@ -3240,7 +3272,7 @@
         const qty = it.qty ?? "";
         const exportStatus = it.export_status || "pending";
         const img = it.image
-          ? `<img src="${toAmazonThumb(it.image)}" alt="" class="product-thumb thumb-50" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+          ? `<img src="${it.image}" alt="" style="max-width:50px;max-height:50px;object-fit:contain;border-radius:6px;" />`
           : "";
         
         // Row styling: slightly grey out exported items
@@ -3302,7 +3334,7 @@
         const rowSku = sku;
 
         const imageCell = item.image
-          ? `<img src="${toAmazonThumb(item.image)}" alt="" class="product-thumb thumb-80" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+          ? `<img src="${item.image}" alt="" style="width:80px;height:80px;object-fit:contain;border-radius:6px;" />`
           : "";
 
         const barcodeCell = isValidBarcode
@@ -3377,7 +3409,7 @@
         if (bucketBadgeHtml) asinCellParts.push(bucketBadgeHtml);
         const asinCellHtml = asinCellParts.join("");
 
-        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')">
+        return `<tr data-ean="${escapeAttr(eanValue)}" data-sku="${escapeAttr(rowSku)}" ondblclick="showCatalogDetails('${asin}')" oncontextmenu="openCatalogContextMenu(event, '${asin}')">
           <td>${asinCellHtml}</td>
           <td>${sku}</td>
           <td>${barcodeCell}</td>
@@ -3393,8 +3425,80 @@
           </td>
         </tr>`;
       }).join("");
-      applyCatalogColumnWidths();
     }
+
+    function openCatalogContextMenu(event, asin) {
+      if (activeTab !== "catalog") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const menu = document.getElementById("catalog-context-menu");
+      if (!menu) return;
+      catalogContextMenuAsin = asin;
+      menu.dataset.asin = asin;
+      menu.style.display = "block";
+      const padding = 8;
+      const rect = menu.getBoundingClientRect();
+      let left = event.clientX;
+      let top = event.clientY;
+      if (left + rect.width > window.innerWidth - padding) {
+        left = window.innerWidth - rect.width - padding;
+      }
+      if (top + rect.height > window.innerHeight - padding) {
+        top = window.innerHeight - rect.height - padding;
+      }
+      menu.style.left = `${Math.max(padding, left)}px`;
+      menu.style.top = `${Math.max(padding, top)}px`;
+    }
+
+    function closeCatalogContextMenu() {
+      const menu = document.getElementById("catalog-context-menu");
+      if (menu) {
+        menu.style.display = "none";
+        menu.dataset.asin = "";
+      }
+      catalogContextMenuAsin = null;
+    }
+
+    async function handleCatalogContextDelete() {
+      const asin = catalogContextMenuAsin || (document.getElementById("catalog-context-menu")?.dataset?.asin || "").trim();
+      if (!asin) {
+        closeCatalogContextMenu();
+        return;
+      }
+      const ok = confirm(`Delete ${asin} from Catalog Fetcher list?\nThis removes it only from Catalog Fetcher.`);
+      if (!ok) {
+        closeCatalogContextMenu();
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/catalog/asins/${asin}`, { method: "DELETE" });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.ok === false) {
+          const msg = data.detail || data.error || `HTTP ${resp.status}`;
+          throw new Error(msg);
+        }
+        showToast(`Removed ${asin} from Catalog list`);
+        await loadAsinList(true);
+      } catch (err) {
+        alert(`Failed to delete ${asin}: ${err?.message || err}`);
+      } finally {
+        closeCatalogContextMenu();
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const menu = document.getElementById("catalog-context-menu");
+      if (!menu || menu.style.display === "none") return;
+      if (!menu.contains(event.target)) {
+        closeCatalogContextMenu();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeCatalogContextMenu();
+      }
+    });
 
     async function fetchCatalog(asin, btnEl) {
       if (btnEl) {
@@ -3651,11 +3755,7 @@
           const rowStyle = isOos ? 'style="opacity:0.6; background:#fff5f5;"' : '';
           const qtyStyle = isOos ? 'style="font-weight:700; text-align:center; color:#b91c1c; text-decoration:line-through;"' : 'style="font-weight:700; text-align:center;"';
           const asinStyle = isOos ? 'style="text-decoration:line-through; color:#666;"' : '';
-          const thumbClasses = ['product-thumb', 'thumb-80'];
-          if (isOos) thumbClasses.push('thumb-muted');
-          const img = it.image
-            ? `<img src="${toAmazonThumb(it.image)}" alt="" class="${thumbClasses.join(' ')}" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
-            : "";
+          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;${isOos ? 'opacity:0.5;' : ''}" />` : "";
           const sku = it.sku || it.externalId || "";
           const oosLabel = isOos ? ' <span style="color:#b91c1c; font-size:11px; font-weight:700;">[OOS]</span>' : '';
           return `<tr ${rowStyle}>
@@ -4216,7 +4316,7 @@
 
       tbody.innerHTML = data.map(asin_row => {
         const imageHtml = asin_row.imageUrl
-          ? `<img src="${toAmazonThumb(asin_row.imageUrl)}" alt="${asin_row.asin}" class="product-thumb thumb-40" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" class="rt-summary-asin-image" loading="eager" decoding="sync" />`
           : '—';
         return `
           <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
@@ -4404,21 +4504,6 @@
       statusEl.style.color = color || '';
     }
 
-    function isVendorInventorySnapshotStale(meta) {
-      if (typeof meta?.stale_hours === 'number') {
-        return meta.stale_hours >= 24;
-      }
-      if (!meta || !meta.as_of) {
-        return false;
-      }
-      const asOfDate = new Date(meta.as_of);
-      if (Number.isNaN(asOfDate.getTime())) {
-        return false;
-      }
-      const ageMs = Date.now() - asOfDate.getTime();
-      return ageMs > 24 * 60 * 60 * 1000;
-    }
-
     function formatInventoryAsOf(meta) {
       if (!meta) return null;
       if (meta.as_of_uae) {
@@ -4436,82 +4521,89 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
+      const coverageEl = document.getElementById('inv-coverage-label');
+      const coverageWhyEl = document.getElementById('inv-coverage-why');
       if (!labelEl) return;
-      if (inventoryMode === 'weekly') {
-        const count = weeklyInventorySnapshot.length;
-        labelEl.textContent = `Weekly | Loaded ${count} ASINs`;
-        return;
+      const metaSafe = vendorInventoryMeta || meta || {};
+      const count = Array.isArray(vendorInventorySnapshot) ? vendorInventorySnapshot.length : 0;
+      const asOfLabel =
+        formatInventoryAsOf({
+          as_of: metaSafe.as_of || metaSafe.generated_at || metaSafe.as_of_utc,
+          as_of_uae: metaSafe.as_of_uae,
+        }) || metaSafe.as_of_utc || '—';
+      const coverageLabel = metaSafe.coverage_label;
+      const scopeExplanation = metaSafe.inventory_scope_explanation;
+      if (coverageEl) {
+        if (coverageLabel) {
+          const parts = [coverageLabel];
+          if (scopeExplanation) {
+            parts.push(scopeExplanation);
+          }
+          coverageEl.textContent = parts.join(' - ');
+          coverageEl.style.display = 'block';
+          if (coverageWhyEl) coverageWhyEl.style.display = 'inline-flex';
+        } else {
+          coverageEl.textContent = '';
+          coverageEl.style.display = 'none';
+          if (coverageWhyEl) coverageWhyEl.style.display = 'none';
+        }
       }
-      const realtimeMeta = realtimeInventoryMeta || meta || {};
-      const count = realtimeInventorySnapshot.length;
-      const asOfLabel = formatInventoryAsOf({
-        as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
-        as_of_uae: realtimeMeta.as_of_uae,
-      });
-      if (asOfLabel) {
-        labelEl.textContent = `Real-time | Loaded ${count} ASINs | As of ${asOfLabel}`;
-      } else {
-        labelEl.textContent = `Real-time | Loaded ${count} ASINs`;
+      const windowStart =
+        metaSafe.window_start_uae ||
+        metaSafe.report_window_start_uae ||
+        metaSafe.window_start_local ||
+        metaSafe.window_start_utc ||
+        metaSafe.report_window_start_utc ||
+        metaSafe.window_start;
+      const windowEnd =
+        metaSafe.window_end_uae ||
+        metaSafe.report_window_end_uae ||
+        metaSafe.window_end_local ||
+        metaSafe.window_end_utc ||
+        metaSafe.report_window_end_utc ||
+        metaSafe.window_end;
+
+      let labelParts = [`Real-Time | Loaded ${count} ASINs`];
+      if (windowStart || windowEnd) {
+        const windowSegments = [];
+        if (windowStart) windowSegments.push(windowStart);
+        if (windowEnd) windowSegments.push(windowEnd);
+        const windowText = windowSegments.length === 2 ? `${windowSegments[0]} -> ${windowSegments[1]}` : windowSegments.join('');
+        labelParts.push(`Window: ${windowText}`);
+      } else if (asOfLabel) {
+        labelParts.push(`As of ${asOfLabel}`);
       }
+      labelEl.textContent = labelParts.join(' | ');
     }
 
     function updateInventoryModeButtons() {
-      const weeklyBtn = document.getElementById('inventory-toggle-weekly');
       const realtimeBtn = document.getElementById('inventory-toggle-realtime');
-      if (weeklyBtn) {
-        weeklyBtn.classList.toggle('active', inventoryMode === 'weekly');
-      }
       if (realtimeBtn) {
-        realtimeBtn.classList.toggle('active', inventoryMode === 'realtime');
+        realtimeBtn.classList.add('active');
       }
     }
 
     function setInventoryMode(mode) {
-      if (mode !== 'weekly' && mode !== 'realtime') return;
-      if (inventoryMode === mode) return;
-      inventoryMode = mode;
+      if (mode !== 'realtime' || inventoryMode === 'realtime') return;
+      inventoryMode = 'realtime';
       updateInventoryModeButtons();
       updateInventoryRefreshButtonState();
-      if (mode === 'weekly') {
-        if (weeklyInventorySnapshot.length === 0) {
-          fetchWeeklyInventorySnapshot();
-        } else {
-          vendorInventorySnapshot = weeklyInventorySnapshot.slice();
-          vendorInventoryMeta = weeklyInventoryMeta;
-          updateInventoryFreshnessUi(weeklyInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-        }
-      } else {
-        if (realtimeInventorySnapshot.length === 0) {
-          fetchRealtimeInventorySnapshot();
-        } else {
-          vendorInventorySnapshot = realtimeInventorySnapshot.slice();
-          vendorInventoryMeta = realtimeInventoryMeta;
-          updateInventoryFreshnessUi(realtimeInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-        }
-      }
+      loadInventorySnapshotIfNeeded();
     }
 
 
     function updateInventoryRefreshButtonState() {
       const refreshBtn = document.getElementById('inv-refresh-btn');
       if (!refreshBtn) return;
-      if (inventoryMode === 'weekly') {
-        const loading = weeklyFetchInFlight || weeklyRefreshInFlight;
-        refreshBtn.disabled = loading;
-        refreshBtn.textContent = loading ? 'Refreshing Weekly…' : 'Refresh Weekly Snapshot';
-        return;
-      }
       const refreshRunning = !!(
-        realtimeInventoryMeta?.refresh_in_progress || realtimeInventoryMeta?.refresh?.in_progress
+        vendorInventoryMeta?.refresh_in_progress || vendorInventoryMeta?.refresh?.in_progress
       );
       if (invRealtimeRefreshInFlight || refreshRunning) {
         refreshBtn.disabled = true;
-        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing Real-time…';
+        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing inventory…';
       } else {
         refreshBtn.disabled = false;
-        refreshBtn.textContent = 'Refresh Real-time Snapshot';
+        refreshBtn.textContent = 'Refresh Inventory';
       }
     }
 
@@ -4545,16 +4637,7 @@
     function updateInventoryFreshnessUi(meta, { clearStatusWhenFresh = false } = {}) {
       updateInventoryModeButtons();
       updateInventoryFreshnessLabel(meta);
-      if (inventoryMode === 'weekly') {
-        updateInventoryRefreshButtonState();
-        if (clearStatusWhenFresh) {
-          setInventoryStatus('');
-        }
-        return;
-      }
-
-      const realtimeMeta = realtimeInventoryMeta || meta || {};
-      const refreshRunning = !!(realtimeMeta.refresh_in_progress || realtimeMeta.refresh?.in_progress);
+      const refreshRunning = !!(meta?.refresh_in_progress || meta?.refresh?.in_progress);
       if (refreshRunning) {
         setInventoryStatus('Refresh in progress…');
         inventoryAutoRefreshRequested = true;
@@ -4566,32 +4649,87 @@
       stopInventoryRefreshPolling();
       updateInventoryRefreshButtonState();
       inventoryAutoRefreshRequested = false;
-      const stale = isVendorInventorySnapshotStale({ as_of: realtimeMeta.as_of || realtimeMeta.generated_at });
-      if (stale) {
-        setInventoryStatus('⚠️ Snapshot older than 24 hours — refreshing…', '#b45309');
-        refreshRealtimeInventorySnapshot({ silent: true });
-      } else if (clearStatusWhenFresh) {
+      if (clearStatusWhenFresh) {
         setInventoryStatus('');
       }
     }
 
-    function loadInventorySnapshotIfNeeded(forceReload = false) {
-      if (inventoryMode === 'weekly') {
-        if (!forceReload && weeklyInventorySnapshot.length > 0) {
-          vendorInventorySnapshot = weeklyInventorySnapshot.slice();
-          vendorInventoryMeta = weeklyInventoryMeta;
-          updateInventoryFreshnessUi(weeklyInventoryMeta);
-          renderVendorInventoryCurrentSubtab();
-          return;
-        }
-        fetchWeeklyInventorySnapshot({ silent: !forceReload });
-        return;
-      }
+    function openInventoryCoverageModal() {
+      const modal = document.getElementById('inventory-coverage-modal');
+      const body = document.getElementById('inventory-coverage-body');
+      if (!modal || !body) return;
 
-      if (!forceReload && realtimeInventorySnapshot.length > 0) {
-        vendorInventorySnapshot = realtimeInventorySnapshot.slice();
-        vendorInventoryMeta = realtimeInventoryMeta;
-        updateInventoryFreshnessUi(realtimeInventoryMeta);
+      const meta = vendorInventoryMeta || realtimeInventoryMeta || {};
+      const refreshMeta = meta.refresh || {};
+
+      const uniqueCount = Number.isFinite(meta.unique_count) ? meta.unique_count : null;
+      const catalogCount = Number.isFinite(meta.catalog_asin_count) ? meta.catalog_asin_count : null;
+      const coverageRatio = Number.isFinite(meta.coverage_ratio) ? meta.coverage_ratio : null;
+
+      const windowStart =
+        meta.window_start_uae ||
+        meta.report_window_start_uae ||
+        meta.window_start_local ||
+        meta.window_start_utc ||
+        meta.report_window_start_utc ||
+        meta.window_start ||
+        refreshMeta.window_start_uae ||
+        refreshMeta.report_window_start_uae ||
+        refreshMeta.window_start_local ||
+        refreshMeta.window_start_utc ||
+        refreshMeta.report_window_start_utc ||
+        refreshMeta.window_start;
+
+      const windowEnd =
+        meta.window_end_uae ||
+        meta.report_window_end_uae ||
+        meta.window_end_local ||
+        meta.window_end_utc ||
+        meta.report_window_end_utc ||
+        meta.window_end ||
+        refreshMeta.window_end_uae ||
+        refreshMeta.report_window_end_uae ||
+        refreshMeta.window_end_local ||
+        refreshMeta.window_end_utc ||
+        refreshMeta.report_window_end_utc ||
+        refreshMeta.window_end;
+
+      const asOfUae = meta.as_of_uae || refreshMeta.as_of_uae || null;
+
+      const fmtNumber = (val) => (Number.isFinite(val) ? val.toLocaleString() : '—');
+      const fmtPercent = (val) => (Number.isFinite(val) ? `${(val * 100).toFixed(1)}%` : '—');
+      const fmtText = (val) => (val ? String(val) : '—');
+
+      body.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:12px; font-size:13px; color:#111827;">
+          <div>Realtime inventory comes from <strong>GET_VENDOR_REAL_TIME_INVENTORY_REPORT</strong>.</div>
+          <div>Amazon includes only ASINs present in that report window; Vendor Central exports can contain more ASINs.</div>
+          <div>We intentionally prune vendor_inventory_asin to the latest snapshot so the DB matches what the UI shows.</div>
+          <div style="border:1px solid var(--border); border-radius:10px; padding:10px; background:#f8fafc;">
+            <div style="font-weight:700; margin-bottom:8px;">Current snapshot metrics</div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
+              <div><span class="muted-text">Unique ASINs in snapshot:</span> ${fmtNumber(uniqueCount)}</div>
+              <div><span class="muted-text">Catalog ASINs (known):</span> ${fmtNumber(catalogCount)}</div>
+              <div><span class="muted-text">Coverage ratio:</span> ${fmtPercent(coverageRatio)}</div>
+              <div><span class="muted-text">Report start:</span> ${fmtText(windowStart)}</div>
+              <div><span class="muted-text">Report end:</span> ${fmtText(windowEnd)}</div>
+              <div><span class="muted-text">As of (UAE):</span> ${fmtText(asOfUae)}</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      modal.style.display = 'flex';
+    }
+
+    function closeInventoryCoverageModal() {
+      const modal = document.getElementById('inventory-coverage-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function loadInventorySnapshotIfNeeded(forceReload = false) {
+      if (!forceReload && vendorInventorySnapshot.length > 0) {
+        updateInventoryFreshnessUi(vendorInventoryMeta);
         renderVendorInventoryCurrentSubtab();
         return;
       }
@@ -4607,10 +4745,10 @@
         return Promise.resolve();
       }
       if (!silent) {
-        setInventoryStatus('Loading real-time inventory…');
+        setInventoryStatus('Loading inventory…');
       }
       inventoryFetchInFlight = true;
-      const request = fetch('/api/vendor-inventory/realtime/snapshot')
+      const request = fetch('/api/vendor-inventory/realtime/accumulated')
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
@@ -4621,12 +4759,10 @@
         })
         .catch((err) => {
           console.error(err);
-          setInventoryStatus('Failed to load real-time snapshot: ' + (err?.message || err), '#b91c1c');
-          if (inventoryMode === 'realtime') {
-            vendorInventorySnapshot = [];
-            vendorInventoryMeta = null;
-            renderVendorInventoryCurrentSubtab();
-          }
+          setInventoryStatus('Failed to load inventory: ' + (err?.message || err), '#b91c1c');
+          vendorInventorySnapshot = [];
+          vendorInventoryMeta = null;
+          renderVendorInventoryCurrentSubtab();
         })
         .finally(() => {
           inventoryFetchInFlight = false;
@@ -4637,7 +4773,7 @@
     }
 
     function applyRealtimeInventoryPayload(data, { silent = false } = {}) {
-      const rows = Array.isArray(data?.items) ? data.items : [];
+      const rows = Array.isArray(data?.rows) ? data.rows : Array.isArray(data?.items) ? data.items : [];
       const refreshMeta = data?.refresh || {};
       const asOfUtc = data?.as_of_utc || data?.as_of || data?.generated_at || null;
       const meta = {
@@ -4648,20 +4784,15 @@
         generated_at: data?.generated_at || null,
         refresh_in_progress: Boolean(data?.refresh_in_progress || refreshMeta?.in_progress),
         refresh: refreshMeta,
+        count: Number.isFinite(data?.count) ? Number(data.count) : rows.length,
       };
-      realtimeInventorySnapshot = rows.slice();
-      realtimeInventoryMeta = meta;
-      if (inventoryMode === 'realtime') {
-        vendorInventorySnapshot = rows.slice();
-        vendorInventoryMeta = meta;
-        if (!silent) {
-          setInventoryStatus(`Loaded ${rows.length} ASINs`);
-        }
-        updateInventoryFreshnessUi(meta, { clearStatusWhenFresh: silent });
-        renderVendorInventoryCurrentSubtab();
-      } else if (!silent) {
-        setInventoryStatus(`Real-time snapshot updated (${rows.length} ASINs)`);
+      vendorInventorySnapshot = rows.slice();
+      vendorInventoryMeta = meta;
+      if (!silent) {
+        setInventoryStatus(`Loaded ${rows.length} ASINs`);
       }
+      updateInventoryFreshnessUi(meta, { clearStatusWhenFresh: silent });
+      renderVendorInventoryCurrentSubtab();
       updateInventoryRefreshButtonState();
     }
 
@@ -4673,7 +4804,7 @@
       invRealtimeRefreshInFlight = true;
       updateInventoryRefreshButtonState();
       if (!silent) {
-        setInventoryStatus(force ? 'Force refreshing real-time snapshot…' : 'Refreshing real-time inventory…');
+        setInventoryStatus(force ? 'Force refreshing inventory…' : 'Refreshing inventory…');
       }
 
       fetch('/api/vendor-inventory/realtime/refresh', {
@@ -4687,7 +4818,7 @@
         .then((data) => {
           if (data?.status === 'error' || data?.status === 'quota_error') {
             const message = data?.error || 'Refresh failed';
-            setInventoryStatus('Failed to refresh real-time snapshot: ' + message, '#b91c1c');
+            setInventoryStatus('Failed to refresh inventory: ' + message, '#b91c1c');
             return;
           }
           if (data?.status === 'skipped') {
@@ -4711,99 +4842,8 @@
     }
 
     function refreshCurrentInventorySnapshot(options = {}) {
-      if (inventoryMode === 'weekly') {
-        refreshWeeklyInventorySnapshot(options);
-      } else {
-        refreshRealtimeInventorySnapshot(options);
-      }
+      refreshRealtimeInventorySnapshot(options);
     }
-
-    function fetchWeeklyInventorySnapshot({ silent = false } = {}) {
-      if (weeklyFetchInFlight) {
-        return Promise.resolve();
-      }
-      weeklyFetchInFlight = true;
-      updateInventoryRefreshButtonState();
-      if (!silent) {
-        setInventoryStatus('Loading weekly snapshot…');
-      }
-      return fetch('/api/vendor-inventory/snapshot')
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.json();
-        })
-        .then((data) => {
-          applyWeeklyInventoryPayload(data, { silent });
-        })
-        .catch((err) => {
-          console.error(err);
-          setInventoryStatus('Failed to load weekly snapshot: ' + (err?.message || err), '#b91c1c');
-        })
-        .finally(() => {
-          weeklyFetchInFlight = false;
-          updateInventoryRefreshButtonState();
-        });
-    }
-
-    function applyWeeklyInventoryPayload(data, { silent = false } = {}) {
-      const rows = Array.isArray(data?.items) ? data.items : [];
-      weeklyInventorySnapshot = rows.slice();
-      weeklyInventoryMeta = {
-        week_start_date: data?.week_start_date || null,
-        week_end_date: data?.week_end_date || null,
-        count: rows.length,
-      };
-      if (inventoryMode === 'weekly') {
-        vendorInventorySnapshot = rows.slice();
-        vendorInventoryMeta = weeklyInventoryMeta;
-        if (!silent) {
-          setInventoryStatus(`Loaded ${rows.length} weekly ASINs`);
-        }
-        updateInventoryFreshnessUi(weeklyInventoryMeta, { clearStatusWhenFresh: silent });
-        renderVendorInventoryCurrentSubtab();
-      }
-    }
-
-    function refreshWeeklyInventorySnapshot(options = {}) {
-      const { silent = false } = options;
-      if (weeklyRefreshInFlight) {
-        return;
-      }
-      weeklyRefreshInFlight = true;
-      updateInventoryRefreshButtonState();
-      if (!silent) {
-        setInventoryStatus('Refreshing weekly snapshot…');
-      }
-      fetch('/api/vendor-inventory/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-        .then((resp) => {
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          return resp.json();
-        })
-        .then((data) => {
-          if (data?.status === 'ok') {
-            fetchWeeklyInventorySnapshot({ silent: true });
-            if (!silent) {
-              setInventoryStatus(`Weekly snapshot refreshed (${data?.ingested_asins || 0} ASINs)`);
-            }
-          } else if (data?.status === 'quota_error') {
-            setInventoryStatus('Weekly refresh blocked by quota: ' + (data?.error || ''), '#b91c1c');
-          } else if (data?.status === 'error') {
-            setInventoryStatus('Weekly refresh failed: ' + (data?.error || ''), '#b91c1c');
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          setInventoryStatus('Weekly refresh failed: ' + (err?.message || err), '#b91c1c');
-        })
-        .finally(() => {
-          weeklyRefreshInFlight = false;
-          updateInventoryRefreshButtonState();
-        });
-    }
-
 
     function setInventorySubtab(subtab) {
       currentInventorySubtab = subtab;
@@ -5183,9 +5223,8 @@
         const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
 
         const imgUrl = getInventoryImageUrl(r);
-        const thumbUrl = imgUrl ? toAmazonThumb(imgUrl) : "";
-        const imgHtml = thumbUrl
-          ? `<img src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(asin)}" class="product-thumb thumb-50" loading="lazy" decoding="async" onerror="handleImageError(this)" />`
+        const imgHtml = imgUrl
+          ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" style="max-width:50px; max-height:50px; object-fit:contain; border-radius:6px;" />`
           : '';
 
         bodyHtml += `
@@ -5209,86 +5248,6 @@
         <td class="text-right"><strong>${totalSales30d}</strong></td>
       `;
       footEl.appendChild(footerRow);
-    }
-
-    function downloadVendorInventorySnapshotCsv() {
-      if (!vendorInventorySnapshot || vendorInventorySnapshot.length === 0) {
-        alert('No inventory data to download.');
-        return;
-      }
-
-      // Reuse the same filtering logic as renderVendorInventoryTable()
-      let rows = vendorInventorySnapshot || [];
-      rows = dedupeInventoryRowsByAsin(rows);
-      if (currentInventorySubtab === 'aged') {
-        rows = rows.filter((r) => {
-          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
-          return aged > 0;
-        });
-      } else if (currentInventorySubtab === 'unhealthy') {
-        rows = rows.filter((r) => {
-          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
-          return unhealthy > 0;
-        });
-      }
-
-      const resolveSellable = (row) => {
-        const candidates = [
-          row.sellable,
-          row.sellable_onhand_units,
-          row.sellableOnHandInventoryUnits,
-        ];
-        for (const value of candidates) {
-          if (value !== undefined && value !== null) {
-            const num = Number(value);
-            if (!Number.isNaN(num)) {
-              return num;
-            }
-          }
-        }
-        return 0;
-      };
-
-      const header = [
-        'ASIN',
-        'Title',
-        'SellableUnits',
-        'sales_30d',
-      ];
-
-      const lines = [];
-      lines.push(header.join(','));
-
-      rows.forEach((r) => {
-        const asin = r.asin || '';
-        const title = getInventoryDisplayTitle(r).replace(/"/g, '""');
-
-        const sellable = resolveSellable(r);
-        const sales30dValue = getSales30dValue(r);
-        const row = [
-          asin,
-          `"${title}"`,
-          sellable,
-          sales30dValue,
-        ];
-
-        lines.push(row.join(','));
-      });
-
-      const csv = lines.join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = url;
-      const weekLabel = document.getElementById('inv-week-label')?.textContent || '';
-      const weekPart = weekLabel.replace(/[^\d\-]/g, '');
-      a.download = weekPart ? `Inventory_${weekPart}.csv` : 'vendor_inventory_snapshot.csv';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     }
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
@@ -5840,7 +5799,50 @@
       }
     }
 
+    async function runAuditRepair30d() {
+      const btn = document.getElementById("audit-repair-30d-btn");
+      const statusEl = document.getElementById("audit-repair-status");
+      if (btn) btn.disabled = true;
+      if (statusEl) {
+        statusEl.textContent = "Running 30-day repair...";
+        statusEl.style.color = "#0f172a";
+      }
+      try {
+        const resp = await fetch("/api/vendor/rt-sales/repair-30d", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            report_window_hours: 6,
+            max_runtime_seconds: 600,
+            max_reports: 50
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+        }
+        if (statusEl) {
+          const reason = data.stopped_reason || "unknown";
+          const applied = data.hours_applied || 0;
+          const reports = data.reports_created || 0;
+          const remaining = data.remaining_missing ?? "?";
+          statusEl.textContent = `Repair stop: ${reason} | applied ${applied} hrs | reports ${reports} | remaining ${remaining}`;
+          statusEl.style.color = data.ok ? "#059669" : "#b91c1c";
+        }
+        await refreshAuditCalendar();
+      } catch (err) {
+        console.error("Repair 30d failed:", err);
+        if (statusEl) {
+          statusEl.textContent = `Repair failed: ${err.message}`;
+          statusEl.style.color = "#b91c1c";
+        }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
     function showTab(tabName) {
+      closeCatalogContextMenu();
       activeTab = tabName;
       document.querySelectorAll(".tab-btn").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.tab === tabName);
@@ -5854,6 +5856,7 @@
         { id: "tab-vrt-trends", tab: "vrt-trends" },
         { id: "tab-vrt-audit", tab: "vrt-audit" },
         { id: "inventory-tab", tab: "inventory" },
+        { id: "df-payments-tab", tab: "df-payments" },
       ];
       panels.forEach(({ id, tab }) => {
         const panelEl = document.getElementById(id);
@@ -5883,6 +5886,14 @@
       if (tabName === "vrt-audit") {
         refreshAuditCalendar();
       }
+      if (tabName === "df-payments") {
+        if (typeof initDfPaymentsTab === "function") {
+          initDfPaymentsTab();
+        }
+        if (typeof loadDfPaymentsState === "function") {
+          loadDfPaymentsState();
+        }
+      }
       if (tabName === "pos") {
         refreshVendorPoStatus();
       }
@@ -5895,7 +5906,7 @@
         return;
       }
       updateInventoryFreshnessUi(vendorInventoryMeta);
-      if (inventoryMode === 'realtime' && Date.now() - lastRealtimeFetchAt > INVENTORY_FETCH_DEBOUNCE_MS) {
+      if (Date.now() - lastRealtimeFetchAt > INVENTORY_FETCH_DEBOUNCE_MS) {
         fetchRealtimeInventorySnapshot({ silent: true });
       }
     }
@@ -5905,7 +5916,6 @@
     updateInventoryRefreshButtonState();
     updateInventoryFreshnessLabel();
 
-    initCatalogColumnResizing();
     showTab("pos");
     loadPOs(false);
     refreshVendorPoStatus();
@@ -5913,6 +5923,32 @@
     setInterval(updateSyncInfo, 60 * 1000);
     setInterval(autoSyncIfDue, 5 * 60 * 1000);
   </script>
+  <div class="backdrop" id="workers-modal" style="display:none;">
+    <div class="modal" style="max-width:960px;">
+      <header>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div>Background Workers</div>
+          <div id="workers-last-checked" class="muted-text" style="font-size:12px;">Last checked: -</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline-secondary" id="workers-refresh-btn" type="button">Refresh Status</button>
+          <button class="btn" id="workers-close-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div class="modal-body" id="workers-modal-body">
+        <div id="workers-heartbeat" style="font-weight:700; margin-bottom:6px;">System heartbeat: OK</div>
+        <div id="workers-error" style="font-size:12px; color:#b91c1c; margin-bottom:8px; display:none;"></div>
+        <div class="workers-grid">
+          <div class="worker-card" id="workers-section-inventory"></div>
+          <div class="worker-card" id="workers-section-rt-sales"></div>
+          <div class="worker-card" id="workers-section-vendor-po"></div>
+          <div class="worker-card" id="workers-section-df-payments"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/ui/js/df_payments.js"></script>
+  <script src="/ui/js/workers_status.js"></script>
   <div class="backdrop" id="printer-settings-modal" style="display:none;">
     <div class="modal" style="max-width:720px;">
       <header>

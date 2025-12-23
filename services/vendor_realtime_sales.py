@@ -17,7 +17,9 @@ import logging
 import math
 import os
 import sqlite3
-from datetime import datetime, time, timedelta, timezone
+import time as time_module
+from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +36,7 @@ except Exception:
 # ------------------------------------------------------------
 # Internal services
 # ------------------------------------------------------------
+from services import db as db_service
 from services.catalog_service import (
     record_catalog_asin_sources,
     seed_catalog_universe,
@@ -75,6 +78,9 @@ from services.vendor_rt_sales_ledger import (
     mark_failed as ledger_mark_failed,
 )
 from services.vendor_rt_sales_ledger import (
+    mark_requested_explicit as ledger_mark_requested_explicit,
+)
+from services.vendor_rt_sales_ledger import (
     refresh_worker_lock as ledger_refresh_worker_lock,
 )
 from services.vendor_rt_sales_ledger import (
@@ -98,6 +104,13 @@ try:
     UAE_TZ = ZoneInfo("Asia/Dubai")
 except ZoneInfoNotFoundError:
     UAE_TZ = timezone(timedelta(hours=4))
+
+try:
+    if ZoneInfo is None:
+        raise ZoneInfoNotFoundError("zoneinfo not available")
+    PST_TZ = ZoneInfo("America/Los_Angeles")
+except ZoneInfoNotFoundError:
+    PST_TZ = timezone(timedelta(hours=-8))
 
 
 # ====================================================================
@@ -304,6 +317,88 @@ def get_rt_sales_status(now_utc: Optional[datetime] = None) -> dict:
     }
 
 
+def _default_autosync_pause_state() -> dict:
+    return {"paused": False, "reason": None, "until_utc": None}
+
+
+def rt_sales_set_autosync_paused(
+    paused: bool,
+    reason: Optional[str],
+    until_utc: Optional[datetime],
+) -> dict:
+    """
+    Persist the autosync pause state so background loops and fill-day honor repairs.
+    """
+    state = {
+        "paused": bool(paused),
+        "reason": reason if paused else None,
+        "until_utc": _utc_iso(until_utc) if paused and until_utc else None,
+    }
+    try:
+        with get_db_connection() as conn:
+            db_service.set_app_kv(conn, RT_SALES_AUTOSYNC_PAUSE_KEY, json.dumps(state))
+    except Exception as exc:
+        logger.error(f"{LOG_PREFIX_ADMIN} Failed to persist autosync pause state: {exc}")
+    else:
+        if paused:
+            logger.warning(
+                f"{LOG_PREFIX_ADMIN} Autosync paused reason={state['reason'] or 'unspecified'} "
+                f"until={state['until_utc'] or 'manual'}"
+            )
+        else:
+            logger.info(f"{LOG_PREFIX_ADMIN} Autosync pause cleared")
+    return state
+
+
+def rt_sales_get_autosync_pause(
+    now_utc: Optional[datetime] = None,
+    *,
+    auto_clear: bool = True,
+) -> dict:
+    """
+    Return the current autosync pause state; auto-clear expired pauses when requested.
+    """
+    now_utc = _normalize_utc_datetime(now_utc or datetime.now(timezone.utc))
+    raw_state = _default_autosync_pause_state()
+    try:
+        with get_db_connection() as conn:
+            stored = db_service.get_app_kv(conn, RT_SALES_AUTOSYNC_PAUSE_KEY)
+    except Exception as exc:
+        logger.error(f"{LOG_PREFIX_ADMIN} Failed to read autosync pause state: {exc}")
+        stored = None
+    if stored:
+        try:
+            data = json.loads(stored)
+            raw_state.update(
+                {
+                    "paused": bool(data.get("paused")),
+                    "reason": data.get("reason"),
+                    "until_utc": data.get("until_utc"),
+                }
+            )
+        except Exception:
+            raw_state = _default_autosync_pause_state()
+
+    if raw_state["paused"] and raw_state.get("until_utc"):
+        try:
+            until_dt = datetime.fromisoformat(raw_state["until_utc"].replace("Z", "+00:00"))
+        except Exception:
+            until_dt = None
+        if until_dt and now_utc >= until_dt:
+            if auto_clear:
+                rt_sales_set_autosync_paused(False, None, None)
+            raw_state = _default_autosync_pause_state()
+    return raw_state
+
+
+def rt_sales_should_skip_autosync(now_utc: Optional[datetime] = None) -> Tuple[bool, dict]:
+    """
+    Helper for the auto-sync loop to check if a pause is in effect.
+    """
+    state = rt_sales_get_autosync_pause(now_utc=now_utc)
+    return bool(state.get("paused")), state
+
+
 # ====================================================================
 # TIME CONSTANTS FOR SAFE BACKFILLING
 # ====================================================================
@@ -317,6 +412,11 @@ CHUNK_HOURS = 6             # Window size per report request
 MAX_HOURLY_REPORTS_PER_FILL_DAY = int(
     os.getenv("VENDOR_RT_MAX_HOURS_PER_FILL_DAY", "3")
 )
+
+MAX_FILL_DAY_REPORT_WINDOW_HOURS = 24 * 14  # Amazon allows up to 14 days per report
+FILL_DAY_LOOKBACK_DAYS = 30
+RT_SALES_AUTOSYNC_PAUSE_KEY = "rt_sales_autosync_pause"
+RT_SALES_REPAIR_PAUSE_REASON = "repair-30d"
 
 # Hour ledger configuration
 LEDGER_SAFETY_LAG_MINUTES = int(os.getenv("VENDOR_RT_LEDGER_SAFETY_LAG_MINUTES", "90"))
@@ -682,11 +782,11 @@ def _build_hourly_coverage_map(
           "has_sales": bool
       }
     """
-    normalized_start = _normalize_utc_datetime(start_utc)
-    normalized_end = _normalize_utc_datetime(end_utc)
+    normalized_start = floor_utc_hour(start_utc)
+    normalized_end = floor_utc_hour(end_utc)
     if safe_now is None:
         safe_now = get_safe_now_utc()
-    safe_now = _normalize_utc_datetime(safe_now)
+    safe_now = floor_utc_hour(safe_now)
 
     # Step 1: load persisted audit rows for the window.
     audit_map = _fetch_vendor_rt_audit_hours(
@@ -743,7 +843,7 @@ def get_safe_now_utc() -> datetime:
     Get current time in UTC, minus SAFE_MINUTES_LAG buffer.
     Real-time sales data is only available for fully completed hours.
     """
-    return datetime.now(timezone.utc) - timedelta(minutes=SAFE_MINUTES_LAG)
+    return floor_utc_hour(datetime.now(timezone.utc) - timedelta(minutes=SAFE_MINUTES_LAG))
 
 
 def ingest_realtime_sales_report(
@@ -782,37 +882,37 @@ def ingest_realtime_sales_report(
             hour_end = line.get("endTime")
             units = int(line.get("orderedUnits", 0))
             revenue = float(line.get("orderedRevenue", 0.0))
-            
+
             if not asin or not hour_start or not hour_end:
                 logger.warning(
                     f"{LOG_PREFIX_INGEST} Skipping line with missing asin/time: %s",
                     line,
                 )
                 continue
-            
-            rows_to_insert.append((
-                asin,
-                hour_start,
-                hour_end,
-                units,
-                revenue,
-                marketplace_id,
-                currency_code,
-                now_utc
-            ))
-            
-            seen_asins.add(asin)
-            seen_hours.add(hour_start)
-            
-            # Track the maximum endTime we see
-            try:
-                end_dt = datetime.fromisoformat(hour_end.replace("Z", "+00:00"))
-                if max_end_time_seen is None or end_dt > max_end_time_seen:
-                    max_end_time_seen = end_dt
-            except Exception as e:
-                logger.warning(
-                    f"{LOG_PREFIX_INGEST} Failed to parse endTime {hour_end}: {e}"
+
+            start_dt = _floor_to_hour(_parse_vendor_timestamp(hour_start))
+            end_dt = _parse_vendor_timestamp(hour_end)
+            start_iso = _utc_iso(start_dt)
+            end_iso = _utc_iso(end_dt)
+
+            rows_to_insert.append(
+                (
+                    asin,
+                    start_iso,
+                    end_iso,
+                    units,
+                    revenue,
+                    marketplace_id,
+                    currency_code,
+                    now_utc,
                 )
+            )
+
+            seen_asins.add(asin)
+            seen_hours.add(start_iso)
+
+            if max_end_time_seen is None or end_dt > max_end_time_seen:
+                max_end_time_seen = end_dt
         except Exception as e:
             logger.warning(
                 f"{LOG_PREFIX_INGEST} Error processing line %s: %s",
@@ -868,6 +968,18 @@ def _normalize_utc_datetime(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def floor_utc_hour(dt: datetime) -> datetime:
+    """Normalize to UTC and floor to the top of the hour."""
+    normalized = _normalize_utc_datetime(dt)
+    if normalized.minute or normalized.second or normalized.microsecond:
+        logger.warning(
+            "%s Non-hour-aligned datetime encountered; flooring to hour: %s",
+            LOG_PREFIX_ADMIN,
+            normalized.isoformat(),
+        )
+    return normalized.replace(minute=0, second=0, microsecond=0)
+
+
 def _utc_iso(dt: datetime) -> str:
     """Return a normalized ISO string (with trailing Z) for a UTC datetime."""
     normalized = _normalize_utc_datetime(dt)
@@ -879,6 +991,23 @@ def _parse_iso_to_utc(value: str) -> datetime:
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_vendor_timestamp(value: str) -> datetime:
+    """
+    Parse a vendor RT-sales timestamp that may omit offsets (default PST/PDT) and return UTC.
+    """
+    if not value:
+        raise ValueError("timestamp is required")
+    cleaned = value.strip()
+    # Fast path: try ISO parsing with optional trailing Z
+    try:
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except Exception as exc:
+        raise ValueError(f"Invalid timestamp: {value}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=PST_TZ)
     return dt.astimezone(timezone.utc)
 
 
@@ -896,7 +1025,7 @@ def _ledger_now() -> datetime:
 
 def _ledger_safe_cutoff(now_utc: Optional[datetime] = None) -> datetime:
     now_utc = now_utc or _ledger_now()
-    return _normalize_utc_datetime(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
+    return floor_utc_hour(now_utc - timedelta(minutes=LEDGER_SAFETY_LAG_MINUTES))
 
 
 def _hour_iso_range(start_dt: datetime, end_dt: datetime) -> List[str]:
@@ -907,6 +1036,78 @@ def _hour_iso_range(start_dt: datetime, end_dt: datetime) -> List[str]:
         hours.append(current.isoformat())
         current += timedelta(hours=1)
     return hours
+
+
+def _group_hours_into_windows(
+    hour_entries: List[dict],
+    hours_per_window: int,
+) -> List[List[dict]]:
+    """
+    Group hour entries into contiguous windows capped at hours_per_window.
+    """
+    if not hour_entries:
+        return []
+    clamped = max(1, int(hours_per_window))
+    earliest_allowed = _normalize_utc_datetime(
+        datetime.now(timezone.utc) - timedelta(days=FILL_DAY_LOOKBACK_DAYS)
+    )
+    normalized: List[dict] = []
+    skipped = 0
+    for entry in hour_entries:
+        start_iso = entry.get("start_utc")
+        end_iso = entry.get("end_utc")
+        if not start_iso:
+            continue
+        try:
+            start_dt = floor_utc_hour(_parse_iso_to_utc(start_iso))
+            end_dt = floor_utc_hour(_parse_iso_to_utc(end_iso)) if end_iso else start_dt + timedelta(hours=1)
+        except Exception:
+            continue
+        if start_dt < earliest_allowed:
+            skipped += 1
+            continue
+        normalized.append(
+            {
+                **entry,
+                "_start_dt": start_dt,
+                "_end_dt": end_dt,
+            }
+        )
+
+    normalized.sort(key=lambda info: info["_start_dt"])
+    if skipped:
+        logger.warning(
+            "%s Skipped %d hour(s) older than %d-day lookback",
+            LOG_PREFIX_FILL_DAY,
+            skipped,
+            FILL_DAY_LOOKBACK_DAYS,
+        )
+    windows: List[List[dict]] = []
+    current: List[dict] = []
+    last_start: Optional[datetime] = None
+
+    for entry in normalized:
+        start_dt = entry["_start_dt"]
+        if not current:
+            current = [entry]
+            last_start = start_dt
+            continue
+
+        contiguous = last_start is not None and start_dt == last_start + timedelta(hours=1)
+        if len(current) >= clamped or not contiguous:
+            windows.append(current)
+            current = [entry]
+        else:
+            current.append(entry)
+        last_start = start_dt
+
+    if current:
+        windows.append(current)
+    return windows
+
+
+def _compute_cooldown_minutes(attempt_count: int) -> int:
+    return min(60, 5 * max(1, attempt_count or 1))
 
 
 def enqueue_vendor_rt_sales_hours(marketplace_id: str, start_utc: datetime, end_utc: datetime) -> int:
@@ -954,10 +1155,16 @@ def _execute_vendor_rt_sales_report(
     *,
     currency_code: str = "AED",
     ledger_hour_iso: Optional[str] = None,
+    ledger_hour_isos: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    normalized_start = _normalize_utc_datetime(start_utc)
-    normalized_end = _normalize_utc_datetime(end_utc)
+    normalized_start = floor_utc_hour(start_utc)
+    normalized_end = floor_utc_hour(end_utc)
     hour_label = ledger_hour_iso or f"{normalized_start.isoformat()}->{normalized_end.isoformat()}"
+    ledger_hours: List[str] = []
+    if ledger_hour_isos:
+        ledger_hours.extend(ledger_hour_isos)
+    elif ledger_hour_iso:
+        ledger_hours.append(ledger_hour_iso)
 
     _ensure_spapi_call_allowed(f"ledger_hour {hour_label}")
     logger.info(
@@ -973,15 +1180,23 @@ def _execute_vendor_rt_sales_report(
         data_end=normalized_end,
         extra_options={"currencyCode": currency_code},
     )
-    if ledger_hour_iso:
-        ledger_set_report_id(marketplace_id, ledger_hour_iso, report_id)
+    logger.info(
+        "%s waiting for RT sales report reportId=%s window=[%s, %s) marketplace=%s",
+        LOG_PREFIX_ADMIN,
+        report_id,
+        normalized_start.isoformat(),
+        normalized_end.isoformat(),
+        marketplace_id,
+    )
+    for hour_iso in ledger_hours:
+        ledger_set_report_id(marketplace_id, hour_iso, report_id)
     report_data = poll_vendor_report(report_id)
     document_id = report_data.get("reportDocumentId")
     if not document_id:
         raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
     content, _ = download_vendor_report_document(document_id)
-    if ledger_hour_iso:
-        ledger_mark_downloaded(marketplace_id, ledger_hour_iso, report_id)
+    for hour_iso in ledger_hours:
+        ledger_mark_downloaded(marketplace_id, hour_iso, report_id)
     if isinstance(content, bytes):
         payload = json.loads(content.decode("utf-8"))
     elif isinstance(content, str):
@@ -1008,11 +1223,12 @@ def _execute_vendor_rt_sales_report(
         "summary": summary,
     }
 
-    if ledger_hour_iso:
-        ledger_mark_applied(marketplace_id, ledger_hour_iso)
+    if ledger_hours:
+        for hour_iso in ledger_hours:
+            ledger_mark_applied(marketplace_id, hour_iso)
         logger.info(
-            "[RtSalesLedger] apply hour=%s rows=%s",
-            ledger_hour_iso,
+            "[RtSalesLedger] apply window hours=%d rows=%s",
+            len(ledger_hours),
             summary.get("rows", 0),
         )
     return result
@@ -1242,6 +1458,101 @@ def _classify_daily_hours(
     return hours_detail, missing_hours, pending_hours
 
 
+def _process_hour_window(
+    marketplace_id: str,
+    hour_window: List[dict],
+) -> Dict[str, Any]:
+    """
+    Request a multi-hour RT report window and apply results to each ledger hour.
+    """
+    if not hour_window:
+        return {"requested": 0, "applied": 0, "reports": 0}
+
+    normalized_hours: List[str] = []
+    attempt_counts: Dict[str, int] = {}
+    for entry in hour_window:
+        start_iso = entry.get("start_utc")
+        if not start_iso:
+            continue
+        try:
+            normalized_iso = _utc_iso(_parse_iso_to_utc(start_iso))
+        except Exception:
+            continue
+        attempts = ledger_mark_requested_explicit(marketplace_id, normalized_iso)
+        attempt_counts[normalized_iso] = attempts
+        normalized_hours.append(normalized_iso)
+
+    if not normalized_hours:
+        logger.info(f"{LOG_PREFIX_FILL_DAY} No valid ledger hours in window for {marketplace_id}")
+        return {"requested": 0, "applied": 0, "reports": 0}
+
+    start_dt = hour_window[0].get("_start_dt")
+    end_dt = hour_window[-1].get("_end_dt")
+    if start_dt is None or end_dt is None:
+        start_dt = _parse_iso_to_utc(hour_window[0]["start_utc"])
+        end_dt = _parse_iso_to_utc(hour_window[-1]["end_utc"])
+    try:
+        result = _execute_vendor_rt_sales_report(
+            start_dt,
+            end_dt,
+            marketplace_id,
+            ledger_hour_isos=normalized_hours,
+        )
+    except VendorRtCooldownBlock as exc:
+        for hour_iso in normalized_hours:
+            ledger_mark_failed(
+                marketplace_id,
+                hour_iso,
+                str(exc),
+                cooldown_minutes=_compute_cooldown_minutes(attempt_counts.get(hour_iso, 1)),
+            )
+        raise
+    except SpApiQuotaError as exc:
+        start_quota_cooldown(datetime.now(timezone.utc))
+        for hour_iso in normalized_hours:
+            ledger_mark_failed(
+                marketplace_id,
+                hour_iso,
+                str(exc),
+                cooldown_minutes=_compute_cooldown_minutes(attempt_counts.get(hour_iso, 1)),
+            )
+        raise
+    except Exception as exc:
+        for hour_iso in normalized_hours:
+            ledger_mark_failed(
+                marketplace_id,
+                hour_iso,
+                str(exc),
+                cooldown_minutes=_compute_cooldown_minutes(attempt_counts.get(hour_iso, 1)),
+            )
+        raise
+
+    summary = result.get("summary") or {}
+    hour_rows: set[str] = set()
+    for hour_iso in summary.get("hour_starts") or []:
+        try:
+            hour_rows.add(_utc_iso(_parse_iso_to_utc(hour_iso)))
+        except Exception:
+            continue
+
+    empty_hours = [iso for iso in normalized_hours if iso not in hour_rows]
+    if empty_hours:
+        logger.info(
+            "%s Window [%s, %s) marked %d empty hours",
+            LOG_PREFIX_FILL_DAY,
+            _utc_iso(start_dt),
+            _utc_iso(end_dt),
+            len(empty_hours),
+        )
+
+    return {
+        "requested": len(normalized_hours),
+        "applied": len(normalized_hours),
+        "reports": 1,
+        "empty_hours": empty_hours,
+    }
+
+
 # Called by the /api/vendor-realtime-sales/fill-day endpoint to determine which hours can be repaired in a quota-safe way.
 def plan_fill_day_run(
     date_str: str,
@@ -1251,12 +1562,28 @@ def plan_fill_day_run(
     max_reports: int = MAX_HOURLY_REPORTS_PER_FILL_DAY,
     burst_enabled: bool = False,
     max_batches: int = 1,
+<<<<<<< HEAD
+=======
+    report_window_hours: int = 1,
+>>>>>>> origin/main
 ) -> dict:
     """
     Determine which missing hours can be repaired in this fill-day run.
     """
     clamped_reports = max(1, min(int(max_reports), 24))
     clamped_batches = max(1, min(int(max_batches), 10))
+<<<<<<< HEAD
+=======
+    requested_window = max(1, int(report_window_hours))
+    clamped_window = min(requested_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+    if requested_window != clamped_window:
+        logger.warning(
+            "%s report_window_hours=%d exceeds max span (%d); clamping",
+            LOG_PREFIX_FILL_DAY,
+            requested_window,
+            MAX_FILL_DAY_REPORT_WINDOW_HOURS,
+        )
+>>>>>>> origin/main
     safe_now = get_safe_now_utc()
     hours_detail, missing_hours, pending_hours = _classify_daily_hours(
         date_str,
@@ -1295,6 +1622,10 @@ def plan_fill_day_run(
     remaining_missing = max(0, total_missing - len(hours_to_request))
     planned_batches = 1 if hours_to_request else 0
     planned_hours = len(hours_to_request)
+<<<<<<< HEAD
+=======
+    planned_windows = len(_group_hours_into_windows(hours_to_request, clamped_window))
+>>>>>>> origin/main
 
     if burst_enabled and planned_batches and clamped_batches > 1 and remaining_missing > 0:
         additional_batches = min(
@@ -1303,10 +1634,20 @@ def plan_fill_day_run(
         )
         planned_batches += additional_batches
         planned_hours += min(remaining_missing, clamped_reports * additional_batches)
+<<<<<<< HEAD
+=======
+        estimated_future_hours = min(remaining_missing, clamped_reports * additional_batches)
+        if estimated_future_hours:
+            planned_windows += math.ceil(estimated_future_hours / clamped_window)
+>>>>>>> origin/main
 
     if burst_enabled and not hours_to_request:
         planned_batches = 0
         planned_hours = 0
+<<<<<<< HEAD
+=======
+        planned_windows = 0
+>>>>>>> origin/main
 
     return {
         "date": date_str,
@@ -1322,6 +1663,11 @@ def plan_fill_day_run(
         "max_batches": clamped_batches,
         "batches_run": planned_batches,
         "hours_applied_this_call": planned_hours,
+<<<<<<< HEAD
+=======
+        "report_window_hours": clamped_window,
+        "reports_created_this_call": planned_windows,
+>>>>>>> origin/main
     }
 
 
@@ -1336,6 +1682,10 @@ def run_fill_day_repair_cycle(
     burst_enabled: bool = False,
     burst_hours: int = MAX_HOURLY_REPORTS_PER_FILL_DAY,
     max_batches: int = 1,
+<<<<<<< HEAD
+=======
+    report_window_hours: int = 1,
+>>>>>>> origin/main
 ) -> None:
     """
     Sequentially request and ingest the missing hours returned by plan_fill_day_run.
@@ -1352,6 +1702,7 @@ def run_fill_day_repair_cycle(
     try:
         per_batch_cap = burst_hours if burst_enabled else MAX_HOURLY_REPORTS_PER_FILL_DAY
         per_batch_cap = max(1, min(int(per_batch_cap), 24))
+<<<<<<< HEAD
         batches_run = 0
         total_applied = 0
         latest_remaining = max(0, total_missing)
@@ -1431,6 +1782,107 @@ def run_fill_day_repair_cycle(
                 applied_count,
                 latest_remaining,
             )
+=======
+        requested_window = max(1, int(report_window_hours))
+        hours_per_report = min(requested_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+        if requested_window != hours_per_report:
+            logger.warning(
+                "%s report_window_hours=%d exceeds max span (%d); clamping in runner",
+                LOG_PREFIX_FILL_DAY,
+                requested_window,
+                MAX_FILL_DAY_REPORT_WINDOW_HOURS,
+            )
+        batches_run = 0
+        total_applied = 0
+        total_reports = 0
+        latest_remaining = max(0, total_missing)
+        next_hours = hours_to_request
+
+        def _parse_hour_starts(entries: List[dict]) -> List[datetime]:
+            parsed: List[datetime] = []
+            for entry in entries:
+                start_iso = entry.get("start_utc")
+                if not start_iso:
+                    continue
+                try:
+                    parsed.append(_parse_iso_to_utc(start_iso))
+                except Exception:
+                    continue
+            return parsed
+
+        while next_hours and batches_run < max_batches:
+            hour_starts = _parse_hour_starts(next_hours)
+            if not hour_starts:
+                logger.info(f"{LOG_PREFIX_FILL_DAY} No valid hours to enqueue for %s", date_str)
+                break
+
+            enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+            requested_count = 0
+            applied_count = 0
+            batch_ok = True
+            windows = _group_hours_into_windows(next_hours, hours_per_report)
+            logger.info(
+                "%s Processing %d window(s) for batch #%d (hours=%d, per_window=%d)",
+                LOG_PREFIX_FILL_DAY,
+                len(windows),
+                batches_run + 1,
+                len(hour_starts),
+                hours_per_report,
+            )
+            for window_hours in windows:
+                try:
+                    summary = _process_hour_window(marketplace_id, window_hours)
+                except VendorRtCooldownBlock as exc:
+                    batch_ok = False
+                    logger.warning(
+                        f"{LOG_PREFIX_FILL_DAY} Cooldown during Fill Day batch for %s: %s",
+                        date_str,
+                        exc,
+                    )
+                    next_hours = []
+                    break
+                except SpApiQuotaError as exc:
+                    batch_ok = False
+                    logger.warning(
+                        f"{LOG_PREFIX_FILL_DAY} Quota exceeded during Fill Day window for %s: %s",
+                        date_str,
+                        exc,
+                    )
+                    next_hours = []
+                    break
+                except Exception as exc:
+                    batch_ok = False
+                    logger.error(
+                        f"{LOG_PREFIX_FILL_DAY} Unexpected error during Fill Day window for %s: %s",
+                        date_str,
+                        exc,
+                        exc_info=True,
+                    )
+                    next_hours = []
+                    break
+                requested_count += int(summary.get("requested", 0) or 0)
+                applied_count += int(summary.get("applied", 0) or 0)
+                total_reports += int(summary.get("reports", 0) or 0)
+                ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+
+            total_applied += applied_count
+            batches_run += 1 if batch_ok else 0
+            latest_remaining = max(0, latest_remaining - applied_count)
+            if applied_count == 0:
+                logger.info(
+                    f"{LOG_PREFIX_FILL_DAY} No additional claimable hours for %s; stopping batch loop",
+                    date_str,
+                )
+                break
+            logger.info(
+                f"{LOG_PREFIX_FILL_DAY} Fill Day batch %s #%d -> requested=%d applied=%d remaining_missing~%d",
+                date_str,
+                batches_run,
+                requested_count,
+                applied_count,
+                latest_remaining,
+            )
+>>>>>>> origin/main
 
             if not batch_ok or not burst_enabled:
                 break
@@ -1444,6 +1896,10 @@ def run_fill_day_repair_cycle(
                 max_reports=per_batch_cap,
                 burst_enabled=burst_enabled,
                 max_batches=max_batches,
+<<<<<<< HEAD
+=======
+                report_window_hours=hours_per_report,
+>>>>>>> origin/main
             )
             next_hours = next_plan.get("hours_to_request") or []
             latest_remaining = next_plan.get("remaining_missing", latest_remaining)
@@ -1455,15 +1911,196 @@ def run_fill_day_repair_cycle(
                 break
 
         logger.info(
+<<<<<<< HEAD
             f"{LOG_PREFIX_FILL_DAY} Fill Day run %s completed -> batches=%d applied=%d burst=%s hours_per_batch=%d",
             date_str,
             batches_run,
             total_applied,
             burst_enabled,
             per_batch_cap,
+=======
+            f"{LOG_PREFIX_FILL_DAY} Fill Day run %s completed -> batches=%d applied=%d reports=%d burst=%s hours_per_batch=%d window=%d",
+            date_str,
+            batches_run,
+            total_applied,
+            total_reports,
+            burst_enabled,
+            per_batch_cap,
+            hours_per_report,
+>>>>>>> origin/main
         )
     finally:
         ledger_release_worker_lock(marketplace_id, lock_owner)
+
+
+def _load_missing_hours_last_30_days(
+    marketplace_id: str,
+    safe_now: datetime,
+) -> List[dict]:
+    """
+    Return missing hour entries for the last 30 days suitable for window grouping.
+    """
+    safe_now = floor_utc_hour(safe_now)
+    start_window = floor_utc_hour(safe_now - timedelta(days=FILL_DAY_LOOKBACK_DAYS))
+    with get_db_connection() as conn:
+        coverage_map = _build_hourly_coverage_map(
+            conn,
+            marketplace_id,
+            start_window,
+            safe_now,
+            safe_now=safe_now,
+        )
+    missing_entries: List[dict] = []
+    for info in coverage_map.values():
+        status = (info.get("status") or "").upper()
+        if status != "MISSING":
+            continue
+        hour_start: datetime = info["hour_start"]
+        hour_end: datetime = info["hour_end"]
+        missing_entries.append(
+            {
+                "start_utc": _utc_iso(hour_start),
+                "end_utc": _utc_iso(hour_end),
+            }
+        )
+    missing_entries.sort(key=lambda item: item["start_utc"])
+    return missing_entries
+
+
+def repair_missing_hours_last_30_days(
+    marketplace_id: str,
+    *,
+    report_window_hours: int = 6,
+    max_runtime_seconds: int = 600,
+    max_reports: int = 50,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Run a single repair job that targets all missing hours in the last 30 days.
+    """
+    safe_now = get_safe_now_utc()
+    started_utc = datetime.now(timezone.utc)
+    report_window = max(1, int(report_window_hours))
+    window_hours = min(report_window, MAX_FILL_DAY_REPORT_WINDOW_HOURS)
+    if report_window != window_hours:
+        logger.warning(
+            f"{LOG_PREFIX_FILL_DAY} repair window_hours={report_window} exceeds limit; clamped to {window_hours}"
+        )
+    runtime_cap = max(60, min(int(max_runtime_seconds), 3600))
+    reports_cap = max(1, min(int(max_reports), 500))
+    missing_entries = _load_missing_hours_last_30_days(marketplace_id, safe_now)
+    hours_targeted = len(missing_entries)
+    windows = _group_hours_into_windows(missing_entries, window_hours)
+    dry_run_summary = {
+        "ok": True,
+        "dry_run": True,
+        "hours_targeted": hours_targeted,
+        "hours_applied": 0,
+        "hours_marked_empty": 0,
+        "reports_created": len(windows),
+        "remaining_missing": hours_targeted,
+        "started_utc": started_utc.isoformat(),
+        "ended_utc": started_utc.isoformat(),
+        "runtime_seconds": 0,
+        "stopped_reason": "dry_run" if hours_targeted else "no_work",
+    }
+    if dry_run or not hours_targeted:
+        return dry_run_summary
+
+    lock_owner = f"{RT_SALES_REPAIR_PAUSE_REASON}:{os.getpid()}:{started_utc.isoformat()}"
+    if not ledger_acquire_worker_lock(marketplace_id, lock_owner, ttl_seconds=runtime_cap + 120):
+        logger.warning(f"{LOG_PREFIX_FILL_DAY} repair-30d worker lock busy for {marketplace_id}")
+        dry_run_summary.update({"ok": False, "dry_run": False, "stopped_reason": "lock_busy"})
+        return dry_run_summary
+
+    pause_until = started_utc + timedelta(seconds=runtime_cap + 30)
+    rt_sales_set_autosync_paused(True, RT_SALES_REPAIR_PAUSE_REASON, pause_until)
+
+    reports_created = 0
+    hours_applied = 0
+    hours_marked_empty = 0
+    processed_hours = 0
+    stopped_reason = "completed"
+    total_windows = len(windows)
+    start_monotonic = time_module.monotonic()
+    lock_ttl = runtime_cap + 120
+
+    logger.info(
+        f"{LOG_PREFIX_FILL_DAY} repair-30d starting for {marketplace_id}: windows={total_windows} "
+        f"hours={hours_targeted} window_hours={window_hours} max_reports={reports_cap}"
+    )
+
+    try:
+        for window in windows:
+            elapsed = time_module.monotonic() - start_monotonic
+            if elapsed >= runtime_cap:
+                stopped_reason = "runtime_cap"
+                break
+            if reports_created >= reports_cap:
+                stopped_reason = "max_reports_cap"
+                break
+
+            hour_starts = []
+            for entry in window:
+                try:
+                    hour_starts.append(_parse_iso_to_utc(entry["start_utc"]))
+                except Exception:
+                    continue
+            enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+
+            try:
+                summary = _process_hour_window(marketplace_id, window)
+            except VendorRtCooldownBlock:
+                stopped_reason = "cooldown"
+                break
+            except SpApiQuotaError:
+                stopped_reason = "cooldown"
+                break
+            except Exception as exc:
+                stopped_reason = "error"
+                logger.error(f"{LOG_PREFIX_FILL_DAY} repair-30d window failed: {exc}", exc_info=True)
+                break
+
+            reports_created += int(summary.get("reports", 0) or 0)
+            hours_applied += int(summary.get("applied", 0) or 0)
+            empty_hours = summary.get("empty_hours") or []
+            hours_marked_empty += len(empty_hours)
+            processed_hours += len(window)
+            ledger_refresh_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl)
+
+            if reports_created >= reports_cap:
+                stopped_reason = "max_reports_cap"
+                break
+
+        if processed_hours >= hours_targeted and stopped_reason == "completed":
+            stopped_reason = "completed"
+    finally:
+        rt_sales_set_autosync_paused(False, None, None)
+        ledger_release_worker_lock(marketplace_id, lock_owner)
+
+    ended_utc = datetime.now(timezone.utc)
+    runtime_seconds = round(time_module.monotonic() - start_monotonic, 2)
+    remaining_missing = max(0, hours_targeted - processed_hours)
+    ok = stopped_reason in {"completed", "no_work"}
+
+    logger.info(
+        f"{LOG_PREFIX_FILL_DAY} repair-30d finished for {marketplace_id}: reports={reports_created} "
+        f"applied={hours_applied} empty={hours_marked_empty} reason={stopped_reason}"
+    )
+
+    return {
+        "ok": ok,
+        "dry_run": False,
+        "hours_targeted": hours_targeted,
+        "hours_applied": hours_applied,
+        "hours_marked_empty": hours_marked_empty,
+        "reports_created": reports_created,
+        "remaining_missing": remaining_missing,
+        "started_utc": started_utc.isoformat(),
+        "ended_utc": ended_utc.isoformat(),
+        "runtime_seconds": runtime_seconds,
+        "stopped_reason": stopped_reason,
+    }
 def repair_missing_hour(
     start_utc: datetime,
     end_utc: datetime,
@@ -2091,7 +2728,7 @@ def _compute_sales_trend_week_buckets_uae(now_uae: datetime, weeks: int = 4) -> 
 
     today_uae = now_uae.date()
     current_week_monday = today_uae - timedelta(days=today_uae.weekday())
-    last_completed_w1_start = datetime.combine(current_week_monday - timedelta(days=7), time(0, 0, 0), tzinfo=UAE_TZ)
+    last_completed_w1_start = datetime.combine(current_week_monday - timedelta(days=7), dt_time(0, 0, 0), tzinfo=UAE_TZ)
 
     buckets = {}
     week_keys = ["w4", "w3", "w2", "w1"]
@@ -2326,7 +2963,7 @@ def get_sales_trends_last_4_weeks(
         trend_rows.sort(key=lambda r: r["total_units_4w"], reverse=True)
 
         current_week_monday_uae = safe_now_uae.date() - timedelta(days=safe_now_uae.weekday())
-        current_week_start_uae = datetime.combine(current_week_monday_uae, time(0, 0, 0), tzinfo=UAE_TZ)
+        current_week_start_uae = datetime.combine(current_week_monday_uae, dt_time(0, 0, 0), tzinfo=UAE_TZ)
         trailing_start_utc = current_week_start_uae.astimezone(timezone.utc)
         trailing_end_utc = safe_now_utc
 
@@ -2812,11 +3449,11 @@ def get_rt_sales_audit_calendar(
     now_uae = datetime.now(UAE_TZ)
     bucket_dates, buckets = _build_empty_calendar(days, now_uae)
 
-    start_uae = datetime.combine(datetime.fromisoformat(bucket_dates[0]).date(), time(0, 0), tzinfo=UAE_TZ)
-    end_uae = datetime.combine(datetime.fromisoformat(bucket_dates[-1]).date() + timedelta(days=1), time(0, 0), tzinfo=UAE_TZ)
+    start_uae = datetime.combine(datetime.fromisoformat(bucket_dates[0]).date(), dt_time(0, 0), tzinfo=UAE_TZ)
+    end_uae = datetime.combine(datetime.fromisoformat(bucket_dates[-1]).date() + timedelta(days=1), dt_time(0, 0), tzinfo=UAE_TZ)
 
-    start_utc = start_uae.astimezone(timezone.utc)
-    end_utc = end_uae.astimezone(timezone.utc)
+    start_utc = floor_utc_hour(start_uae.astimezone(timezone.utc))
+    end_utc = floor_utc_hour(end_uae.astimezone(timezone.utc))
 
     safe_now = get_safe_now_utc()
     rows: List[Dict[str, Any]] = []

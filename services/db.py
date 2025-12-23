@@ -1,9 +1,10 @@
 import logging
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 CATALOG_DB_PATH = Path(__file__).resolve().parent.parent / "catalog.db"
@@ -18,6 +19,30 @@ CATALOG_DB_PATH = Path(__file__).resolve().parent.parent / "catalog.db"
 
 _db_write_lock = Lock()
 _db_timeout = 10  # seconds
+
+
+@contextmanager
+def get_db_connection_for_path(db_path: Path):
+    """Return a SQLite connection for the given path, reusing the default setup when possible.
+
+    Uses the hardened default connection (WAL, timeout, row_factory) when the caller requests
+    the main catalog DB path; otherwise opens a scoped connection for the provided path.
+    """
+    resolved = Path(db_path).resolve()
+    default = Path(CATALOG_DB_PATH).resolve()
+    if resolved == default:
+        with get_db_connection() as conn:
+            yield conn
+    else:
+        conn = None
+        try:
+            conn = sqlite3.connect(resolved, timeout=_db_timeout)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+        finally:
+            if conn:
+                conn.close()
 
 @contextmanager
 def get_db_connection():
@@ -353,7 +378,7 @@ def ensure_vendor_inventory_table() -> None:
     """
     Create vendor_inventory_asin table if it does not exist.
     Stores weekly inventory snapshots per ASIN per marketplace.
-    One row per ASIN per week (latest week only, per design).
+    One row per ASIN per marketplace (latest seen snapshot per design).
     """
     sql = """
     CREATE TABLE IF NOT EXISTS vendor_inventory_asin (
@@ -388,11 +413,11 @@ def ensure_vendor_inventory_table() -> None:
     """
     try:
         execute_write(sql)
-        
-        # Create unique index to prevent duplicate snapshots
+        # Recreate uniqueness on (marketplace_id, asin) only so historical ASINs persist
+        execute_write("DROP INDEX IF EXISTS idx_vendor_inventory_unique")
         index_sql = """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_inventory_unique
-        ON vendor_inventory_asin (marketplace_id, asin, start_date, end_date)
+        ON vendor_inventory_asin (marketplace_id, asin)
         """
         execute_write(index_sql)
         
@@ -402,48 +427,79 @@ def ensure_vendor_inventory_table() -> None:
         raise
 
 
-def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> None:
+def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> dict[str, Any]:
     """
-    For the given marketplace_id, delete existing vendor_inventory_asin rows
-    and insert the provided new snapshot rows (already filtered to latest week).
-    
-    Args:
-        conn: SQLite connection object
-        marketplace_id: The marketplace ID to refresh
-        rows: List of dicts with keys matching table columns (except id)
+    Accumulator-only upsert into vendor_inventory_asin for the given marketplace_id.
+    - Inserts new ASINs
+    - Updates existing ASINs
+    - NEVER deletes or prunes rows
+    Returns lightweight metadata for observability.
     """
     try:
-        # Delete existing records for this marketplace
-        conn.execute(
-            "DELETE FROM vendor_inventory_asin WHERE marketplace_id = ?",
-            (marketplace_id,)
-        )
-        
-        # Bulk insert new rows
+        columns = [
+            "marketplace_id", "asin", "start_date", "end_date",
+            "sellable_onhand_units", "sellable_onhand_cost",
+            "unsellable_onhand_units", "unsellable_onhand_cost",
+            "aged90plus_sellable_units", "aged90plus_sellable_cost",
+            "unhealthy_units", "unhealthy_cost",
+            "net_received_units", "net_received_cost",
+            "open_po_units", "unfilled_customer_ordered_units",
+            "vendor_confirmation_rate", "sell_through_rate",
+            "updated_at"
+        ]
+
         if rows:
-            columns = [
-                "marketplace_id", "asin", "start_date", "end_date",
-                "sellable_onhand_units", "sellable_onhand_cost",
-                "unsellable_onhand_units", "unsellable_onhand_cost",
-                "aged90plus_sellable_units", "aged90plus_sellable_cost",
-                "unhealthy_units", "unhealthy_cost",
-                "net_received_units", "net_received_cost",
-                "open_po_units", "unfilled_customer_ordered_units",
-                "vendor_confirmation_rate", "sell_through_rate",
-                "updated_at"
-            ]
             placeholders = ", ".join(["?" for _ in columns])
-            insert_sql = f"INSERT INTO vendor_inventory_asin ({', '.join(columns)}) VALUES ({placeholders})"
-            
-            for row in rows:
-                values = tuple(row.get(col) for col in columns)
-                conn.execute(insert_sql, values)
-        
+            update_columns = [col for col in columns if col not in ("marketplace_id", "asin")]
+            update_clause = ", ".join([f"{col} = excluded.{col}" for col in update_columns])
+            insert_sql = f"""
+            INSERT INTO vendor_inventory_asin ({', '.join(columns)})
+            VALUES ({placeholders})
+            ON CONFLICT(marketplace_id, asin) DO UPDATE SET {update_clause}
+            """
+
+            values = [tuple(row.get(col) for col in columns) for row in rows]
+            conn.executemany(insert_sql, values)
+        else:
+            logger.info(f"[DB] No vendor_inventory_asin rows to upsert for {marketplace_id}")
+
         conn.commit()
-        logger.info(f"[DB] Replaced vendor_inventory_asin snapshot for {marketplace_id}: {len(rows)} rows")
+
+        logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows (no deletes)")
+
+        return {
+            "prune_attempted": False,
+            "prune_skipped_reason": "disabled",
+            "prune_min_keep_count": 0,
+            "pruned_rows": 0,
+            "prune_kept_count": len(rows or []),
+            "prune_before_count": None,
+        }
     except Exception as exc:
-        logger.error(f"[DB] Failed to replace vendor_inventory_asin snapshot: {exc}", exc_info=True)
+        logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)
         raise
+
+
+def reset_vendor_inventory(conn: Optional[sqlite3.Connection] = None) -> int:
+    """
+    Explicit manual reset hook to clear vendor_inventory_asin.
+    Callers must opt-in; never invoked automatically.
+    Returns number of rows deleted.
+    """
+    close_conn = False
+    local_conn = conn
+    if local_conn is None:
+        local_conn = sqlite3.connect(CATALOG_DB_PATH)
+        close_conn = True
+    try:
+        cur = local_conn.execute("DELETE FROM vendor_inventory_asin")
+        local_conn.commit()
+        deleted = cur.rowcount or 0
+        logger.warning("[DB] vendor_inventory_asin reset invoked manually; rows=%s", deleted)
+        return deleted
+    finally:
+        if close_conn and local_conn:
+            local_conn.close()
 
 
 def get_vendor_inventory_snapshot(conn, marketplace_id: str) -> list[dict]:
@@ -531,6 +587,193 @@ def set_app_kv(conn, key: str, value: str) -> None:
     except Exception as exc:
         logger.error(f"[DB] Failed to set_app_kv for key '{key}': {exc}")
         raise
+
+
+def ensure_df_remittances_table(db_path: Path = CATALOG_DB_PATH) -> None:
+    """Ensure the DF remittances table exists for Gmail imports."""
+    create_sql = """
+    CREATE TABLE IF NOT EXISTS df_remittances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_number TEXT,
+        purchase_order_number TEXT,
+        payment_date TEXT,
+        paid_amount REAL,
+        currency TEXT,
+        remittance_id TEXT,
+        gmail_message_id TEXT,
+        imported_at_utc TEXT
+    )
+    """
+    unique_sql = """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_df_remittances_unique
+    ON df_remittances (gmail_message_id, invoice_number, remittance_id)
+    """
+    gmail_idx_sql = """
+    CREATE INDEX IF NOT EXISTS idx_df_remittances_gmail
+    ON df_remittances (gmail_message_id)
+    """
+
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            conn.execute(create_sql)
+            conn.execute(unique_sql)
+            conn.execute(gmail_idx_sql)
+            conn.commit()
+
+
+def df_remittances_get_imported_message_ids(limit: int = 5000, *, db_path: Path = CATALOG_DB_PATH) -> set[str]:
+    """Return a set of Gmail message IDs already imported (bounded for fast dedupe)."""
+    ensure_df_remittances_table(db_path)
+    with get_db_connection_for_path(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT gmail_message_id
+            FROM df_remittances
+            WHERE gmail_message_id IS NOT NULL AND trim(gmail_message_id) != ''
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return {row[0] for row in rows if row and row[0]}
+
+
+def df_remittances_insert_many(rows: list[dict], *, db_path: Path = CATALOG_DB_PATH) -> int:
+    """Insert remittance rows transactionally with dedupe via UNIQUE index."""
+    if not rows:
+        return 0
+
+    ensure_df_remittances_table(db_path)
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            before = conn.total_changes
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO df_remittances (
+                    invoice_number,
+                    purchase_order_number,
+                    payment_date,
+                    paid_amount,
+                    currency,
+                    remittance_id,
+                    gmail_message_id,
+                    imported_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.get("invoice_number"),
+                        row.get("purchase_order_number"),
+                        row.get("payment_date"),
+                        row.get("paid_amount"),
+                        row.get("currency"),
+                        row.get("remittance_id"),
+                        row.get("gmail_message_id"),
+                        row.get("imported_at_utc") or now_iso,
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+            return conn.total_changes - before
+
+
+def ensure_df_payments_tables(db_path: Path = CATALOG_DB_PATH) -> None:
+    """Ensure DF Payments tables exist for the given database path."""
+    ensure_df_remittances_table(db_path)
+    orders_sql = """
+    CREATE TABLE IF NOT EXISTS df_payments_orders (
+        marketplace_id TEXT NOT NULL,
+        purchase_order_number TEXT NOT NULL,
+        customer_order_number TEXT,
+        order_date_utc TEXT,
+        order_status TEXT,
+        items_count INTEGER,
+        total_units INTEGER,
+        subtotal_amount REAL,
+        vat_amount REAL,
+        currency_code TEXT,
+        sku_list TEXT,
+        payment_status TEXT,
+        payment_date TEXT,
+        remittance_ids TEXT,
+        last_updated_utc TEXT,
+        PRIMARY KEY (marketplace_id, purchase_order_number)
+    )
+    """
+
+    state_sql = """
+    CREATE TABLE IF NOT EXISTS df_payments_state (
+        marketplace_id TEXT PRIMARY KEY,
+        last_fetch_started_at TEXT,
+        last_fetch_finished_at TEXT,
+        last_fetch_status TEXT,
+        last_error TEXT,
+        last_lookback_days INTEGER,
+        rows_90d INTEGER,
+        pages_fetched INTEGER,
+        fetched_orders_total INTEGER,
+        unique_po_total INTEGER,
+        rows_in_db_window INTEGER,
+        limit_used INTEGER,
+        last_incremental_started_at TEXT,
+        last_incremental_finished_at TEXT,
+        last_incremental_status TEXT,
+        last_incremental_error TEXT,
+        last_seen_order_date_utc TEXT,
+        last_incremental_orders_upserted INTEGER,
+        last_incremental_pages_fetched INTEGER,
+        incremental_last_attempt_at_utc TEXT,
+        incremental_last_success_at_utc TEXT,
+        incremental_cooldown_until_utc TEXT
+    )
+    """
+
+    index_sql = """
+    CREATE INDEX IF NOT EXISTS idx_df_payments_order_date
+    ON df_payments_orders (marketplace_id, order_date_utc)
+    """
+
+    with _db_write_lock:
+        with get_db_connection_for_path(db_path) as conn:
+            conn.execute(orders_sql)
+            conn.execute(state_sql)
+            conn.execute(index_sql)
+            for col in (
+                "payment_status TEXT",
+                "payment_date TEXT",
+                "remittance_ids TEXT",
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE df_payments_orders ADD COLUMN {col}")
+                except Exception:
+                    pass
+            try:
+                conn.execute("ALTER TABLE df_payments_state ADD COLUMN pages_fetched INTEGER")
+            except Exception:
+                pass
+            for col in (
+                "fetched_orders_total INTEGER",
+                "unique_po_total INTEGER",
+                "rows_in_db_window INTEGER",
+                "limit_used INTEGER",
+                "last_incremental_started_at TEXT",
+                "last_incremental_finished_at TEXT",
+                "last_incremental_status TEXT",
+                "last_incremental_error TEXT",
+                "last_seen_order_date_utc TEXT",
+                "last_incremental_orders_upserted INTEGER",
+                "last_incremental_pages_fetched INTEGER",
+                "incremental_last_attempt_at_utc TEXT",
+                "incremental_last_success_at_utc TEXT",
+                "incremental_cooldown_until_utc TEXT",
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE df_payments_state ADD COLUMN {col}")
+                except Exception:
+                    pass
+            conn.commit()
 
 
 def get_exported_asins(marketplace_id: str = "A2VIGQ35RCS4UG") -> set[str]:

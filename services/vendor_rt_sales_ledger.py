@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -16,6 +17,15 @@ STATUS_DOWNLOADED = "DOWNLOADED"
 STATUS_APPLIED = "APPLIED"
 STATUS_FAILED = "FAILED"
 CLAIMABLE_STATUSES: Tuple[str, str] = (STATUS_MISSING, STATUS_FAILED)
+LEDGER_NORMALIZATION_FLAG = "rt_sales_ledger_hour_normalized_v1"
+
+STATUS_PRIORITY = {
+    STATUS_APPLIED: 5,
+    STATUS_DOWNLOADED: 4,
+    STATUS_REQUESTED: 3,
+    STATUS_FAILED: 2,
+    STATUS_MISSING: 1,
+}
 
 
 def _create_ledger_table(conn: sqlite3.Connection) -> None:
@@ -110,6 +120,24 @@ def ensure_vendor_rt_sales_ledger_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def normalize_hour_utc_dt(dt_value: datetime) -> datetime:
+    if dt_value is None:
+        raise ValueError("dt_value is required")
+    if dt_value.tzinfo is None:
+        logger.warning("[RtSalesLedger] naive datetime passed to normalize_hour_utc_dt; assuming UTC")
+        dt_value = dt_value.replace(tzinfo=timezone.utc)
+    else:
+        dt_value = dt_value.astimezone(timezone.utc)
+    return dt_value.replace(minute=0, second=0, microsecond=0)
+
+
+def normalize_hour_utc_iso(value: str) -> str:
+    if not value:
+        raise ValueError("hour_utc value cannot be empty")
+    dt_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return normalize_hour_utc_dt(dt_value).isoformat()
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -154,6 +182,11 @@ def ensure_hours_exist(marketplace_id: str, hours: Iterable[str]) -> int:
         ensure_vendor_rt_sales_ledger_table(conn)
         for hour in hours:
             try:
+                normalized_hour = normalize_hour_utc_iso(hour)
+            except Exception:
+                logger.warning("[RtSalesLedger] Skipping invalid hour value %s", hour)
+                continue
+            try:
                 cursor = conn.execute(
                     f"""
                     INSERT INTO {LEDGER_TABLE} (
@@ -163,7 +196,7 @@ def ensure_hours_exist(marketplace_id: str, hours: Iterable[str]) -> int:
                     ) VALUES (?, ?, ?, NULL, 0, NULL, NULL, ?, ?)
                     ON CONFLICT(marketplace_id, hour_utc) DO NOTHING
                     """,
-                    (marketplace_id, hour, STATUS_MISSING, now_iso, now_iso),
+                    (marketplace_id, normalized_hour, STATUS_MISSING, now_iso, now_iso),
                 )
                 if cursor.rowcount:
                     inserted += 1
@@ -226,9 +259,62 @@ def claim_next_missing_hour(marketplace_id: str, now_utc: datetime) -> Optional[
         return _fetch_row(conn, marketplace_id, hour_utc)
 
 
+def mark_requested_explicit(marketplace_id: str, hour_utc: str) -> int:
+    """
+    Transition a specific ledger hour into REQUESTED status and return the new attempt count.
+    """
+    if not marketplace_id or not hour_utc:
+        return 0
+    normalized_hour = normalize_hour_utc_iso(hour_utc)
+    now_iso = _utc_now_iso()
+    with get_db_connection() as conn:
+        ensure_vendor_rt_sales_ledger_table(conn)
+        row = conn.execute(
+            f"""
+            SELECT attempt_count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ? AND hour_utc = ?
+            """,
+            (marketplace_id, normalized_hour),
+        ).fetchone()
+        attempt = int((row["attempt_count"] if row else 0) or 0) + 1
+        if row:
+            conn.execute(
+                f"""
+                UPDATE {LEDGER_TABLE}
+                SET status = ?, attempt_count = ?, updated_at_utc = ?,
+                    last_error = NULL, next_retry_utc = NULL
+                WHERE marketplace_id = ? AND hour_utc = ?
+                """,
+                (STATUS_REQUESTED, attempt, now_iso, marketplace_id, normalized_hour),
+            )
+        else:
+            conn.execute(
+                f"""
+                INSERT INTO {LEDGER_TABLE} (
+                    marketplace_id, hour_utc, status, report_id,
+                    attempt_count, last_error, next_retry_utc,
+                    created_at_utc, updated_at_utc
+                )
+                VALUES (?, ?, ?, NULL, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    marketplace_id,
+                    normalized_hour,
+                    STATUS_REQUESTED,
+                    attempt,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        conn.commit()
+        return attempt
+
+
 def mark_downloaded(marketplace_id: str, hour_utc: str, report_id: Optional[str]) -> None:
     if not marketplace_id or not hour_utc:
         return
+    normalized_hour = normalize_hour_utc_iso(hour_utc)
     now_iso = _utc_now_iso()
     with get_db_connection() as conn:
         ensure_vendor_rt_sales_ledger_table(conn)
@@ -238,7 +324,7 @@ def mark_downloaded(marketplace_id: str, hour_utc: str, report_id: Optional[str]
             SET status = ?, report_id = ?, updated_at_utc = ?
             WHERE marketplace_id = ? AND hour_utc = ?
             """,
-            (STATUS_DOWNLOADED, report_id, now_iso, marketplace_id, hour_utc),
+            (STATUS_DOWNLOADED, report_id, now_iso, marketplace_id, normalized_hour),
         )
         conn.commit()
 
@@ -246,6 +332,7 @@ def mark_downloaded(marketplace_id: str, hour_utc: str, report_id: Optional[str]
 def mark_applied(marketplace_id: str, hour_utc: str) -> None:
     if not marketplace_id or not hour_utc:
         return
+    normalized_hour = normalize_hour_utc_iso(hour_utc)
     now_iso = _utc_now_iso()
     with get_db_connection() as conn:
         ensure_vendor_rt_sales_ledger_table(conn)
@@ -255,7 +342,7 @@ def mark_applied(marketplace_id: str, hour_utc: str) -> None:
             SET status = ?, updated_at_utc = ?
             WHERE marketplace_id = ? AND hour_utc = ?
             """,
-            (STATUS_APPLIED, now_iso, marketplace_id, hour_utc),
+            (STATUS_APPLIED, now_iso, marketplace_id, normalized_hour),
         )
         conn.commit()
 
@@ -268,6 +355,7 @@ def mark_failed(
 ) -> None:
     if not marketplace_id or not hour_utc:
         return
+    normalized_hour = normalize_hour_utc_iso(hour_utc)
     now = datetime.now(timezone.utc)
     retry_at = now + timedelta(minutes=max(cooldown_minutes, 0))
     now_iso = now.replace(microsecond=0).isoformat()
@@ -280,7 +368,7 @@ def mark_failed(
             SET status = ?, last_error = ?, next_retry_utc = ?, updated_at_utc = ?
             WHERE marketplace_id = ? AND hour_utc = ?
             """,
-            (STATUS_FAILED, (error or "")[:500], retry_iso, now_iso, marketplace_id, hour_utc),
+            (STATUS_FAILED, (error or "")[:500], retry_iso, now_iso, marketplace_id, normalized_hour),
         )
         conn.commit()
 
@@ -288,6 +376,7 @@ def mark_failed(
 def set_report_id(marketplace_id: str, hour_utc: str, report_id: str) -> None:
     if not marketplace_id or not hour_utc or not report_id:
         return
+    normalized_hour = normalize_hour_utc_iso(hour_utc)
     now_iso = _utc_now_iso()
     with get_db_connection() as conn:
         ensure_vendor_rt_sales_ledger_table(conn)
@@ -297,7 +386,7 @@ def set_report_id(marketplace_id: str, hour_utc: str, report_id: str) -> None:
             SET report_id = ?, updated_at_utc = ?
             WHERE marketplace_id = ? AND hour_utc = ?
             """,
-            (report_id, now_iso, marketplace_id, hour_utc),
+            (report_id, now_iso, marketplace_id, normalized_hour),
         )
         conn.commit()
 
@@ -394,6 +483,181 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
         "next_claimable_hour_utc": next_claimable,
         "last_applied_hour_utc": last_applied,
     }
+
+
+def _status_rank(status: Optional[str]) -> int:
+    return STATUS_PRIORITY.get((status or "").upper(), 0)
+
+
+def _parse_iso_optional(value: Optional[str]) -> Optional[datetime]:
+    return _parse_iso_datetime(value)
+
+
+def normalize_existing_ledger_rows(
+    conn: sqlite3.Connection,
+    marketplaces: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Normalize hour_utc values to the top of the hour and merge collisions.
+    """
+    ensure_vendor_rt_sales_ledger_table(conn)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    if marketplaces is None:
+        rows = cursor.execute(
+            f"SELECT DISTINCT marketplace_id FROM {LEDGER_TABLE}"
+        ).fetchall()
+        marketplaces = [row["marketplace_id"] for row in rows if row["marketplace_id"]]
+
+    stats = {
+        "marketplaces": len(marketplaces),
+        "rows_scanned": 0,
+        "rows_changed": 0,
+        "collisions_merged": 0,
+    }
+
+    for marketplace_id in marketplaces:
+        rows = cursor.execute(
+            f"""
+            SELECT *
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+            """,
+            (marketplace_id,),
+        ).fetchall()
+        if not rows:
+            continue
+        stats["rows_scanned"] += len(rows)
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            hour_value = row["hour_utc"]
+            try:
+                normalized_hour = normalize_hour_utc_iso(hour_value)
+            except Exception:
+                logger.warning("[RtSalesLedgerNormalize] Invalid hour_utc=%s (marketplace=%s)", hour_value, marketplace_id)
+                continue
+            groups[normalized_hour].append(dict(row))
+
+        for normalized_hour, group_rows in groups.items():
+            needs_normalization = any(row["hour_utc"] != normalized_hour for row in group_rows)
+            if not needs_normalization and len(group_rows) == 1:
+                continue
+
+            stats["rows_changed"] += len(group_rows)
+            if len(group_rows) > 1:
+                stats["collisions_merged"] += 1
+
+            # Determine winner row
+            group_rows_sorted = sorted(
+                group_rows,
+                key=lambda row: (_status_rank(row["status"]), _parse_iso_optional(row["updated_at_utc"]) or datetime.min),
+                reverse=True,
+            )
+            winner = dict(group_rows_sorted[0])
+            winner_status = winner.get("status") or STATUS_MISSING
+
+            merged_row = dict(winner)
+            merged_row["hour_utc"] = normalized_hour
+            merged_row["status"] = winner_status
+
+            # Merge metadata
+            report_id = winner.get("report_id")
+            if not report_id:
+                for row in group_rows_sorted:
+                    if row.get("report_id"):
+                        report_id = row["report_id"]
+                        break
+            merged_row["report_id"] = report_id
+
+            attempt_count = max(int(row.get("attempt_count") or 0) for row in group_rows_sorted)
+            merged_row["attempt_count"] = attempt_count
+
+            if winner_status == STATUS_FAILED:
+                last_error = winner.get("last_error")
+                if not last_error:
+                    for row in group_rows_sorted:
+                        if row.get("last_error"):
+                            last_error = row["last_error"]
+                            break
+                merged_row["last_error"] = (last_error or "")[:500]
+            else:
+                merged_row["last_error"] = None
+
+            next_retry_candidates = [
+                _parse_iso_optional(row.get("next_retry_utc"))
+                for row in group_rows_sorted
+                if row.get("next_retry_utc")
+            ]
+            if next_retry_candidates:
+                merged_row["next_retry_utc"] = (
+                    max(dt for dt in next_retry_candidates if dt).replace(microsecond=0).isoformat()
+                )
+            else:
+                merged_row["next_retry_utc"] = None
+
+            created_times = [
+                _parse_iso_optional(row.get("created_at_utc")) or datetime.max
+                for row in group_rows_sorted
+                if row.get("created_at_utc")
+            ]
+            merged_row["created_at_utc"] = (
+                min(created_times).replace(microsecond=0).isoformat() if created_times else _utc_now_iso()
+            )
+
+            updated_times = [
+                _parse_iso_optional(row.get("updated_at_utc")) or datetime.min
+                for row in group_rows_sorted
+                if row.get("updated_at_utc")
+            ]
+            merged_row["updated_at_utc"] = (
+                max(updated_times).replace(microsecond=0).isoformat() if updated_times else _utc_now_iso()
+            )
+
+            # Remove old rows
+            cursor.executemany(
+                f"""
+                DELETE FROM {LEDGER_TABLE}
+                WHERE marketplace_id = ? AND hour_utc = ?
+                """,
+                [(marketplace_id, row["hour_utc"]) for row in group_rows_sorted],
+            )
+
+            # Insert merged row
+            cursor.execute(
+                f"""
+                INSERT OR REPLACE INTO {LEDGER_TABLE} (
+                    marketplace_id,
+                    hour_utc,
+                    status,
+                    report_id,
+                    attempt_count,
+                    last_error,
+                    next_retry_utc,
+                    created_at_utc,
+                    updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    marketplace_id,
+                    merged_row["hour_utc"],
+                    merged_row["status"],
+                    merged_row["report_id"],
+                    merged_row["attempt_count"],
+                    merged_row["last_error"],
+                    merged_row["next_retry_utc"],
+                    merged_row["created_at_utc"],
+                    merged_row["updated_at_utc"],
+                ),
+            )
+
+    conn.commit()
+    logger.info(
+        "[RtSalesLedgerNormalize] normalized_rows=%s merged_collisions=%s marketplaces=%s",
+        stats["rows_changed"],
+        stats["collisions_merged"],
+        stats["marketplaces"],
+    )
+    return stats
 
 
 # ----------------------------------------------------------------------

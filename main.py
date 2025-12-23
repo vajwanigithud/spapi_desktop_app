@@ -76,9 +76,9 @@
 
 import asyncio
 import csv
+import importlib.util
 import json
 import logging
-import importlib.util
 import os
 import time
 import uuid
@@ -90,19 +90,32 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl
 
+import requests
+import uvicorn
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
 import services.oos_service as oos_service
 import services.picklist_service as picklist_service
 import services.vendor_realtime_sales as vendor_realtime_sales_service
+from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
+from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.printer_routes import register_printer_routes
 from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
 from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
+from routes.worker_status_routes import register_worker_status_routes
 from services import spapi_reports
 from services.async_utils import run_single_arg
+from services.catalog_images import attach_image_urls
 from services.catalog_service import (
     ensure_asin_in_universe,
     get_catalog_asin_sources_map,
@@ -124,6 +137,10 @@ from services.catalog_service import (
     spapi_catalog_status,
     update_catalog_barcode,
     upsert_spapi_catalog,
+)
+from services.df_payments import (
+    start_df_payments_incremental_scheduler,
+    stop_df_payments_incremental_scheduler,
 )
 from services.json_cache import (
     load_asin_cache,
@@ -159,11 +176,9 @@ from services.vendor_po_store import (
     ensure_vendor_po_schema,
     export_vendor_pos_snapshot,
     get_rejected_vendor_po_lines,
-    get_vendor_po as store_get_vendor_po,
     get_vendor_po_ledger,
     get_vendor_po_line_amount_total,
     get_vendor_po_line_totals_for_po,
-    get_vendor_po_lines as store_get_vendor_po_lines,
     get_vendor_po_list,
     get_vendor_po_sync_state,
     get_vendor_pos_by_numbers,
@@ -172,15 +187,31 @@ from services.vendor_po_store import (
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
 )
+from services.vendor_po_store import (
+    get_vendor_po as store_get_vendor_po,
+)
+from services.vendor_po_store import (
+    get_vendor_po_lines as store_get_vendor_po_lines,
+)
 from services.vendor_po_view import compute_amount_reconciliation, compute_po_status
 from services.vendor_rt_sales_ledger import (
+    LEDGER_NORMALIZATION_FLAG,
+    normalize_existing_ledger_rows,
+)
+from services.vendor_rt_sales_ledger import (
     acquire_worker_lock as acquire_rt_sales_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     refresh_worker_lock as refresh_rt_sales_worker_lock,
+)
+from services.vendor_rt_sales_ledger import (
     release_worker_lock as release_rt_sales_worker_lock,
 )
 
+BODY_NONE = Body(default=None)
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
+<<<<<<< HEAD
 import requests
 import uvicorn
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
@@ -192,6 +223,8 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from auth.spapi_auth import SpApiAuth
 
+=======
+>>>>>>> origin/main
 # --- Logging configuration ---
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -271,6 +304,8 @@ register_print_log_routes(app)
 register_vendor_inventory_realtime_routes(app)
 register_vendor_rt_inventory_routes(app)
 register_vendor_rt_sales_routes(app)
+register_worker_status_routes(app)
+register_df_payments_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -289,9 +324,21 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
+        # Start realtime inventory auto-refresh loop (single-flight + cooldown inside)
+        start_vendor_rt_inventory_auto_refresh()
+        start_df_payments_incremental_scheduler()
         logger.info("[Startup] Background tasks initialized successfully")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Signal background workers to stop."""
+    try:
+        stop_df_payments_incremental_scheduler()
+    except Exception as exc:
+        logger.warning(f"[Shutdown] Failed to stop DF Payments scheduler cleanly: {exc}")
 
 
 # -------------------------------
@@ -404,6 +451,7 @@ EU_MARKETPLACE_IDS = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1R
 FE_MARKETPLACE_IDS = {"A1VC38T7YXB528"}  # JP
 PO_TRACKER_PATH = Path(__file__).parent / "po_tracker.json"
 OOS_STATE_PATH = Path(__file__).parent / "oos_state.json"
+CATALOG_FETCHER_EXCLUSIONS_PATH = Path(__file__).parent / "catalog_fetcher_exclusions.json"
 
 
 def resolve_catalog_host(marketplace_id: str) -> str:
@@ -429,6 +477,100 @@ def _isoformat_utc(dt: datetime) -> str:
 
 def _rt_sales_lock_owner(label: str) -> str:
     return f"{label}:{os.getpid()}:{int(time.time())}"
+
+
+def _ensure_rt_sales_ledger_normalized_once() -> None:
+    """Normalize historical RT sales ledger rows exactly once per install."""
+    try:
+        from services.db import (  # Local import to avoid cycles
+            get_app_kv,
+            get_db_connection,
+            set_app_kv,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning(
+            "[RtSalesLedgerNormalize] Skipping normalization; DB helpers unavailable: %s",
+            exc,
+        )
+        return
+
+    try:
+        with get_db_connection() as conn:
+            already = get_app_kv(conn, LEDGER_NORMALIZATION_FLAG)
+            if already:
+                return
+            logger.info("[RtSalesLedgerNormalize] Running startup ledger normalization")
+            stats = normalize_existing_ledger_rows(conn)
+            set_app_kv(conn, LEDGER_NORMALIZATION_FLAG, "1")
+            logger.info(
+                "[RtSalesLedgerNormalize] Startup normalization complete stats=%s",
+                stats,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[RtSalesLedgerNormalize] Startup normalization failed (continuing): %s",
+            exc,
+            exc_info=True,
+        )
+
+
+def load_catalog_fetcher_exclusions() -> Set[str]:
+    """Return normalized ASINs that should be hidden from the Catalog Fetcher list."""
+    if not CATALOG_FETCHER_EXCLUSIONS_PATH.exists():
+        return set()
+    try:
+        raw = json.loads(CATALOG_FETCHER_EXCLUSIONS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("[Catalog] Failed to read catalog fetcher exclusions: %s", exc)
+        return set()
+
+    if isinstance(raw, dict):
+        values = raw.get("exclusions") or raw.get("asins") or []
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        return set()
+
+    exclusions = {
+        asin.strip().upper()
+        for asin in (values or [])
+        if isinstance(asin, str) and asin.strip() and is_asin(asin.strip().upper())
+    }
+    return exclusions
+
+
+def save_catalog_fetcher_exclusions(exclusions: Set[str]) -> None:
+    payload = sorted({(asin or "").strip().upper() for asin in exclusions if asin})
+    try:
+        CATALOG_FETCHER_EXCLUSIONS_PATH.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("[Catalog] Failed to write catalog fetcher exclusions: %s", exc)
+
+
+def add_catalog_fetcher_exclusion(asin: str) -> Set[str]:
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm or not is_asin(asin_norm):
+        return load_catalog_fetcher_exclusions()
+    exclusions = load_catalog_fetcher_exclusions()
+    if asin_norm not in exclusions:
+        exclusions.add(asin_norm)
+        save_catalog_fetcher_exclusions(exclusions)
+    else:
+        save_catalog_fetcher_exclusions(exclusions)
+    return exclusions
+
+
+def remove_catalog_fetcher_exclusion(asin: str) -> None:
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm:
+        return
+    exclusions = load_catalog_fetcher_exclusions()
+    if asin_norm in exclusions:
+        exclusions.remove(asin_norm)
+        save_catalog_fetcher_exclusions(exclusions)
 
 
 class VendorPOSyncRequest(BaseModel):
@@ -485,6 +627,7 @@ try:
     ensure_oos_export_history_table()
     ensure_vendor_inventory_table()
     ensure_app_kv_table()
+    _ensure_rt_sales_ledger_normalized_once()
 except Exception as e:
     logger.warning(f"[Startup] Failed to init vendor_realtime_sales tables (non-critical): {e}")
 
@@ -495,6 +638,12 @@ except Exception as e:
 VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES = 15  # Now 15 minutes instead of 60
 _rt_sales_auto_sync_thread = None
 _rt_sales_auto_sync_stop = False
+
+# Vendor RT Inventory auto-refresh (realtime inventory snapshot)
+VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED", "false").lower() != "false"
+VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES = int(os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES", "60"))
+_rt_inventory_auto_refresh_thread = None
+_rt_inventory_auto_refresh_stop = False
 
 
 def start_vendor_rt_sales_startup_backfill_thread():
@@ -622,6 +771,15 @@ def vendor_rt_sales_auto_sync_loop():
         )
 
         now_utc = get_safe_now_utc()
+        pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause(now_utc=now_utc)
+        if pause_state.get("paused"):
+            logger.warning(
+                "[RTSalesAutoSync] Paused (%s) until %s; skipping cycle",
+                pause_state.get("reason") or "manual",
+                pause_state.get("until_utc") or "manual",
+            )
+            time.sleep(interval_seconds)
+            continue
 
         if is_in_quota_cooldown(now_utc):
             logger.warning("[RTSalesAutoSync] In quota cooldown; skipping all SP-API calls this cycle")
@@ -820,6 +978,87 @@ def start_vendor_rt_sales_auto_sync():
     logger.info("[RTSalesAutoSync] Background thread started")
 
 
+# ========================================
+# Vendor Real-Time Inventory Auto-Refresh
+# ========================================
+
+
+def _rt_inventory_sleep(interval_seconds: int) -> None:
+    """Sleep in small chunks so the stop flag can be checked frequently."""
+    chunk = 5
+    slept = 0
+    while not _rt_inventory_auto_refresh_stop and slept < interval_seconds:
+        remaining = interval_seconds - slept
+        time.sleep(chunk if remaining > chunk else remaining)
+        slept += chunk if remaining > chunk else remaining
+
+
+def vendor_rt_inventory_auto_refresh_loop():
+    """Background loop to refresh realtime inventory roughly hourly."""
+    global _rt_inventory_auto_refresh_stop
+
+    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[RtInventoryAutoRefresh] Disabled via config; loop will not run")
+        return
+
+    interval_seconds = max(60, VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES * 60)
+    marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+    marketplace_id = marketplace_ids[0]
+
+    logger.info(
+        "[RtInventoryAutoRefresh] Started for %s; interval=%s minutes",
+        marketplace_id,
+        VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES,
+    )
+
+    while not _rt_inventory_auto_refresh_stop:
+        try:
+            from services.vendor_inventory_realtime import (
+                DEFAULT_LOOKBACK_HOURS,
+                refresh_realtime_inventory_snapshot,
+            )
+            from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
+
+            result = refresh_vendor_rt_inventory_singleflight(
+                marketplace_id,
+                hours=DEFAULT_LOOKBACK_HOURS,
+                sync_callable=lambda mp_id, **_kwargs: refresh_realtime_inventory_snapshot(
+                    mp_id,
+                    lookback_hours=DEFAULT_LOOKBACK_HOURS,
+                ),
+            )
+            status = result.get("status")
+            logger.info("[RtInventoryAutoRefresh] Cycle complete status=%s", status)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("[RtInventoryAutoRefresh] Cycle failed: %s", exc, exc_info=True)
+
+        _rt_inventory_sleep(interval_seconds)
+
+
+def start_vendor_rt_inventory_auto_refresh():
+    """Start the vendor realtime inventory auto-refresh thread."""
+    global _rt_inventory_auto_refresh_thread, _rt_inventory_auto_refresh_stop
+
+    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[RtInventoryAutoRefresh] Disabled via config; not starting thread")
+        return
+
+    if _rt_inventory_auto_refresh_thread is not None and _rt_inventory_auto_refresh_thread.is_alive():
+        logger.warning("[RtInventoryAutoRefresh] Already running; skipping duplicate start")
+        return
+
+    _rt_inventory_auto_refresh_stop = False
+    import threading
+
+    _rt_inventory_auto_refresh_thread = threading.Thread(
+        target=vendor_rt_inventory_auto_refresh_loop,
+        daemon=True,
+        name="VendorRtInventoryAutoRefresh",
+    )
+    _rt_inventory_auto_refresh_thread.start()
+    logger.info("[RtInventoryAutoRefresh] Background thread started")
+
+
 
 def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     """
@@ -860,10 +1099,10 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
         resp = requests.get(url, headers=headers, params=params, timeout=30)
     except requests.exceptions.Timeout:
         logger.error(f"[Catalog] Timeout fetching {asin} after 30s")
-        raise HTTPException(status_code=504, detail=f"Catalog fetch timeout for {asin}")
+        raise HTTPException(status_code=504, detail=f"Catalog fetch timeout for {asin}") from None
     except requests.exceptions.RequestException as e:
         logger.error(f"[Catalog] Network error fetching {asin}: {e}")
-        raise HTTPException(status_code=503, detail=f"Catalog fetch network error: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Catalog fetch network error: {str(e)}") from e
     
     if resp.status_code == 429:
         raise HTTPException(status_code=429, detail="Catalog rate limit hit. Try again later.")
@@ -929,7 +1168,6 @@ def parse_po_date(po: Dict[str, Any]) -> datetime:
 
 def enrich_items_with_catalog(po_list):
     looked_up = set()
-    updated = False
     spapi_cache = spapi_catalog_status()
     for po in po_list:
         details = po.get("orderDetails") or {}
@@ -1020,6 +1258,10 @@ class VendorRtSalesFillDayRequest(BaseModel):
     burst: bool = False
     burst_hours: int = 6
     max_batches: int = 1
+<<<<<<< HEAD
+=======
+    report_window_hours: Optional[int] = 1
+>>>>>>> origin/main
 
     @field_validator("date")
     @classmethod
@@ -1062,6 +1304,45 @@ class VendorRtSalesFillDayRequest(BaseModel):
             raise ValueError("max_batches must be between 1 and 10")
         return value
 
+<<<<<<< HEAD
+=======
+    @field_validator("report_window_hours")
+    @classmethod
+    def _validate_report_window_hours(cls, value: Optional[int]) -> int:
+        value = value or 1
+        if value < 1 or value > 24 * 14:
+            raise ValueError("report_window_hours must be between 1 and 336")
+        return value
+
+
+class VendorRtSalesRepair30dRequest(BaseModel):
+    report_window_hours: int = 6
+    max_runtime_seconds: int = 600
+    max_reports: int = 50
+    dry_run: bool = False
+
+    @field_validator("report_window_hours")
+    @classmethod
+    def _validate_report_window(cls, value: int) -> int:
+        if value < 1 or value > 24 * 14:
+            raise ValueError("report_window_hours must be between 1 and 336")
+        return value
+
+    @field_validator("max_runtime_seconds")
+    @classmethod
+    def _validate_runtime(cls, value: int) -> int:
+        if value < 60 or value > 3600:
+            raise ValueError("max_runtime_seconds must be between 60 and 3600")
+        return value
+
+    @field_validator("max_reports")
+    @classmethod
+    def _validate_reports(cls, value: int) -> int:
+        if value < 1 or value > 500:
+            raise ValueError("max_reports must be between 1 and 500")
+        return value
+
+>>>>>>> origin/main
 
 
 
@@ -1125,10 +1406,10 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             resp = requests.get(url, headers=headers, params=params, timeout=20)
         except requests.exceptions.Timeout:
             logger.error(f"[VendorPO] Timeout fetching POs after 20s on page {page}")
-            raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}")
+            raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}") from None
         except requests.exceptions.RequestException as e:
             logger.error(f"[VendorPO] Network error fetching POs: {e}")
-            raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}")
+            raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}") from e
         
         if resp.status_code >= 400:
             logger.error(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
@@ -1213,15 +1494,6 @@ def fetch_po_status_totals(po_number: str) -> Dict[str, int]:
     for po in purchase_orders:
         items = po.get("itemStatus") or po.get("items") or []
         for item in items:
-            # Normalize quantities
-            ordered_amt = 0
-            oq_wrapper = item.get("orderedQuantity", {})
-            if isinstance(oq_wrapper, dict):
-                if "amount" in oq_wrapper:
-                    ordered_amt = _parse_qty(oq_wrapper)
-                elif isinstance(oq_wrapper.get("orderedQuantity"), dict):
-                    ordered_amt = _parse_qty(oq_wrapper.get("orderedQuantity"))
-
             ack_obj = item.get("acknowledgementStatus") or {}
             accepted_amt = _parse_qty(ack_obj.get("acceptedQuantity"))
 
@@ -1489,11 +1761,21 @@ def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
             accepted_qty = _coerce_int(accepted_raw)
 
         received_qty = _coerce_int(row.get("received_qty"))
+        cancelled_qty = _coerce_int(row.get("cancelled_qty"))
         pending_qty_val = row.get("pending_qty")
         if pending_qty_val is None:
-            pending_qty = max(0, accepted_qty - received_qty)
+            pending_qty = max(0, accepted_qty - received_qty - cancelled_qty)
         else:
             pending_qty = _coerce_int(pending_qty_val)
+
+        net_cost_amount = row.get("net_cost_amount")
+        net_cost_currency = row.get("net_cost_currency")
+        net_cost_obj = None
+        if net_cost_amount is not None:
+            net_cost_obj = {
+                "amount": net_cost_amount,
+                "currencyCode": net_cost_currency or row.get("net_cost_currency") or "",
+            }
 
         normalized_items.append(
             {
@@ -1507,6 +1789,14 @@ def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
                     "receivedQuantity": {"amount": received_qty},
                     "pendingQuantity": {"amount": pending_qty},
                 },
+                "ordered_qty": ordered_qty,
+                "accepted_qty": accepted_qty,
+                "received_qty": received_qty,
+                "cancelled_qty": cancelled_qty,
+                "pending_qty": pending_qty,
+                "net_cost_amount": net_cost_amount,
+                "net_cost_currency": net_cost_currency,
+                "netCost": net_cost_obj,
                 "title": row.get("title") or "",
                 "image": row.get("image") or "",
             }
@@ -1539,8 +1829,12 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 "ordered": 0,
                 "accepted": 0,
                 "received": 0,
-                "cancelled": 0,
+                "rejected": 0,
                 "pending": 0,
+                "unit_cost": None,
+                "currency": None,
+                "total_amount": Decimal("0"),
+                "has_total": False,
             }
             order.append(key)
 
@@ -1557,15 +1851,25 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
         ordered_val = _extract_quantity_value(item, "ordered_qty", item.get("orderedQuantity"))
         accepted_val = _extract_quantity_value(item, "accepted_qty", item.get("acknowledgementStatus", {}).get("acceptedQuantity"), fallback=ordered_val)
         received_val = _extract_quantity_value(item, "received_qty", (item.get("receivingStatus") or {}).get("receivedQuantity"))
-        cancelled_val = _extract_quantity_value(item, "cancelled_qty", item.get("acknowledgementStatus", {}).get("rejectedQuantity"))
+        rejected_val = _extract_quantity_value(item, "cancelled_qty", item.get("acknowledgementStatus", {}).get("rejectedQuantity"))
         pending_val = _extract_quantity_value(item, "pending_qty", (item.get("receivingStatus") or {}).get("pendingQuantity"), allow_none=True)
         if pending_val is None:
-            pending_val = max(0, accepted_val - received_val - cancelled_val)
+            pending_val = max(0, accepted_val - received_val - rejected_val)
+
+        unit_cost, currency = _extract_unit_cost_from_row(item)
+        if unit_cost is not None:
+            if bucket["unit_cost"] is None:
+                bucket["unit_cost"] = unit_cost
+            if not bucket["currency"] and currency:
+                bucket["currency"] = currency
+            if accepted_val > 0:
+                bucket["total_amount"] += unit_cost * Decimal(accepted_val)
+                bucket["has_total"] = True
 
         bucket["ordered"] += ordered_val
         bucket["accepted"] += accepted_val
         bucket["received"] += received_val
-        bucket["cancelled"] += cancelled_val
+        bucket["rejected"] += rejected_val
         bucket["pending"] += pending_val
 
     aggregated: List[Dict[str, Any]] = []
@@ -1576,20 +1880,23 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
         ordered = bucket["ordered"]
         accepted = bucket["accepted"]
         received = bucket["received"]
-        cancelled = bucket["cancelled"]
+        rejected = bucket["rejected"]
         pending = max(0, bucket["pending"])
 
         if accepted <= 0 and ordered > 0:
             accepted = ordered
 
         if pending <= 0:
-            pending = max(0, accepted - received - cancelled)
+            pending = max(0, accepted - received - rejected)
 
         status = "ACCEPTED"
-        if cancelled >= accepted and accepted <= 0:
+        if rejected >= accepted and accepted <= 0:
             status = "REJECTED"
         elif received >= accepted and accepted > 0:
             status = "RECEIVED"
+
+        total_amount = float(bucket["total_amount"]) if bucket["has_total"] else None
+        unit_cost = float(bucket["unit_cost"]) if bucket["unit_cost"] is not None else None
 
         aggregated.append(
             {
@@ -1601,18 +1908,23 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 "ordered_qty": ordered,
                 "accepted_qty": accepted,
                 "received_qty": received,
-                "cancelled_qty": cancelled,
+                "cancelled_qty": rejected,
+                "rejected_qty": rejected,
                 "remaining_qty": pending,
                 "orderedQuantity": {"amount": ordered},
                 "acknowledgementStatus": {
                     "acceptedQuantity": {"amount": accepted},
-                    "rejectedQuantity": {"amount": cancelled},
+                    "rejectedQuantity": {"amount": rejected},
                     "confirmationStatus": status,
                 },
                 "receivingStatus": {
                     "receivedQuantity": {"amount": received},
                     "pendingQuantity": {"amount": pending},
                 },
+                "net_amount": unit_cost,
+                "currencyCode": bucket["currency"],
+                "total_amount": total_amount,
+                "accepted_line_amount": total_amount,
             }
         )
 
@@ -1650,11 +1962,118 @@ def _extract_amount_from_dict(data: Any) -> Optional[int]:
     return None
 
 
+def _extract_unit_cost_from_row(item: Dict[str, Any]) -> Tuple[Optional[Decimal], Optional[str]]:
+    if not isinstance(item, dict):
+        return None, None
+
+    for amount_field, currency_field in (
+        ("net_cost_amount", "net_cost_currency"),
+        ("unit_cost_amount", "unit_cost_currency"),
+    ):
+        amount = item.get(amount_field)
+        if amount is not None:
+            amount_dec = _coerce_decimal(amount)
+            if amount_dec is not None:
+                return amount_dec, item.get(currency_field) or item.get("currencyCode")
+
+    for key in ("netCost", "net_cost", "itemNetCost", "item_net_cost", "unitCost", "unit_cost"):
+        amount_dec, currency = _extract_money_tuple(item.get(key))
+        if amount_dec is not None:
+            return amount_dec, currency or item.get("currencyCode")
+
+    return None, None
+
+
+def _extract_money_tuple(value: Any) -> Tuple[Optional[Decimal], Optional[str]]:
+    if isinstance(value, dict):
+        amount_val = value.get("amount") or value.get("value")
+        amount_dec = _coerce_decimal(amount_val)
+        if amount_dec is not None:
+            currency = value.get("currencyCode") or value.get("currency")
+            return amount_dec, currency
+    elif value is not None:
+        amount_dec = _coerce_decimal(value)
+        if amount_dec is not None:
+            return amount_dec, None
+    return None, None
+
+
+def _compute_amounts_summary(items: List[Dict[str, Any]], po: Dict[str, Any]) -> Dict[str, Any]:
+    total_sum = Decimal("0")
+    saw_total = False
+    currency = None
+    for row in items or []:
+        total_amount = row.get("total_amount")
+        if total_amount is None:
+            continue
+        total_dec = _coerce_decimal(total_amount)
+        if total_dec is None:
+            continue
+        total_sum += total_dec
+        saw_total = True
+        if not currency:
+            currency = row.get("currencyCode") or row.get("currency")
+
+    sum_total_amount = float(total_sum) if saw_total else None
+    header_amount_dec, header_currency = _extract_po_total_amount(po)
+    if not currency:
+        currency = header_currency
+
+    diff = None
+    if sum_total_amount is not None and header_amount_dec is not None:
+        diff = float(total_sum - header_amount_dec)
+
+    return {
+        "sum_total_amount": sum_total_amount,
+        "po_total_accepted_cost": float(header_amount_dec) if header_amount_dec is not None else None,
+        "currency": currency,
+        "diff": diff,
+    }
+
+
+def _extract_po_total_amount(po: Dict[str, Any]) -> Tuple[Optional[Decimal], Optional[str]]:
+    total_obj = po.get("totalAcceptedCost")
+    candidates = [
+        po.get("total_accepted_cost"),
+        po.get("totalAcceptedCostAmount"),
+        total_obj.get("amount") if isinstance(total_obj, dict) else None,
+    ]
+    for value in candidates:
+        amount_dec = _coerce_decimal(value)
+        if amount_dec is not None:
+            currency = (
+                po.get("total_accepted_cost_currency")
+                or po.get("totalAcceptedCostCurrency")
+                or (total_obj.get("currencyCode") if isinstance(total_obj, dict) else None)
+            )
+            return amount_dec, currency
+
+    fallback = _coerce_decimal(po.get("accepted_total_amount"))
+    if fallback is not None:
+        currency = (
+            po.get("accepted_total_currency")
+            or po.get("total_accepted_cost_currency")
+            or po.get("totalAcceptedCostCurrency")
+        )
+        return fallback, currency
+
+    return None, po.get("totalAcceptedCostCurrency") or po.get("total_accepted_cost_currency")
+
+
 def _coerce_int(value: Any) -> int:
     try:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _coerce_decimal(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 
 def _summarize_vendor_po_lines(lines: List[Dict[str, Any]]) -> Tuple[Dict[str, int], List[Dict[str, Any]], List[str]]:
@@ -1735,7 +2154,7 @@ def _build_reconcile_header(po: Dict[str, Any], fallback_line_count: int) -> Dic
 
 
 @app.post("/api/vendor-pos/sync")
-def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
+def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     """
     Fetch Vendor POs from SP-API for a window and persist to SQLite (canonical store).
     """
@@ -1768,7 +2187,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
@@ -1792,7 +2211,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = Body(default=None))
 
 
 @app.post("/api/vendor-pos/rebuild")
-def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(default=None)):
+def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     """
     Full rebuild: fetch Vendor POs for the default rolling window and refresh SQLite snapshot.
     """
@@ -1825,7 +2244,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = Body(defaul
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
-        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
         release_state = release_vendor_po_lock(
@@ -1864,7 +2283,7 @@ def _fetch_and_persist_vendor_pos(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Vendor PO fetch failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Vendor PO fetch failed: {exc}") from exc
 
     synced_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -2175,13 +2594,15 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     if items_for_modal:
         aggregated_items = _aggregate_po_items_for_modal(items_for_modal)
         po["orderDetails"]["items"] = aggregated_items
+        po["poItemsCount"] = len(aggregated_items)
         items_for_modal = aggregated_items
     line_source = "db_lines" if used_db_lines and items_for_modal else ("raw_orderDetails" if items_for_modal else "empty")
     logger.info("[VendorPODetail] %s line_count=%d source=%s", po_number, len(items_for_modal), line_source)
 
     po["notificationFlags"] = flags
     po["sync_state"] = get_vendor_po_sync_state()
-    return {"item": po}
+    amounts_summary = _compute_amounts_summary(items_for_modal, po)
+    return {"item": po, "amounts": amounts_summary}
 
 
 @app.get("/api/vendor-pos/{po_number}/ledger")
@@ -2376,6 +2797,13 @@ def get_vendor_realtime_sales_summary(
         # (old clients may expect this)
         if view_by == "asin":
             summary["top_asins"] = summary.get("rows", [])
+
+        rows = summary.get("rows", [])
+        for row in rows:
+            if row.get("image_url") and not row.get("imageUrl"):
+                row["imageUrl"] = row["image_url"]
+        attach_image_urls(rows)
+        summary["rows"] = rows
         
         return summary
     
@@ -2383,7 +2811,7 @@ def get_vendor_realtime_sales_summary(
         raise
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/status")
@@ -2400,7 +2828,7 @@ def get_vendor_realtime_sales_status():
         return status
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/asin/{asin}")
@@ -2482,7 +2910,7 @@ def get_vendor_realtime_sales_for_asin(
         raise
     except Exception as e:
         logger.error(f"[VendorRtSummary] Failed to get ASIN detail: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/vendor-realtime-sales/backfill-4weeks")
@@ -2515,7 +2943,7 @@ def api_vendor_rt_sales_audit_4weeks():
         return data
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to get 4-week audit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/audit-calendar")
@@ -2537,7 +2965,7 @@ def api_vendor_rt_sales_audit_calendar(days: Optional[int] = None):
         return data
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to compute audit calendar: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/vendor-realtime-sales/audit-day")
@@ -2553,10 +2981,10 @@ def api_vendor_rt_sales_audit_day(date: str):
         )
         return data
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"[VendorRtAudit] Failed to compute audit day for {date}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post(
@@ -2587,9 +3015,19 @@ async def api_vendor_rt_sales_fill_day(
         payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
     except ValidationError as exc:
         messages = "; ".join(err.get("msg", "invalid request body") for err in exc.errors())
+<<<<<<< HEAD
         raise HTTPException(status_code=400, detail=messages)
+=======
+        raise HTTPException(status_code=400, detail=messages) from exc
+>>>>>>> origin/main
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+    pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause()
+    if pause_state.get("paused") and pause_state.get("reason") == vendor_realtime_sales_service.RT_SALES_REPAIR_PAUSE_REASON:
+        raise HTTPException(
+            status_code=409,
+            detail="30-day audit repair in progress; Fill Day is temporarily disabled.",
+        )
 
     date_str = payload.date
     cleaned_hours = payload.missing_hours
@@ -2598,6 +3036,12 @@ async def api_vendor_rt_sales_fill_day(
         payload.burst_hours if burst_enabled else vendor_realtime_sales_service.MAX_HOURLY_REPORTS_PER_FILL_DAY
     )
     max_batches = payload.max_batches if burst_enabled else 1
+<<<<<<< HEAD
+=======
+    report_window_hours = payload.report_window_hours or 1
+    max_window = vendor_realtime_sales_service.MAX_FILL_DAY_REPORT_WINDOW_HOURS
+    report_window_hours = max(1, min(report_window_hours, max_window))
+>>>>>>> origin/main
 
     try:
         plan = vendor_realtime_sales_service.plan_fill_day_run(
@@ -2607,9 +3051,13 @@ async def api_vendor_rt_sales_fill_day(
             max_reports=per_batch_cap,
             burst_enabled=burst_enabled,
             max_batches=max_batches,
+<<<<<<< HEAD
+=======
+            report_window_hours=report_window_hours,
+>>>>>>> origin/main
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     scheduled = [
         {
@@ -2632,10 +3080,18 @@ async def api_vendor_rt_sales_fill_day(
             burst_enabled=burst_enabled,
             burst_hours=per_batch_cap,
             max_batches=max_batches,
+<<<<<<< HEAD
         )
 
     logger.info(
         "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d)",
+=======
+            report_window_hours=report_window_hours,
+        )
+
+    logger.info(
+        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d window=%d)",
+>>>>>>> origin/main
         date_str,
         len(scheduled),
         plan["remaining_missing"],
@@ -2644,6 +3100,10 @@ async def api_vendor_rt_sales_fill_day(
         burst_enabled,
         max_batches,
         per_batch_cap,
+<<<<<<< HEAD
+=======
+        report_window_hours,
+>>>>>>> origin/main
     )
 
     return {
@@ -2658,7 +3118,31 @@ async def api_vendor_rt_sales_fill_day(
         "max_batches": plan["max_batches"],
         "batches_run": plan["batches_run"],
         "hours_applied_this_call": plan["hours_applied_this_call"],
+<<<<<<< HEAD
+=======
+        "report_window_hours": plan["report_window_hours"],
+        "reports_created_this_call": plan["reports_created_this_call"],
+>>>>>>> origin/main
     }
+
+
+@app.post("/api/vendor/rt-sales/repair-30d")
+async def api_vendor_rt_sales_repair_30d(body: VendorRtSalesRepair30dRequest):
+    marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
+    try:
+        result = vendor_realtime_sales_service.repair_missing_hours_last_30_days(
+            marketplace_id=marketplace_id,
+            report_window_hours=body.report_window_hours,
+            max_runtime_seconds=body.max_runtime_seconds,
+            max_reports=body.max_reports,
+            dry_run=body.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result.get("ok") and result.get("stopped_reason") == "lock_busy":
+        raise HTTPException(status_code=409, detail="30-day repair already running (worker lock busy).")
+    return result
 
 
 @app.post("/api/vendor-realtime-sales/audit-and-repair")
@@ -2747,12 +3231,19 @@ def api_vendor_sales_trends(
                 marketplace_id,
                 min_total_units=min_total_units,
             )
-        
+
+        rows = data.get("rows", [])
+        for row in rows:
+            if row.get("image_url") and not row.get("imageUrl"):
+                row["imageUrl"] = row["image_url"]
+        attach_image_urls(rows)
+        data["rows"] = rows
+
         return data
     
     except Exception as e:
         logger.error(f"[VendorRtTrends] Failed to get sales trends: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/vendor-realtime-sales/synthesize-precutover-hours")
@@ -2781,7 +3272,7 @@ def synthesize_precutover_hours(max_days: int = 3):
             f"[VendorRtAdmin] Failed to synthesize pre-cutover hours: {e}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ========================================
@@ -2968,7 +3459,7 @@ def spapi_tester_run(req: TesterRequest):
         resp = requests.request(method, url, headers=headers, params=params, json=req.body_json, timeout=30)
     except Exception as e:
         tester_logger.error(f"[Tester] Error calling {url}: {e}")
-        raise HTTPException(status_code=502, detail=f"Request failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Request failed: {e}") from e
 
     try:
         body = resp.json()
@@ -3310,7 +3801,8 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         if seeded:
             logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor PO database")
         record_catalog_asin_sources(asins, "vendor_po")
-        universe = list_universe_asins()
+        exclusions = load_catalog_fetcher_exclusions()
+        universe = [asin for asin in list_universe_asins() if asin not in exclusions]
         fetched = spapi_catalog_status()
         attempts_map = get_catalog_fetch_attempts_map(universe)
         source_map = get_catalog_asin_sources_map(universe)
@@ -3454,6 +3946,19 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
     }
 
 
+@app.delete("/api/catalog/asins/{asin}")
+def delete_catalog_fetcher_asin(asin: str):
+    """
+    Hide an ASIN from the Catalog Fetcher list while leaving catalog data intact.
+    """
+    asin_norm = (asin or "").strip().upper()
+    if not asin_norm or not is_asin(asin_norm):
+        raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    add_catalog_fetcher_exclusion(asin_norm)
+    logger.info("[CatalogFetcher] Excluded ASIN from fetcher list: %s", asin_norm)
+    return {"ok": True, "asin": asin_norm}
+
+
 @app.post("/api/catalog/add-asin")
 def add_catalog_asin(payload: Dict[str, Any]):
     """
@@ -3466,6 +3971,7 @@ def add_catalog_asin(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="asin is required")
     if not is_asin(asin):
         raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    remove_catalog_fetcher_exclusion(asin)
     ensure_asin_in_universe(asin)
     record_catalog_asin_source(asin, "manual")
     return {"status": "ok", "asin": asin}
@@ -3577,7 +4083,7 @@ def get_catalog_payload(asin: str):
     try:
         entry = get_catalog_entry(asin, db_path=CATALOG_DB_PATH)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}") from exc
     if not entry:
         return JSONResponse({"error": "Catalog not found"}, status_code=404)
     payload = parse_catalog_payload(entry.get("payload"))
@@ -3713,7 +4219,7 @@ def debug_catalog_sample(asin: str):
     try:
         entry = get_catalog_entry(asin, db_path=CATALOG_DB_PATH)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DB error: {exc}")
+        raise HTTPException(status_code=500, detail=f"DB error: {exc}") from exc
     if not entry:
         return JSONResponse({"error": "not found"}, status_code=404)
     payload = parse_catalog_payload(entry.get("payload"), include_raw=False)

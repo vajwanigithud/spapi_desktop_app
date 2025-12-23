@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from services.db import get_db_connection
+from services.log_once import log_once
 from services.perf import time_block
 
 from .utils_barcodes import is_asin
@@ -98,7 +99,12 @@ def init_catalog_db(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
                 """
             )
             conn.commit()
-    schema_logger.info("Forecast feature disabled: init_forecast_tables() not called")
+    log_once(
+        schema_logger,
+        key="forecast_disabled",
+        level="info",
+        message="Forecast feature disabled: init_forecast_tables() not called",
+    )
 
 
 def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:

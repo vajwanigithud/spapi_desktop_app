@@ -11,14 +11,18 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from fastapi import APIRouter, FastAPI
 
+from services.catalog_images import attach_image_urls
 from services.db import get_db_connection
 from services.spapi_reports import SpApiQuotaError
 from services.vendor_inventory_realtime import (
+    DEFAULT_LOOKBACK_HOURS,
     decorate_items_with_sales,
     get_cached_realtime_inventory_snapshot,
+    load_accumulated_inventory,
     load_sales_30d_map,
     refresh_realtime_inventory_snapshot,
 )
+from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
 
 router = APIRouter(prefix="/api/vendor-inventory/realtime")
 logger = logging.getLogger(__name__)
@@ -95,8 +99,6 @@ def _decorate_snapshot_items(snapshot: Dict[str, Any]) -> None:
             item["title"] = meta["title"]
         if not item.get("image_url") and meta.get("image_url"):
             item["image_url"] = meta["image_url"]
-        if item.get("sales_30d") is None:
-            item["sales_30d"] = sales_map.get(asin) or 0
     snapshot["items"] = items
 
 
@@ -159,7 +161,11 @@ def _normalize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     snapshot = _normalize_snapshot(dict(snapshot))
     items = snapshot.get("items") or []
-    refresh_meta = snapshot.get("refresh") or {}
+    for item in items:
+        if isinstance(item, dict) and item.get("image_url") and not item.get("imageUrl"):
+            item["imageUrl"] = item.get("image_url")
+    attach_image_urls(items)
+    refresh_meta = dict(snapshot.get("refresh") or {})
     refresh_in_progress = bool(refresh_meta.get("in_progress"))
     computed = _compute_as_of_fields(snapshot)
     status = snapshot.get("status")
@@ -255,9 +261,25 @@ def _build_health_payload() -> Dict[str, Any]:
 
 def _refresh_snapshot_payload() -> Dict[str, Any]:
     marketplace_id = DEFAULT_MARKETPLACE_ID
-    snapshot = refresh_realtime_inventory_snapshot(marketplace_id)
-    snapshot.setdefault("marketplace_id", marketplace_id)
-    return _format_snapshot_response(snapshot)
+
+    def _refresh_singleflight_callable(marketplace_id: str, **_kwargs: Any) -> Dict[str, Any]:
+        # Preserve existing report logic while letting the single-flight guard orchestrate execution.
+        return refresh_realtime_inventory_snapshot(
+            marketplace_id,
+            lookback_hours=DEFAULT_LOOKBACK_HOURS,
+        )
+
+    result = refresh_vendor_rt_inventory_singleflight(
+        marketplace_id,
+        hours=DEFAULT_LOOKBACK_HOURS,
+        sync_callable=_refresh_singleflight_callable,
+    )
+
+    payload = load_accumulated_inventory(marketplace_id)
+    payload["status"] = result.get("status") or "ok"
+    payload["refresh"] = result.get("refresh") or {}
+    payload["source"] = result.get("source") or "accumulator"
+    return payload
 
 
 @router.get("/snapshot")
@@ -266,6 +288,12 @@ def get_realtime_inventory_snapshot() -> Dict[str, Any]:
     Return the cached GET_VENDOR_REAL_TIME_INVENTORY_REPORT snapshot + freshness metadata.
     """
     return _build_snapshot_payload()
+
+
+@router.get("/accumulated")
+def get_accumulated_inventory() -> Dict[str, Any]:
+    """Return accumulated vendor_inventory_asin rows (no deletes)."""
+    return load_accumulated_inventory(DEFAULT_MARKETPLACE_ID)
 
 
 @router.get(

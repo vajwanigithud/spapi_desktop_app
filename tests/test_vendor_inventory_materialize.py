@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 import pytest
 
 from services import db as db_service
-from services.db import ensure_vendor_inventory_table, get_db_connection, get_vendor_inventory_snapshot
+from services.db import (
+    ensure_vendor_inventory_table,
+    get_db_connection,
+    get_vendor_inventory_snapshot,
+)
 
 os.environ.setdefault("LWA_CLIENT_ID", "dummy")
 os.environ.setdefault("LWA_CLIENT_SECRET", "dummy")
@@ -36,18 +40,28 @@ def _sample_snapshot():
                 "sellable": 7,
                 "startTime": now_iso,
                 "endTime": now_iso,
-            }
+            },
+            {
+                "asin": "B0TEST5678",
+                "sellable": 5,
+                "startTime": now_iso,
+                "endTime": now_iso,
+            },
         ],
     }
 
 
-def test_materialize_snapshot_writes_vendor_inventory_rows(temp_db):
+def test_materialize_snapshot_writes_vendor_inventory_rows(temp_db, monkeypatch):
+    monkeypatch.delenv("INVENTORY_RT_PRUNE_MIN_KEEP", raising=False)
     snapshot = _sample_snapshot()
-    written = materialize_vendor_inventory_snapshot(snapshot, source="test")
-    assert written == 1
+    rows_written = materialize_vendor_inventory_snapshot(snapshot, source="test")
+    assert isinstance(rows_written, int)
+    assert rows_written == 2
+
     with get_db_connection() as conn:
         rows = get_vendor_inventory_snapshot(conn, snapshot["marketplace_id"])
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["asin"] == "B0TEST1234"
-    assert row["sellable_onhand_units"] == 7
+    assert len(rows) == 2
+    asins = {row["asin"] for row in rows}
+    assert {"B0TEST1234", "B0TEST5678"} == asins
+    for row in rows:
+        assert row["sellable_onhand_units"] in (7, 5)
