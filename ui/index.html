@@ -1167,11 +1167,22 @@
     <h2>Real-Time Inventory</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div class="inventory-mode-toggle">
+<<<<<<< HEAD
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <span id="inv-week-label" class="muted-text"></span>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
+            <a id="inv-coverage-why" href="#" style="font-size:12px; color:#2563eb; text-decoration:none; display:none;" onclick="openInventoryCoverageModal(); return false;">ⓘ Why coverage is low?</a>
+          </div>
+          <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
+            Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
+=======
           <div style="display:flex; flex-direction:column; gap:4px;">
             <span id="inv-week-label" class="muted-text">Accumulated Inventory | Loaded 0 ASINs</span>
             <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
               Accumulator model: ASINs never auto-delete; counts only grow.
             </div>
+>>>>>>> origin/main
           </div>
         </div>
 
@@ -1255,6 +1266,19 @@
     </div>
   </div>
 
+<<<<<<< HEAD
+  <!-- Inventory coverage explainer modal -->
+  <div class="backdrop" id="inventory-coverage-modal" style="display:none;">
+    <div class="modal" style="max-width:720px;">
+      <header>
+        <div id="inventory-coverage-title">Why real-time coverage can look low</div>
+        <button class="btn" style="background:#111827" onclick="closeInventoryCoverageModal()">Close</button>
+      </header>
+      <div class="modal-body" id="inventory-coverage-body"></div>
+    </div>
+  </div>
+=======
+>>>>>>> origin/main
 
   <div id="catalog-context-menu">
     <button class="danger" onclick="handleCatalogContextDelete()">Delete from Catalog List</button>
@@ -4498,14 +4522,53 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
+<<<<<<< HEAD
+      const coverageEl = document.getElementById('inv-coverage-label');
+      const coverageWhyEl = document.getElementById('inv-coverage-why');
+=======
+>>>>>>> origin/main
       if (!labelEl) return;
       const metaSafe = vendorInventoryMeta || meta || {};
       const count = Array.isArray(vendorInventorySnapshot) ? vendorInventorySnapshot.length : 0;
       const asOfLabel = formatInventoryAsOf({
+<<<<<<< HEAD
+        as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
+        as_of_uae: realtimeMeta.as_of_uae,
+      });
+      const coverageLabel = realtimeMeta.coverage_label;
+      const scopeExplanation = realtimeMeta.inventory_scope_explanation;
+      if (coverageEl) {
+        if (coverageLabel) {
+          const parts = [coverageLabel];
+          if (scopeExplanation) {
+            parts.push(scopeExplanation);
+          }
+          coverageEl.textContent = parts.join(' - ');
+          coverageEl.style.display = 'block';
+          if (coverageWhyEl) coverageWhyEl.style.display = 'inline-flex';
+        } else {
+          coverageEl.textContent = '';
+          coverageEl.style.display = 'none';
+          if (coverageWhyEl) coverageWhyEl.style.display = 'none';
+        }
+      }
+      let labelParts = [`Real-Time | Loaded ${count} ASINs`];
+      if (windowStart || windowEnd) {
+        const windowSegments = [];
+        if (windowStart) windowSegments.push(windowStart);
+        if (windowEnd) windowSegments.push(windowEnd);
+        const windowText = windowSegments.length === 2 ? `${windowSegments[0]} -> ${windowSegments[1]}` : windowSegments.join('');
+        labelParts.push(`Window: ${windowText}`);
+      } else if (asOfLabel) {
+        labelParts.push(`As of ${asOfLabel}`);
+      }
+      labelEl.textContent = labelParts.join(' | ');
+=======
         as_of: metaSafe.as_of_utc || metaSafe.as_of,
         as_of_uae: metaSafe.as_of_uae,
       }) || metaSafe.as_of_utc || '—';
       labelEl.textContent = `Accumulated Inventory | Loaded ${count} ASINs | As of ${asOfLabel}`;
+>>>>>>> origin/main
     }
 
     function updateInventoryModeButtons() {
@@ -4586,6 +4649,81 @@
       }
     }
 
+<<<<<<< HEAD
+    function openInventoryCoverageModal() {
+      const modal = document.getElementById('inventory-coverage-modal');
+      const body = document.getElementById('inventory-coverage-body');
+      if (!modal || !body) return;
+
+      const meta = vendorInventoryMeta || realtimeInventoryMeta || {};
+      const refreshMeta = meta.refresh || {};
+
+      const uniqueCount = Number.isFinite(meta.unique_count) ? meta.unique_count : null;
+      const catalogCount = Number.isFinite(meta.catalog_asin_count) ? meta.catalog_asin_count : null;
+      const coverageRatio = Number.isFinite(meta.coverage_ratio) ? meta.coverage_ratio : null;
+
+      const windowStart =
+        meta.window_start_uae ||
+        meta.report_window_start_uae ||
+        meta.window_start_local ||
+        meta.window_start_utc ||
+        meta.report_window_start_utc ||
+        meta.window_start ||
+        refreshMeta.window_start_uae ||
+        refreshMeta.report_window_start_uae ||
+        refreshMeta.window_start_local ||
+        refreshMeta.window_start_utc ||
+        refreshMeta.report_window_start_utc ||
+        refreshMeta.window_start;
+
+      const windowEnd =
+        meta.window_end_uae ||
+        meta.report_window_end_uae ||
+        meta.window_end_local ||
+        meta.window_end_utc ||
+        meta.report_window_end_utc ||
+        meta.window_end ||
+        refreshMeta.window_end_uae ||
+        refreshMeta.report_window_end_uae ||
+        refreshMeta.window_end_local ||
+        refreshMeta.window_end_utc ||
+        refreshMeta.report_window_end_utc ||
+        refreshMeta.window_end;
+
+      const asOfUae = meta.as_of_uae || refreshMeta.as_of_uae || null;
+
+      const fmtNumber = (val) => (Number.isFinite(val) ? val.toLocaleString() : '—');
+      const fmtPercent = (val) => (Number.isFinite(val) ? `${(val * 100).toFixed(1)}%` : '—');
+      const fmtText = (val) => (val ? String(val) : '—');
+
+      body.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:12px; font-size:13px; color:#111827;">
+          <div>Realtime inventory comes from <strong>GET_VENDOR_REAL_TIME_INVENTORY_REPORT</strong>.</div>
+          <div>Amazon includes only ASINs present in that report window; Vendor Central exports can contain more ASINs.</div>
+          <div>We intentionally prune vendor_inventory_asin to the latest snapshot so the DB matches what the UI shows.</div>
+          <div style="border:1px solid var(--border); border-radius:10px; padding:10px; background:#f8fafc;">
+            <div style="font-weight:700; margin-bottom:8px;">Current snapshot metrics</div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
+              <div><span class="muted-text">Unique ASINs in snapshot:</span> ${fmtNumber(uniqueCount)}</div>
+              <div><span class="muted-text">Catalog ASINs (known):</span> ${fmtNumber(catalogCount)}</div>
+              <div><span class="muted-text">Coverage ratio:</span> ${fmtPercent(coverageRatio)}</div>
+              <div><span class="muted-text">Report start:</span> ${fmtText(windowStart)}</div>
+              <div><span class="muted-text">Report end:</span> ${fmtText(windowEnd)}</div>
+              <div><span class="muted-text">As of (UAE):</span> ${fmtText(asOfUae)}</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      modal.style.display = 'flex';
+    }
+
+    function closeInventoryCoverageModal() {
+      const modal = document.getElementById('inventory-coverage-modal');
+      if (modal) modal.style.display = 'none';
+    }
+=======
+>>>>>>> origin/main
 
     function loadInventorySnapshotIfNeeded(forceReload = false) {
       if (!forceReload && vendorInventorySnapshot.length > 0) {
