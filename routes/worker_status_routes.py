@@ -17,7 +17,14 @@ from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
+<<<<<<< HEAD
+RT_SALES_EXPECTED_INTERVAL_MINUTES = 15
+RT_SALES_GRACE_MINUTES = 5
 WAITING_STATUSES = {"cooldown", "locked", "waiting"}
+OVERDUE_STATUSES = {"overdue"}
+=======
+WAITING_STATUSES = {"cooldown", "locked", "waiting"}
+>>>>>>> origin/main
 MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
@@ -43,6 +50,10 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     return dt
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _fmt_uae(value: Optional[Any]) -> Optional[str]:
     if value is None:
         return None
@@ -54,6 +65,26 @@ def _fmt_uae(value: Optional[Any]) -> Optional[str]:
     if not dt:
         return None
     return dt.astimezone(UAE_TZ).strftime("%Y-%m-%d %H:%M UAE")
+
+
+def _compute_overdue_status(
+    now_utc: datetime, next_eligible_dt: Optional[datetime], grace_minutes: Optional[int]
+) -> tuple[Optional[str], int]:
+    if next_eligible_dt is None:
+        return None, 0
+
+    grace_delta = timedelta(minutes=grace_minutes or 0)
+    deadline = next_eligible_dt + grace_delta
+
+    if now_utc > deadline:
+        overdue_delta = now_utc - deadline
+        overdue_by_minutes = max(0, int(overdue_delta.total_seconds() // 60))
+        return "overdue", overdue_by_minutes
+
+    if now_utc <= next_eligible_dt:
+        return "waiting", 0
+
+    return None, 0
 
 
 def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
@@ -112,6 +143,9 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else None,
             "details": details,
+            "expected_interval_minutes": None,
+            "grace_minutes": None,
+            "overdue_by_minutes": 0,
             "what": "Fetches Amazon RT inventory and stores snapshot",
         }
     )
@@ -128,6 +162,9 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "next_eligible_at_uae": None,
             "details": materializer_details,
+            "expected_interval_minutes": None,
+            "grace_minutes": None,
+            "overdue_by_minutes": 0,
             "what": "Writes inventory snapshot into SQLite safely",
         }
     )
@@ -157,6 +194,7 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     lock_expires_dt = _parse_iso_datetime(lock_row.get("expires_at")) if lock_row else None
     lock_stale = bool(lock_row) and (lock_expires_dt is None or lock_expires_dt <= now_utc)
+
     cooldown_active = False
     cooldown_until_dt: Optional[datetime] = None
     try:
@@ -169,11 +207,18 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     status = "ok"
     details: Optional[str] = None
+    last_run_dt = _parse_iso_datetime(ledger_summary.get("last_applied_hour_utc"))
     next_eligible_dt: Optional[datetime] = None
+    if last_run_dt:
+        next_eligible_dt = last_run_dt + timedelta(minutes=RT_SALES_EXPECTED_INTERVAL_MINUTES)
 
     if cooldown_active:
         status = "cooldown"
-        next_eligible_dt = cooldown_until_dt
+        if cooldown_until_dt:
+            if next_eligible_dt:
+                next_eligible_dt = max(next_eligible_dt, cooldown_until_dt)
+            else:
+                next_eligible_dt = cooldown_until_dt
         details = "Quota cooldown active"
     elif lock_row:
         if lock_stale:
@@ -181,7 +226,8 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             details = "Worker lock stale"
         else:
             status = "locked"
-            next_eligible_dt = lock_expires_dt
+            if lock_expires_dt:
+                next_eligible_dt = max(next_eligible_dt, lock_expires_dt) if next_eligible_dt else lock_expires_dt
             owner = lock_row.get("owner")
             if owner:
                 details = f"Lock owner: {owner}"
@@ -189,10 +235,20 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         status = "error"
         details = "Failed ledger hours present"
 
+<<<<<<< HEAD
+    overdue_by_minutes = 0
+    overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, RT_SALES_GRACE_MINUTES)
+    if status not in {"error", "cooldown", "locked"} and overdue_status:
+        status = overdue_status
+        overdue_by_minutes = overdue_delta
+        if overdue_by_minutes and not details:
+            details = f"Overdue by {overdue_by_minutes} minutes"
+=======
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
     last_run_dt = _parse_iso_datetime(last_run_iso) if last_run_iso else None
     if not next_eligible_dt and last_run_dt:
         next_eligible_dt = last_run_dt + timedelta(minutes=15)
+>>>>>>> origin/main
 
     last_run_display = _fmt_uae(last_run_dt or last_run_iso)
     workers.append(
@@ -200,9 +256,16 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "key": "rt_sales_sync",
             "name": "RT Sales Sync",
             "status": status,
+<<<<<<< HEAD
+            "last_run_at_uae": _fmt_uae(last_run_dt),
+=======
             "last_run_at_uae": last_run_display,
+>>>>>>> origin/main
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
             "details": details,
+            "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
+            "grace_minutes": RT_SALES_GRACE_MINUTES,
+            "overdue_by_minutes": overdue_by_minutes,
             "what": "Ingests real-time sales and maintains hourly ledger",
         }
     )
@@ -227,6 +290,9 @@ def _vendor_po_domain() -> Dict[str, Any]:
             "last_run_at_uae": _fmt_uae(last_success),
             "next_eligible_at_uae": None,
             "details": "Manual / on-demand",
+            "expected_interval_minutes": None,
+            "grace_minutes": None,
+            "overdue_by_minutes": 0,
             "what": "Refreshes Vendor POs when run manually",
         }
     )
@@ -298,7 +364,7 @@ def _collect_workers(domains: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]
 
 @router.get("/api/workers/status")
 def get_worker_status() -> Dict[str, Any]:
-    now_utc = datetime.now(timezone.utc)
+    now_utc = _utcnow()
     marketplace_id = DEFAULT_MARKETPLACE_ID
 
     domains: Dict[str, Dict[str, Any]] = {}
@@ -315,6 +381,9 @@ def get_worker_status() -> Dict[str, Any]:
                     "last_run_at_uae": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
+                    "expected_interval_minutes": None,
+                    "grace_minutes": None,
+                    "overdue_by_minutes": 0,
                     "what": "Fetches Amazon RT inventory and stores snapshot",
                 },
                 {
@@ -324,6 +393,9 @@ def get_worker_status() -> Dict[str, Any]:
                     "last_run_at_uae": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
+                    "expected_interval_minutes": None,
+                    "grace_minutes": None,
+                    "overdue_by_minutes": 0,
                     "what": "Writes inventory snapshot into SQLite safely",
                 },
             ],
@@ -342,6 +414,9 @@ def get_worker_status() -> Dict[str, Any]:
                     "last_run_at_uae": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
+                    "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
+                    "grace_minutes": RT_SALES_GRACE_MINUTES,
+                    "overdue_by_minutes": 0,
                     "what": "Ingests real-time sales and maintains hourly ledger",
                 }
             ],
@@ -360,6 +435,9 @@ def get_worker_status() -> Dict[str, Any]:
                     "last_run_at_uae": None,
                     "next_eligible_at_uae": None,
                     "details": str(exc),
+                    "expected_interval_minutes": None,
+                    "grace_minutes": None,
+                    "overdue_by_minutes": 0,
                     "what": "Refreshes Vendor POs when run manually",
                 }
             ],
@@ -386,16 +464,26 @@ def get_worker_status() -> Dict[str, Any]:
     all_workers = _collect_workers(domains)
     waiting_count = sum(1 for w in all_workers if (w.get("status") or "").lower() in WAITING_STATUSES)
     error_count = sum(1 for w in all_workers if (w.get("status") or "").lower() == "error")
-    overall = "error" if error_count else ("waiting" if waiting_count else "ok")
+    overdue_count = sum(1 for w in all_workers if (w.get("status") or "").lower() in OVERDUE_STATUSES)
+
+    if error_count:
+        overall = "error"
+    elif overdue_count:
+        overall = "overdue"
+    elif waiting_count:
+        overall = "waiting"
+    else:
+        overall = "ok"
 
     return {
-        "ok": error_count == 0,
+        "ok": error_count == 0 and overdue_count == 0,
         "checked_at_utc": now_utc.replace(microsecond=0).isoformat(),
         "checked_at_uae": _fmt_uae(now_utc),
         "summary": {
             "overall": overall,
             "waiting_count": waiting_count,
             "error_count": error_count,
+            "overdue_count": overdue_count,
         },
         "domains": domains,
     }

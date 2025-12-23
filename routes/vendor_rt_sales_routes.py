@@ -31,7 +31,11 @@ def _parse_iso_or_none(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+<<<<<<< HEAD
+def _coerce_utc_datetime(value: Optional[Union[str, datetime]]) -> Optional[datetime]:
+=======
 def _coerce_utc_iso(value: Optional[Union[str, datetime]]) -> Optional[str]:
+>>>>>>> origin/main
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -43,8 +47,19 @@ def _coerce_utc_iso(value: Optional[Union[str, datetime]]) -> Optional[str]:
             return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
+<<<<<<< HEAD
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def _coerce_utc_iso(value: Optional[Union[str, datetime]]) -> Optional[str]:
+    dt = _coerce_utc_datetime(value)
+    return dt.isoformat() if dt else None
+=======
     dt = dt.astimezone(timezone.utc).replace(microsecond=0)
     return dt.isoformat()
+>>>>>>> origin/main
 
 
 @router.get("/status")
@@ -54,6 +69,10 @@ def get_vendor_rt_sales_status(
     resolved_marketplace = marketplace_id or DEFAULT_MARKETPLACE_ID
     now_utc = datetime.now(timezone.utc).replace(microsecond=0)
     ledger_summary_raw = get_ledger_summary(resolved_marketplace, now_utc=now_utc)
+<<<<<<< HEAD
+
+=======
+>>>>>>> origin/main
     ledger_summary = dict(ledger_summary_raw) if isinstance(ledger_summary_raw, dict) else {}
     for key, value in list(ledger_summary.items()):
         if key.endswith("_utc"):
