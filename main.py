@@ -2984,15 +2984,20 @@ async def api_vendor_rt_sales_fill_day(
     Schedule SP-API requests for the missing hours of a UAE day, optionally enabling burst mode.
     """
     raw_body = await request.body()
+    payload_raw: Dict[str, Any] = {}
     try:
         payload_raw = await request.json() if raw_body else {}
     except Exception:
         payload_raw = {}
+
     try:
         payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
     except ValidationError as exc:
-        messages = "; ".join(err.get("msg", "invalid request body") for err in exc.errors())
-    raise HTTPException(status_code=400, detail=messages) from exc
+        messages = [err.get("msg", "Invalid request body") for err in exc.errors()]
+        detail = messages if len(messages) > 1 else (messages[0] if messages else "Invalid request body")
+        raise HTTPException(status_code=400, detail=detail)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request body")
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
     pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause()

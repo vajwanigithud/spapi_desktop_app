@@ -1,10 +1,15 @@
 import os
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 os.environ.setdefault("LWA_CLIENT_ID", "test-client")
 os.environ.setdefault("LWA_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("LWA_REFRESH_TOKEN", "test-refresh")
 
+import main
 from services import vendor_realtime_sales as rt_sales
 
 
@@ -31,6 +36,19 @@ def _build_fake_hours(missing_hours: list[int]):
         return hours_detail, missing_list, []
 
     return _fake_classify
+
+
+def _build_fill_day_app() -> FastAPI:
+    app = FastAPI()
+    app.post("/api/vendor-realtime-sales/fill-day")(main.api_vendor_rt_sales_fill_day)
+    return app
+
+
+def _extract_detail_text(response) -> str:
+    detail = response.json().get("detail")
+    if isinstance(detail, list):
+        return " ".join(detail)
+    return str(detail or "")
 
 
 def test_fill_day_default_caps_three(monkeypatch):
@@ -165,3 +183,86 @@ def test_fill_day_burst_multi_hour_windows(monkeypatch):
     assert len(requested_attempts) == 18
     assert any(len(seen) < len(call[2]) for call, (_, _, seen) in zip(report_calls, audit_calls))
     assert missing_isos == set()
+
+
+@pytest.mark.parametrize(
+    "body, headers",
+    [
+        (b"", {}),
+        (b"not-json", {"Content-Type": "application/json"}),
+    ],
+)
+def test_fill_day_rejects_invalid_or_empty_body(body, headers):
+    client = TestClient(_build_fill_day_app())
+
+    resp = client.post("/api/vendor-realtime-sales/fill-day", data=body, headers=headers)
+    assert resp.status_code == 400
+    detail_text = _extract_detail_text(resp).lower()
+    assert detail_text
+    assert "required" in detail_text or "invalid" in detail_text
+
+
+def test_fill_day_schema_validation_error(monkeypatch):
+    client = TestClient(_build_fill_day_app())
+
+    resp = client.post(
+        "/api/vendor-realtime-sales/fill-day",
+        json={"date": "2025-12-11", "missing_hours": ["bad"]},
+    )
+
+    assert resp.status_code == 400
+    detail_text = _extract_detail_text(resp).lower()
+    assert "missing_hours" in detail_text or "integer" in detail_text
+
+
+def test_fill_day_valid_request(monkeypatch):
+    app = _build_fill_day_app()
+    client = TestClient(app)
+
+    monkeypatch.setattr(main.vendor_realtime_sales_service, "rt_sales_get_autosync_pause", lambda: {})
+
+    fake_plan = {
+        "hours_to_request": [
+            {"hour": 1, "start_utc": "2025-12-11T01:00:00Z", "end_utc": "2025-12-11T02:00:00Z"},
+            {"hour": 2, "start_utc": "2025-12-11T02:00:00Z", "end_utc": "2025-12-11T03:00:00Z"},
+        ],
+        "total_missing": 2,
+        "remaining_missing": 0,
+        "pending_hours": [],
+        "cooldown_active": False,
+        "cooldown_until": None,
+        "burst_enabled": False,
+        "burst_hours": 3,
+        "max_batches": 1,
+        "batches_run": 1,
+        "hours_applied_this_call": 2,
+        "report_window_hours": 2,
+        "reports_created_this_call": 1,
+    }
+
+    monkeypatch.setattr(main.vendor_realtime_sales_service, "plan_fill_day_run", lambda **_: fake_plan)
+
+    tasks_run = []
+
+    def _run_fill_day(*args, **kwargs):
+        tasks_run.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(main.vendor_realtime_sales_service, "run_fill_day_repair_cycle", _run_fill_day)
+
+    payload = {
+        "date": "2025-12-11",
+        "missing_hours": [1, 2],
+        "burst": False,
+        "burst_hours": 3,
+        "max_batches": 1,
+        "report_window_hours": 2,
+    }
+
+    resp = client.post("/api/vendor-realtime-sales/fill-day", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["scheduled_tasks"]) == len(fake_plan["hours_to_request"])
+    assert data["total_missing"] == fake_plan["total_missing"]
+    assert tasks_run
+    assert tasks_run[0]["args"][1] == fake_plan["hours_to_request"]
