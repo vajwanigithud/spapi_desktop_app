@@ -74,6 +74,10 @@ def test_worker_status_endpoint_returns_domains(monkeypatch):
 
     first_inventory = domains["inventory"]["workers"][0]
     assert "status" in first_inventory
+    assert "last_run_utc" in first_inventory
+    assert "next_run_utc" in first_inventory
+    assert "mode" in first_inventory
+    assert "message" in first_inventory
     assert data["summary"]["error_count"] == 0
 
 

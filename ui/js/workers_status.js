@@ -1,149 +1,228 @@
 (function () {
+  const POLL_MS = 4000;
   const WAITING_STATUSES = new Set(["cooldown", "locked", "waiting"]);
+  const STATUS_PRIORITY = {
+    error: 5,
+    overdue: 4,
+    locked: 3,
+    cooldown: 3,
+    waiting: 3,
+    ok: 2,
+    unknown: 1,
+  };
 
-  function statusClass(status) {
-    const value = (status || "").toLowerCase();
-    return `worker-status-${value}`;
-  }
+  const GROUPS = [
+    {
+      id: "inventory",
+      containerId: "workers-section-inventory",
+      label: "Inventory Refresh",
+      keys: ["rt_inventory_refresh", "inventory_materializer"],
+      description: "Refreshes Amazon realtime inventory and materializes the snapshot.",
+      defaultMode: "auto",
+    },
+    {
+      id: "rt",
+      containerId: "workers-section-rt-sales",
+      label: "Real Time Refresh",
+      keys: ["rt_sales_sync"],
+      description: "Keeps realtime sales ledger healthy (15m cadence).",
+      defaultMode: "auto",
+    },
+    {
+      id: "df-orders",
+      containerId: "workers-section-df-payments",
+      label: "DF Orders Refresh",
+      keys: ["df_payments_incremental"],
+      description: "Pulls DF purchase orders and payments incrementally.",
+      defaultMode: "auto",
+    },
+    {
+      id: "df-gmail",
+      containerId: "workers-section-vendor-po",
+      label: "DF Gmail Reconcile Refresh",
+      keys: ["vendor_po_sync"],
+      description: "Manual reconcile helper; run when you need a fresh remittance import.",
+      defaultMode: "manual",
+    },
+  ];
 
-  function statusIcon(status) {
+  const statusIcon = (status) => {
     const value = (status || "").toLowerCase();
-    if (value === "overdue") return "🟠";
     if (value === "error") return "🔴";
+    if (value === "overdue") return "🟠";
     if (WAITING_STATUSES.has(value)) return "🟡";
     if (value === "ok") return "🟢";
     return "⚪";
-  }
+  };
 
-  function collectWorkers(data) {
-    if (!data || !data.domains) return [];
-    const list = [];
+  const normalizeWorker = (raw) => {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const status = (raw.status || "unknown").toLowerCase();
+    const lastRunUae = raw.last_run_at_uae || raw.last_run_at || null;
+    const nextRunUae = raw.next_eligible_at_uae || raw.next_run_at_uae || raw.next_run_at || raw.next_eligible_at || null;
+    return {
+      key: raw.key,
+      status,
+      lastRunUae,
+      nextRunUae,
+      lastRunUtc: raw.last_run_utc || raw.last_run_at_utc || null,
+      nextRunUtc: raw.next_run_utc || raw.next_eligible_at_utc || null,
+      message: raw.message || raw.details || "",
+      mode: (raw.mode || (raw.expected_interval_minutes ? "auto" : "manual")).toLowerCase(),
+      what: raw.what || "",
+      overdueByMinutes: Number(raw.overdue_by_minutes || 0),
+    };
+  };
+
+  const buildWorkerMap = (data) => {
+    const map = new Map();
+    if (!data || !data.domains) return map;
     Object.values(data.domains).forEach((domain) => {
-      if (domain && Array.isArray(domain.workers)) {
-        domain.workers.forEach((w) => {
-          if (w && typeof w === "object") {
-            list.push(w);
-          }
-        });
+      if (!domain || !Array.isArray(domain.workers)) return;
+      domain.workers.forEach((worker) => {
+        const normalized = normalizeWorker(worker);
+        if (normalized && normalized.key) {
+          map.set(normalized.key, normalized);
+        }
+      });
+    });
+    return map;
+  };
+
+  const rankStatus = (status) => STATUS_PRIORITY[status] || STATUS_PRIORITY.unknown;
+
+  const pickWorstStatus = (workers) => {
+    if (!workers || !workers.length) return "error";
+    return workers.reduce((worst, worker) => (rankStatus(worker.status) > rankStatus(worst) ? worker.status : worst), workers[0].status);
+  };
+
+  const pickMostRecentByUtc = (workers, field) => {
+    let best = null;
+    workers.forEach((w) => {
+      const candidate = w[field];
+      if (!candidate) return;
+      const ts = Date.parse(candidate);
+      if (!Number.isFinite(ts)) return;
+      if (!best || ts > best.ts) {
+        best = { ts, label: w[`${field === "lastRunUtc" ? "lastRunUae" : "nextRunUae"}`] || candidate };
       }
     });
-    return list;
-  }
+    return best ? best.label : null;
+  };
 
-  function computeLabel(data) {
-    const summary = data && data.summary;
-    const workers = collectWorkers(data);
-    const waitingCount = summary && typeof summary.waiting_count === "number"
-      ? summary.waiting_count
-      : workers.filter((w) => WAITING_STATUSES.has((w.status || "").toLowerCase())).length;
-    const errorCount = summary && typeof summary.error_count === "number"
-      ? summary.error_count
-      : workers.filter((w) => (w.status || "").toLowerCase() === "error").length;
-    const overdueCount = summary && typeof summary.overdue_count === "number"
-      ? summary.overdue_count
-      : workers.filter((w) => (w.status || "").toLowerCase() === "overdue").length;
-    const overall = (summary && summary.overall) || (errorCount ? "error" : overdueCount ? "overdue" : waitingCount ? "waiting" : "ok");
+  const pickEarliestNextRun = (workers) => {
+    let pick = null;
+    workers.forEach((w) => {
+      const candidate = w.nextRunUtc;
+      if (!candidate) return;
+      const ts = Date.parse(candidate);
+      if (!Number.isFinite(ts)) return;
+      if (!pick || ts < pick.ts) {
+        pick = { ts, label: w.nextRunUae || candidate };
+      }
+    });
+    return pick ? pick.label : null;
+  };
 
-    if (overall === "error" || errorCount > 0) {
-      return "🛠 Workers: ERROR";
+  const computeGroupState = (group, workerMap) => {
+    const workers = group.keys.map((k) => workerMap.get(k)).filter(Boolean);
+    const status = pickWorstStatus(workers);
+    const lastRun = pickMostRecentByUtc(workers, "lastRunUtc") || workers.find((w) => w.lastRunUae)?.lastRunUae || "—";
+    const nextRun = pickEarliestNextRun(workers) || workers.find((w) => w.nextRunUae)?.nextRunUae || (group.defaultMode === "manual" ? "—" : "");
+    const mode = (workers.find((w) => w.mode)?.mode || group.defaultMode || "manual").toLowerCase();
+    const message = (workers.find((w) => w.message)?.message || "").trim();
+    const overdueMinutes = workers.reduce((max, w) => Math.max(max, w.overdueByMinutes || 0), 0);
+
+    return {
+      id: group.id,
+      containerId: group.containerId,
+      label: group.label,
+      description: group.description,
+      status,
+      lastRun,
+      nextRun: nextRun || "—",
+      mode,
+      message,
+      overdueMinutes,
+    };
+  };
+
+  const overallStatusFromGroups = (groups) => {
+    const statuses = groups.map((g) => g.status);
+    if (statuses.some((s) => s === "error")) return "error";
+    if (statuses.some((s) => s === "overdue")) return "overdue";
+    if (statuses.some((s) => WAITING_STATUSES.has(s) || s === "locked" || s === "cooldown")) return "waiting";
+    return "ok";
+  };
+
+  const overallLabel = (status, counts) => {
+    if (status === "error" || (counts && counts.error_count)) return "🛠 Workers: ERROR";
+    if (status === "overdue" || (counts && counts.overdue_count)) {
+      const cnt = (counts && counts.overdue_count) || 1;
+      return `🛠 Workers: ${cnt} Overdue`;
     }
-    if (overall === "overdue" || overdueCount > 0) {
-      const count = overdueCount || 1;
-      return `🛠 Workers: ${count} Overdue`;
-    }
-    if (overall === "waiting" || waitingCount > 0) {
-      const count = waitingCount || 1;
-      return `🛠 Workers: ${count} Waiting`;
+    if (status === "waiting" || (counts && counts.waiting_count)) {
+      const cnt = (counts && counts.waiting_count) || 1;
+      return `🛠 Workers: ${cnt} Waiting`;
     }
     return "🛠 Workers: OK";
-  }
+  };
 
-  function renderDomain(container, domain, fallbackTitle) {
-    if (!container) return;
-    container.innerHTML = "";
-    const title = document.createElement("div");
-    title.style.fontWeight = "700";
-    title.style.marginBottom = "6px";
-    title.textContent = domain?.title || fallbackTitle;
-    container.appendChild(title);
-
-    const workers = (domain && Array.isArray(domain.workers)) ? domain.workers : [];
-    if (!workers.length) {
-      const empty = document.createElement("div");
-      empty.className = "muted-text";
-      empty.style.fontSize = "12px";
-      empty.textContent = "No workers";
-      container.appendChild(empty);
-      return;
+  const ensureCard = (card) => {
+    if (!card) return null;
+    if (!card.dataset || card.dataset.wired !== "1") {
+      card.innerHTML = `
+        <div class="worker-card-head">
+          <div class="worker-card-title" data-role="title"></div>
+          <div class="worker-card-mode" data-role="mode"></div>
+        </div>
+        <div class="worker-card-status-line" data-role="status"></div>
+        <div class="worker-meta-compact">
+          <div data-role="last"></div>
+          <div data-role="next"></div>
+        </div>
+        <div class="worker-card-desc" data-role="desc"></div>
+        <div class="worker-card-message" data-role="message"></div>
+      `;
+      card.dataset.wired = "1";
     }
+    return {
+      title: card.querySelector("[data-role='title']"),
+      mode: card.querySelector("[data-role='mode']"),
+      status: card.querySelector("[data-role='status']"),
+      last: card.querySelector("[data-role='last']"),
+      next: card.querySelector("[data-role='next']"),
+      desc: card.querySelector("[data-role='desc']"),
+      message: card.querySelector("[data-role='message']"),
+    };
+  };
 
-    workers.forEach((worker) => {
-      const row = document.createElement("div");
-      row.className = "worker-row";
+  const renderCard = (card, state) => {
+    if (!card || !state) return;
+    const refs = ensureCard(card);
+    if (!refs) return;
 
-      const status = (worker.status || "").toLowerCase();
-      const overdueBy = Number(worker.overdue_by_minutes || 0);
-
-      const left = document.createElement("div");
-      const titleEl = document.createElement("div");
-      titleEl.className = "worker-title";
-      const titleText = document.createElement("span");
-      titleText.textContent = `${statusIcon(worker.status)} ${worker.name || worker.key || "Worker"}`;
-      titleEl.appendChild(titleText);
-
-      const pill = document.createElement("span");
-      pill.className = `worker-status-pill ${statusClass(status)}`.trim();
-      if (status === "overdue" && overdueBy > 0) {
-        pill.textContent = `Overdue by ${overdueBy}m`;
-      } else if (status === "waiting") {
-        pill.textContent = "Waiting";
-      } else if (status === "cooldown") {
-        pill.textContent = "Cooldown";
-      } else if (status === "locked") {
-        pill.textContent = "Locked";
-      } else if (status === "error") {
-        pill.textContent = "Error";
+    if (refs.title) refs.title.textContent = `${statusIcon(state.status)} ${state.label}`;
+    if (refs.mode) refs.mode.textContent = state.mode === "auto" ? "Automatic" : "Manual";
+    if (refs.status) {
+      const overdueText = state.overdueMinutes > 0 ? ` • Overdue by ${state.overdueMinutes}m` : "";
+      refs.status.textContent = `Status: ${state.status.toUpperCase()}${overdueText}`;
+    }
+    if (refs.last) refs.last.textContent = `Last run: ${state.lastRun || "—"}`;
+    if (refs.next) refs.next.textContent = `Next run: ${state.mode === "manual" ? "—" : state.nextRun || "—"}`;
+    if (refs.desc) refs.desc.textContent = state.description;
+    if (refs.message) {
+      if (state.message) {
+        refs.message.style.display = "block";
+        refs.message.textContent = state.message;
       } else {
-        pill.textContent = "OK";
+        refs.message.style.display = "none";
+        refs.message.textContent = "";
       }
-      titleEl.appendChild(pill);
-      left.appendChild(titleEl);
-
-      if (worker.what) {
-        const what = document.createElement("div");
-        what.className = "worker-what";
-        what.textContent = worker.what;
-        left.appendChild(what);
-      }
-
-      if (overdueBy > 0) {
-        const overdue = document.createElement("div");
-        overdue.className = "worker-details";
-        overdue.textContent = `Overdue by ${overdueBy} minutes`;
-        left.appendChild(overdue);
-      }
-
-      if (worker.details) {
-        const details = document.createElement("div");
-        details.className = "worker-details";
-        details.textContent = worker.details;
-        left.appendChild(details);
-      }
-
-      const meta = document.createElement("div");
-      meta.className = "worker-meta";
-      const last = document.createElement("div");
-      last.textContent = `Last run: ${worker.last_run_at_uae || "—"}`;
-      const next = document.createElement("div");
-      next.textContent = `Next: ${worker.next_eligible_at_uae || "—"}`;
-      meta.appendChild(last);
-      meta.appendChild(next);
-
-      row.appendChild(left);
-      row.appendChild(meta);
-      container.appendChild(row);
-    });
-  }
+    }
+  };
 
   function initWorkersStatus() {
     const button = document.getElementById("workers-status-btn");
@@ -153,84 +232,119 @@
     const heartbeatEl = document.getElementById("workers-heartbeat");
     const lastCheckedEl = document.getElementById("workers-last-checked");
     const errorEl = document.getElementById("workers-error");
-    const sectionInventory = document.getElementById("workers-section-inventory");
-    const sectionRtSales = document.getElementById("workers-section-rt-sales");
-    const sectionVendorPo = document.getElementById("workers-section-vendor-po");
-    const sectionDfPayments = document.getElementById("workers-section-df-payments");
 
-    if (!button || !backdrop || !heartbeatEl || !lastCheckedEl) {
-      return;
-    }
+    if (!button || !backdrop || !heartbeatEl || !lastCheckedEl) return;
 
-    function clearSections(message) {
-      [sectionInventory, sectionRtSales, sectionVendorPo, sectionDfPayments].forEach((section) => {
-        if (section) {
-          section.innerHTML = "";
-          if (message) {
-            const text = document.createElement("div");
-            text.className = "muted-text";
-            text.style.fontSize = "12px";
-            text.textContent = message;
-            section.appendChild(text);
-          }
+    const sectionMap = new Map();
+    GROUPS.forEach((g) => {
+      const node = document.getElementById(g.containerId);
+      if (node) sectionMap.set(g.id, node);
+    });
+
+    let pollHandle = null;
+    let inFlight = null;
+
+    const showError = (err) => {
+      if (errorEl) {
+        errorEl.style.display = "block";
+        errorEl.textContent = err && err.message ? err.message : "Failed to load status";
+      }
+      if (heartbeatEl) heartbeatEl.textContent = "System heartbeat: Check logs";
+      if (lastCheckedEl) lastCheckedEl.textContent = "Last checked: -";
+      button.textContent = "🛠 Workers: ERROR";
+    };
+
+    const applyData = (data) => {
+      const workerMap = buildWorkerMap(data);
+      const groupStates = GROUPS.map((g) => computeGroupState(g, workerMap));
+      const overall = overallStatusFromGroups(groupStates);
+
+      groupStates.forEach((state) => {
+        const card = sectionMap.get(state.id);
+        if (card) {
+          renderCard(card, state);
         }
       });
-    }
 
-    async function fetchStatus(showLoading) {
-      if (showLoading && errorEl) {
+      if (heartbeatEl) heartbeatEl.textContent = overall === "ok" ? "System heartbeat: OK" : "System heartbeat: Check logs";
+      if (lastCheckedEl) lastCheckedEl.textContent = `Last checked: ${data.checked_at_uae || "-"}`;
+      if (errorEl) {
         errorEl.style.display = "none";
         errorEl.textContent = "";
       }
-      try {
-        const resp = await fetch("/api/workers/status");
-        const data = await resp.json();
-        button.textContent = computeLabel(data);
-        heartbeatEl.textContent = data.ok ? "System heartbeat: OK" : "System heartbeat: Check logs";
-        if (lastCheckedEl) {
-          lastCheckedEl.textContent = `Last checked: ${data.checked_at_uae || "-"}`;
-        }
-        if (errorEl) {
-          errorEl.style.display = "none";
-          errorEl.textContent = "";
-        }
-        renderDomain(sectionInventory, data.domains?.inventory, "Inventory");
-        renderDomain(sectionRtSales, data.domains?.rt_sales, "REAL-TIME SALES");
-        renderDomain(sectionVendorPo, data.domains?.vendor_po, "VENDOR PO");
-        renderDomain(sectionDfPayments, data.domains?.df_payments, "DF PAYMENTS");
-      } catch (err) {
-        button.textContent = "🛠 Workers: ERROR";
-        heartbeatEl.textContent = "System heartbeat: Check logs";
-        if (errorEl) {
-          errorEl.style.display = "block";
-          errorEl.textContent = err && err.message ? err.message : "Failed to load status";
-        }
-        if (lastCheckedEl) {
-          lastCheckedEl.textContent = "Last checked: -";
-        }
-        clearSections("Unable to load status");
+      button.textContent = overallLabel(overall, data.summary);
+    };
+
+    const fetchStatus = async () => {
+      if (errorEl) {
+        errorEl.style.display = "none";
+        errorEl.textContent = "";
       }
-    }
 
-    function openModal() {
+      if (inFlight) {
+        inFlight.abort();
+      }
+      const controller = new AbortController();
+      inFlight = controller;
+      try {
+        const resp = await fetch("/api/workers/status", { signal: controller.signal });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        applyData(data);
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        showError(err);
+      } finally {
+        if (inFlight === controller) {
+          inFlight = null;
+        }
+      }
+    };
+
+    const startPolling = () => {
+      if (pollHandle) return;
+      fetchStatus();
+      pollHandle = window.setInterval(fetchStatus, POLL_MS);
+    };
+
+    const stopPolling = () => {
+      if (pollHandle) {
+        window.clearInterval(pollHandle);
+        pollHandle = null;
+      }
+      if (inFlight) {
+        inFlight.abort();
+        inFlight = null;
+      }
+    };
+
+    const openModal = () => {
       backdrop.style.display = "flex";
-      fetchStatus(true);
-    }
+      startPolling();
+    };
 
-    function closeModal() {
+    const closeModal = () => {
       backdrop.style.display = "none";
-    }
+      stopPolling();
+    };
 
     button.addEventListener("click", openModal);
     if (closeBtn) closeBtn.addEventListener("click", closeModal);
-    if (refreshBtn) refreshBtn.addEventListener("click", () => fetchStatus(true));
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () => {
+        stopPolling();
+        startPolling();
+      });
+    }
+
     backdrop.addEventListener("click", (evt) => {
       if (evt.target === backdrop) {
         closeModal();
       }
     });
 
-    fetchStatus(false);
+    // Initial load for the header; polling will start when modal opens.
+    fetchStatus();
   }
 
   document.addEventListener("DOMContentLoaded", initWorkersStatus);

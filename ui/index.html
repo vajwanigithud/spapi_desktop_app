@@ -103,6 +103,13 @@
     .worker-status-locked, .worker-status-cooldown { background:#e0f2fe; color:#0369a1; }
     .worker-status-overdue { background:#fef3c7; color:#b45309; }
     .worker-status-error { background:#fee2e2; color:#b91c1c; }
+    .worker-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px; }
+    .worker-card-title { display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; }
+    .worker-card-mode { font-size:12px; color:#334155; font-weight:700; padding:2px 8px; border-radius:999px; background:#e2e8f0; white-space:nowrap; }
+    .worker-card-status-line { font-weight:700; margin-bottom:4px; }
+    .worker-card-desc { font-size:12px; color:var(--muted); margin-bottom:6px; }
+    .worker-card-message { font-size:12px; color:#b45309; }
+    .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px; margin-bottom:4px; }
     /* DF Payments */
     #df-payments-tab table { font-size:13px; }
     .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
@@ -5927,7 +5934,8 @@
     <div class="modal" style="max-width:960px;">
       <header>
         <div style="display:flex; flex-direction:column; gap:4px;">
-          <div>Background Workers</div>
+          <div style="font-weight:700;">Background Workers</div>
+          <div class="muted-text" style="font-size:12px;">Auto-refreshes every 4s while open</div>
           <div id="workers-last-checked" class="muted-text" style="font-size:12px;">Last checked: -</div>
         </div>
         <div class="modal-actions">
@@ -5936,7 +5944,7 @@
         </div>
       </header>
       <div class="modal-body" id="workers-modal-body">
-        <div id="workers-heartbeat" style="font-weight:700; margin-bottom:6px;">System heartbeat: OK</div>
+        <div id="workers-heartbeat" style="font-weight:700; margin-bottom:6px;">Loading worker status…</div>
         <div id="workers-error" style="font-size:12px; color:#b91c1c; margin-bottom:8px; display:none;"></div>
         <div class="workers-grid">
           <div class="worker-card" id="workers-section-inventory"></div>
