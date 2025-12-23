@@ -211,6 +211,20 @@ from services.vendor_rt_sales_ledger import (
 BODY_NONE = Body(default=None)
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
 
+<<<<<<< HEAD
+import requests
+import uvicorn
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from auth.spapi_auth import SpApiAuth
+
+=======
+>>>>>>> origin/main
 # --- Logging configuration ---
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -1244,7 +1258,10 @@ class VendorRtSalesFillDayRequest(BaseModel):
     burst: bool = False
     burst_hours: int = 6
     max_batches: int = 1
+<<<<<<< HEAD
+=======
     report_window_hours: Optional[int] = 1
+>>>>>>> origin/main
 
     @field_validator("date")
     @classmethod
@@ -1287,6 +1304,8 @@ class VendorRtSalesFillDayRequest(BaseModel):
             raise ValueError("max_batches must be between 1 and 10")
         return value
 
+<<<<<<< HEAD
+=======
     @field_validator("report_window_hours")
     @classmethod
     def _validate_report_window_hours(cls, value: Optional[int]) -> int:
@@ -1323,6 +1342,7 @@ class VendorRtSalesRepair30dRequest(BaseModel):
             raise ValueError("max_reports must be between 1 and 500")
         return value
 
+>>>>>>> origin/main
 
 
 
@@ -2995,7 +3015,11 @@ async def api_vendor_rt_sales_fill_day(
         payload = VendorRtSalesFillDayRequest.model_validate(payload_raw)
     except ValidationError as exc:
         messages = "; ".join(err.get("msg", "invalid request body") for err in exc.errors())
+<<<<<<< HEAD
+        raise HTTPException(status_code=400, detail=messages)
+=======
         raise HTTPException(status_code=400, detail=messages) from exc
+>>>>>>> origin/main
 
     marketplace_id = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else "A2VIGQ35RCS4UG"
     pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause()
@@ -3012,9 +3036,12 @@ async def api_vendor_rt_sales_fill_day(
         payload.burst_hours if burst_enabled else vendor_realtime_sales_service.MAX_HOURLY_REPORTS_PER_FILL_DAY
     )
     max_batches = payload.max_batches if burst_enabled else 1
+<<<<<<< HEAD
+=======
     report_window_hours = payload.report_window_hours or 1
     max_window = vendor_realtime_sales_service.MAX_FILL_DAY_REPORT_WINDOW_HOURS
     report_window_hours = max(1, min(report_window_hours, max_window))
+>>>>>>> origin/main
 
     try:
         plan = vendor_realtime_sales_service.plan_fill_day_run(
@@ -3024,7 +3051,10 @@ async def api_vendor_rt_sales_fill_day(
             max_reports=per_batch_cap,
             burst_enabled=burst_enabled,
             max_batches=max_batches,
+<<<<<<< HEAD
+=======
             report_window_hours=report_window_hours,
+>>>>>>> origin/main
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3050,11 +3080,18 @@ async def api_vendor_rt_sales_fill_day(
             burst_enabled=burst_enabled,
             burst_hours=per_batch_cap,
             max_batches=max_batches,
+<<<<<<< HEAD
+        )
+
+    logger.info(
+        "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d)",
+=======
             report_window_hours=report_window_hours,
         )
 
     logger.info(
         "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d window=%d)",
+>>>>>>> origin/main
         date_str,
         len(scheduled),
         plan["remaining_missing"],
@@ -3063,7 +3100,10 @@ async def api_vendor_rt_sales_fill_day(
         burst_enabled,
         max_batches,
         per_batch_cap,
+<<<<<<< HEAD
+=======
         report_window_hours,
+>>>>>>> origin/main
     )
 
     return {
@@ -3078,8 +3118,11 @@ async def api_vendor_rt_sales_fill_day(
         "max_batches": plan["max_batches"],
         "batches_run": plan["batches_run"],
         "hours_applied_this_call": plan["hours_applied_this_call"],
+<<<<<<< HEAD
+=======
         "report_window_hours": plan["report_window_hours"],
         "reports_created_this_call": plan["reports_created_this_call"],
+>>>>>>> origin/main
     }
 
 

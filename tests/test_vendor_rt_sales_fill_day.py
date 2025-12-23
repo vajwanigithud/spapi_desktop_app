@@ -47,6 +47,30 @@ def test_fill_day_default_caps_three(monkeypatch):
     assert len(plan["hours_to_request"]) == rt_sales.MAX_HOURLY_REPORTS_PER_FILL_DAY
     assert plan["burst_enabled"] is False
     assert plan["batches_run"] == 1
+<<<<<<< HEAD
+    assert plan["hours_applied_this_call"] == rt_sales.MAX_HOURLY_REPORTS_PER_FILL_DAY
+
+
+def test_fill_day_burst_processes_multiple_batches(monkeypatch):
+    missing_state = [0, 1, 2, 3, 4, 5, 6]
+
+    def _dynamic_classify(date_str: str, marketplace_id: str, latest_allowed_end=None):
+        current_missing = list(missing_state)
+        hours_detail = []
+        for hour in range(24):
+            start = datetime(2025, 12, 11, hour, tzinfo=timezone.utc)
+            end = start + timedelta(hours=1)
+            status = "missing" if hour in current_missing else "ok"
+            hours_detail.append(
+                {
+                    "hour": hour,
+                    "status": status,
+                    "start_utc": rt_sales._utc_iso(start),
+                    "end_utc": rt_sales._utc_iso(end),
+                }
+            )
+        return hours_detail, current_missing, []
+=======
     assert plan["report_window_hours"] == 1
     assert plan["reports_created_this_call"] == rt_sales.MAX_HOURLY_REPORTS_PER_FILL_DAY
     assert plan["hours_applied_this_call"] == rt_sales.MAX_HOURLY_REPORTS_PER_FILL_DAY
@@ -77,6 +101,7 @@ def test_fill_day_burst_multi_hour_windows(monkeypatch):
             if status == "missing":
                 missing_list.append(idx)
         return hours_detail, missing_list, []
+>>>>>>> origin/main
 
     monkeypatch.setattr(rt_sales, "_classify_daily_hours", _dynamic_classify)
     monkeypatch.setattr(rt_sales, "enqueue_vendor_rt_sales_specific_hours", lambda *args, **kwargs: None)
@@ -84,6 +109,29 @@ def test_fill_day_burst_multi_hour_windows(monkeypatch):
     monkeypatch.setattr(rt_sales, "ledger_release_worker_lock", lambda *args, **kwargs: None)
     monkeypatch.setattr(rt_sales, "ledger_refresh_worker_lock", lambda *args, **kwargs: None)
 
+<<<<<<< HEAD
+    process_calls = {"count": 0}
+
+    def _fake_process(*args, **kwargs):
+        if not missing_state:
+            return {"ok": True, "requested": 0, "applied": 0, "message": "no work"}
+        missing_state.pop(0)
+        process_calls["count"] += 1
+        return {"ok": True, "requested": 1, "applied": 1}
+
+    monkeypatch.setattr(rt_sales, "process_rt_sales_hour_ledger", _fake_process)
+
+    plan = rt_sales.plan_fill_day_run(
+        date_str="2025-12-11",
+        requested_hours=None,
+        marketplace_id="TEST",
+        max_reports=4,
+        burst_enabled=True,
+        max_batches=2,
+    )
+    rt_sales.run_fill_day_repair_cycle(
+        "2025-12-11",
+=======
     requested_attempts = []
 
     def _fake_mark_requested(marketplace_id, hour_iso):
@@ -152,10 +200,18 @@ def test_fill_day_burst_multi_hour_windows(monkeypatch):
 
     rt_sales.run_fill_day_repair_cycle(
         date_str,
+>>>>>>> origin/main
         plan["hours_to_request"],
         "TEST",
         plan["total_missing"],
         burst_enabled=True,
+<<<<<<< HEAD
+        burst_hours=4,
+        max_batches=2,
+    )
+    assert process_calls["count"] == 7
+    assert missing_state == []
+=======
         burst_hours=6,
         max_batches=3,
         report_window_hours=6,
@@ -167,3 +223,4 @@ def test_fill_day_burst_multi_hour_windows(monkeypatch):
     assert len(requested_attempts) == 18
     assert any(len(seen) < len(call[2]) for call, (_, _, seen) in zip(report_calls, audit_calls))
     assert missing_isos == set()
+>>>>>>> origin/main
