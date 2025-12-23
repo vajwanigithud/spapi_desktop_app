@@ -17,6 +17,7 @@ from services.df_payments import (
     refresh_df_payments,
 )
 from services.df_remittances_gmail import (
+    _strip_html,
     import_df_remittances_from_gmail,
     parse_remittance_email_body,
 )
@@ -689,6 +690,35 @@ def test_parse_remittance_email_body_html_table():
     assert rows[0]["payment_date"] == "05-Jan-2025"
     assert rows[0]["currency"] == "AED"
     assert rows[0]["purchase_order_number"] == "3Y51V7KY"
+
+
+def test_parse_remittance_email_body_from_html_table():
+    html_body = """
+    <html><body>
+    <table>
+    <tr><td>Payment number:</td><td>REM-HTML-REAL</td></tr>
+    <tr><td>Payment date:</td><td>22-SEP-2025</td></tr>
+    <tr><td>Payment currency:</td><td>AED</td></tr>
+    </table>
+    <table>
+    <tr><td>Invoice Number</td><td>Invoice Date</td><td>Description</td><td>Amount Paid</td><td>Amount Remaining</td></tr>
+    <tr><td>26490</td><td>22-SEP-2025</td><td>3Y51V7KY/DXB5/ Item A</td><td>2,593.73</td><td>0.00</td></tr>
+    <tr><td>26491</td><td>22-SEP-2025</td><td>ABCD1234/DXB5/ Item B</td><td>123.00</td><td>0.00</td></tr>
+    </table>
+    </body></html>
+    """
+
+    normalized = _strip_html(html_body)
+    rows = parse_remittance_email_body(normalized)
+
+    assert len(rows) == 2
+    assert rows[0]["remittance_id"] == "REM-HTML-REAL"
+    assert rows[0]["payment_date"] == "22-SEP-2025"
+    assert rows[0]["currency"] == "AED"
+    assert rows[0]["purchase_order_number"] == "3Y51V7KY"
+    assert round(rows[0]["paid_amount"], 2) == 2593.73
+    assert rows[1]["purchase_order_number"] == "ABCD1234"
+    assert round(rows[1]["paid_amount"], 2) == 123.0
 
 
 def test_reconcile_marks_paid(tmp_path):

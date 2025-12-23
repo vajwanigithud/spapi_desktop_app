@@ -73,8 +73,15 @@ def _extract_message(fetch_data: List[Tuple[bytes, bytes]]) -> Tuple[Optional[st
 
 def _strip_html(html: str) -> str:
     text = re.sub(r"<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>", " ", html, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"<\s*br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*tr\b", "\n<tr", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*tr\s*>", "</tr>\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*td\s*>\s*<\s*td\b", "</td>\t<td", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text, flags=re.DOTALL)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
 
 
 def _get_plain_body(msg: Optional[Message]) -> str:
@@ -100,9 +107,13 @@ def _get_plain_body(msg: Optional[Message]) -> str:
     payload = msg.get_payload(decode=True) or b""
     charset = msg.get_content_charset() or "utf-8"
     try:
-        return payload.decode(charset, errors="replace")
+        body = payload.decode(charset, errors="replace")
     except Exception:
-        return payload.decode(errors="replace") if payload else ""
+        body = payload.decode(errors="replace") if payload else ""
+
+    if (msg.get_content_type() or "").lower() == "text/html":
+        return _strip_html(body)
+    return body
 
 
 def _clean_html_cell(cell: str) -> str:
@@ -259,6 +270,7 @@ def import_df_remittances_from_gmail(
     max_messages: Optional[int] = None,
     label: Optional[str] = None,
     mailbox: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, object]:
     """Fetch Gmail remittances via IMAP (Gmail extensions) and persist them."""
     ensure_df_remittances_table(db_path)
@@ -295,7 +307,7 @@ def import_df_remittances_from_gmail(
     if missing:
         return {"status": "disabled", "reason": "missing_config", "missing": missing}
 
-    existing_ids = df_remittances_get_imported_message_ids(limit=5000, db_path=db_path)
+    existing_ids = set(df_remittances_get_imported_message_ids(limit=5000, db_path=db_path))
     parsed_rows: List[Dict[str, object]] = []
     processed_msgs = 0
     skipped_existing = 0
@@ -346,7 +358,7 @@ def import_df_remittances_from_gmail(
             gmail_id, msg = _extract_message(msg_data)
             if not gmail_id:
                 continue
-            if gmail_id in existing_ids:
+            if gmail_id in existing_ids and not force:
                 skipped_existing += 1
                 continue
 
@@ -354,6 +366,13 @@ def import_df_remittances_from_gmail(
             rows = parse_remittance_email_body(body)
             if not rows:
                 continue
+
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                LOGGER.debug(
+                    "[DF Remittances] Parsed rows preview | gmail_id=%s | rows=%s",
+                    gmail_id,
+                    rows[:2],
+                )
 
             imported_at = datetime.now(timezone.utc).isoformat()
             for row in rows:
