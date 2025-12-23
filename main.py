@@ -105,6 +105,7 @@ import services.vendor_realtime_sales as vendor_realtime_sales_service
 from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
+from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.printer_routes import register_printer_routes
@@ -136,6 +137,10 @@ from services.catalog_service import (
     spapi_catalog_status,
     update_catalog_barcode,
     upsert_spapi_catalog,
+)
+from services.df_payments import (
+    start_df_payments_incremental_scheduler,
+    stop_df_payments_incremental_scheduler,
 )
 from services.json_cache import (
     load_asin_cache,
@@ -286,6 +291,7 @@ register_vendor_inventory_realtime_routes(app)
 register_vendor_rt_inventory_routes(app)
 register_vendor_rt_sales_routes(app)
 register_worker_status_routes(app)
+register_df_payments_routes(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -304,9 +310,19 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
+        start_df_payments_incremental_scheduler()
         logger.info("[Startup] Background tasks initialized successfully")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Signal background workers to stop."""
+    try:
+        stop_df_payments_incremental_scheduler()
+    except Exception as exc:
+        logger.warning(f"[Shutdown] Failed to stop DF Payments scheduler cleanly: {exc}")
 
 
 # -------------------------------

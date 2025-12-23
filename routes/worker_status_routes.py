@@ -10,16 +10,21 @@ from config import MARKETPLACE_IDS
 from services import vendor_inventory_realtime as rt_inventory
 from services import vendor_realtime_sales as rt_sales
 from services.db import ensure_app_kv_table, get_app_kv, get_db_connection
+from services.df_payments import get_df_payments_worker_metadata
 from services.vendor_po_status_store import get_vendor_po_status_payload
 from services.vendor_rt_inventory_state import get_refresh_metadata
 from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
+<<<<<<< HEAD
 RT_SALES_EXPECTED_INTERVAL_MINUTES = 15
 RT_SALES_GRACE_MINUTES = 5
 WAITING_STATUSES = {"cooldown", "locked", "waiting"}
 OVERDUE_STATUSES = {"overdue"}
+=======
+WAITING_STATUSES = {"cooldown", "locked", "waiting"}
+>>>>>>> origin/main
 MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
@@ -230,6 +235,7 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         status = "error"
         details = "Failed ledger hours present"
 
+<<<<<<< HEAD
     overdue_by_minutes = 0
     overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, RT_SALES_GRACE_MINUTES)
     if status not in {"error", "cooldown", "locked"} and overdue_status:
@@ -237,13 +243,24 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         overdue_by_minutes = overdue_delta
         if overdue_by_minutes and not details:
             details = f"Overdue by {overdue_by_minutes} minutes"
+=======
+    last_run_iso = ledger_summary.get("last_applied_hour_utc")
+    last_run_dt = _parse_iso_datetime(last_run_iso) if last_run_iso else None
+    if not next_eligible_dt and last_run_dt:
+        next_eligible_dt = last_run_dt + timedelta(minutes=15)
+>>>>>>> origin/main
 
+    last_run_display = _fmt_uae(last_run_dt or last_run_iso)
     workers.append(
         {
             "key": "rt_sales_sync",
             "name": "RT Sales Sync",
             "status": status,
+<<<<<<< HEAD
             "last_run_at_uae": _fmt_uae(last_run_dt),
+=======
+            "last_run_at_uae": last_run_display,
+>>>>>>> origin/main
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
             "details": details,
             "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
@@ -281,6 +298,59 @@ def _vendor_po_domain() -> Dict[str, Any]:
     )
 
     return {"title": "VENDOR PO", "workers": workers}
+
+
+def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
+    workers: List[Dict[str, Any]] = []
+    status = "ok"
+    details: Optional[str] = None
+    next_eligible_dt: Optional[datetime] = None
+
+    try:
+        meta = get_df_payments_worker_metadata(marketplace_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        meta = None
+        status = "error"
+        details = f"Metadata unavailable: {exc}"
+
+    last_finished = None
+    last_status = None
+    last_error = None
+    last_started = None
+    last_success = None
+
+    if isinstance(meta, dict):
+        last_finished = meta.get("last_incremental_finished_at")
+        last_started = meta.get("last_incremental_started_at")
+        last_status = meta.get("last_incremental_status")
+        last_error = meta.get("last_incremental_error")
+        next_eligible_dt = _parse_iso_datetime(meta.get("incremental_next_eligible_at_utc"))
+        details = meta.get("incremental_worker_details") or meta.get("incremental_wait_reason") or details
+        status = meta.get("incremental_worker_status") or status
+        last_success = meta.get("incremental_last_success_at_utc")
+
+    last_finished_dt = _parse_iso_datetime(last_finished)
+    last_started_dt = _parse_iso_datetime(last_started)
+    last_success_dt = _parse_iso_datetime(last_success)
+
+    if (last_status or "").upper() == "ERROR" and status == "ok":
+        status = "error"
+        details = details or last_error or "Last incremental scan failed"
+
+    last_run_display = _fmt_uae(last_success_dt or last_finished_dt or last_finished or last_started_dt)
+    workers.append(
+        {
+            "key": "df_payments_incremental",
+            "name": "DF Payments Incremental Scan",
+            "status": status,
+            "last_run_at_uae": last_run_display,
+            "next_eligible_at_uae": _fmt_uae(next_eligible_dt) if next_eligible_dt else None,
+            "details": details,
+            "what": "Incrementally fetches new DF orders since last successful scan (10-min cadence)",
+        }
+    )
+
+    return {"title": "DF PAYMENTS", "workers": workers}
 
 
 def _collect_workers(domains: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -369,6 +439,24 @@ def get_worker_status() -> Dict[str, Any]:
                     "grace_minutes": None,
                     "overdue_by_minutes": 0,
                     "what": "Refreshes Vendor POs when run manually",
+                }
+            ],
+        }
+
+    try:
+        domains["df_payments"] = _df_payments_domain(now_utc, marketplace_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        domains["df_payments"] = {
+            "title": "DF PAYMENTS",
+            "workers": [
+                {
+                    "key": "df_payments_incremental",
+                    "name": "DF Payments Incremental Scan",
+                    "status": "error",
+                    "last_run_at_uae": None,
+                    "next_eligible_at_uae": None,
+                    "details": str(exc),
+                    "what": "Fetches new DF orders (10m cooldown, DB-first)",
                 }
             ],
         }

@@ -27,6 +27,7 @@ from services.db import (
     ensure_vendor_inventory_table,
     get_app_kv,
     get_db_connection,
+    get_vendor_inventory_snapshot,
     replace_vendor_inventory_snapshot,
     set_app_kv,
 )
@@ -47,6 +48,7 @@ MIN_REFRESH_INTERVAL_MINUTES = 30
 SALES_30D_LOOKBACK_DAYS = 30
 COOLDOWN_HOURS = 1
 COOLDOWN_KV_KEY = "vendor_rt_inventory_last_refresh_utc"
+ACCUMULATOR_LAST_REFRESH_KV = "inventory_accumulator_last_refresh_utc"
 
 _CANDIDATE_ROW_KEYS = [
     "reportData",
@@ -616,6 +618,65 @@ def materialize_vendor_inventory_snapshot(snapshot: Dict[str, Any], *, source: s
         return 0
 
 
+def _record_accumulator_refresh(now_iso: str) -> None:
+    ensure_app_kv_table()
+    try:
+        with get_db_connection() as conn:
+            set_app_kv(conn, ACCUMULATOR_LAST_REFRESH_KV, now_iso)
+    except Exception as exc:
+        logger.warning("[VendorRtInventory] Failed to persist accumulator refresh marker: %s", exc)
+
+
+def load_accumulated_inventory(marketplace_id: str) -> Dict[str, Any]:
+    """Return accumulated vendor_inventory_asin rows (no deletes)."""
+    ensure_vendor_inventory_table()
+    as_of_utc: Optional[str] = None
+    rows: List[Dict[str, Any]] = []
+    try:
+        with get_db_connection() as conn:
+            try:
+                stored = get_app_kv(conn, ACCUMULATOR_LAST_REFRESH_KV)
+                if stored:
+                    as_of_utc = stored
+            except Exception:
+                as_of_utc = None
+            rows = get_vendor_inventory_snapshot(conn, marketplace_id)
+            try:
+                sales_map = load_sales_30d_map(marketplace_id)
+                decorate_items_with_sales(rows, sales_map)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[VendorRtInventory] Failed to decorate accumulated inventory with sales_30d: %s",
+                    exc,
+                )
+            if not as_of_utc:
+                candidates = [r.get("updated_at") for r in rows if r.get("updated_at")]
+                if candidates:
+                    try:
+                        latest = max(candidates)
+                        as_of_utc = latest
+                    except Exception:
+                        as_of_utc = None
+    except Exception as exc:
+        logger.error("[VendorRtInventory] Failed to load accumulated inventory: %s", exc, exc_info=True)
+        return {
+            "ok": False,
+            "marketplace_id": marketplace_id,
+            "as_of_utc": as_of_utc,
+            "count": 0,
+            "rows": [],
+            "error": str(exc),
+        }
+
+    return {
+        "ok": True,
+        "marketplace_id": marketplace_id,
+        "as_of_utc": as_of_utc,
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
 def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THRESHOLD_HOURS) -> bool:
     generated_at = _parse_datetime(snapshot.get("generated_at"))
     if not generated_at:
@@ -626,19 +687,15 @@ def is_snapshot_stale(snapshot: Dict[str, Any], threshold_hours: int = STALE_THR
 
 def get_cached_realtime_inventory_snapshot(
     cache_path: Optional[Path] = None,
-    *,
-    materialize: bool = True,
 ) -> Dict[str, Any]:
+    """Read-only snapshot fetch. Never mutates vendor_inventory_asin."""
     snapshot = _load_snapshot_from_db()
     if snapshot.get("generated_at"):
         logger.info(
             "[VendorRtInventory] Loaded realtime snapshot from SQLite (generated_at=%s)",
             snapshot.get("generated_at"),
         )
-        decorated = _decorate_snapshot(snapshot)
-        if materialize:
-            materialize_vendor_inventory_snapshot(decorated, source="db_snapshot_load")
-        return decorated
+        return _decorate_snapshot(snapshot)
 
     path = cache_path or DEFAULT_CACHE_PATH
     if path.exists():
@@ -652,10 +709,7 @@ def get_cached_realtime_inventory_snapshot(
                 _persist_snapshot_to_db(json_snapshot)
             except Exception as exc:
                 logger.error("[VendorRtInventory] Failed to persist JSON snapshot to SQLite: %s", exc)
-            decorated = _decorate_snapshot(json_snapshot)
-            if materialize:
-                materialize_vendor_inventory_snapshot(decorated, source="json_bootstrap")
-            return decorated
+            return _decorate_snapshot(json_snapshot)
 
     logger.info("[VendorRtInventory] No cached realtime snapshot found; returning blank snapshot")
     return _decorate_snapshot(_blank_snapshot())
@@ -806,6 +860,8 @@ def refresh_realtime_inventory_snapshot(
     snapshot = _decorate_snapshot(snapshot)
     snapshot["refresh_skipped"] = False
 
+    _record_accumulator_refresh(_iso(now))
+
     _persist_snapshot_to_db(snapshot)
     _write_snapshot(path, snapshot)
     materialize_vendor_inventory_snapshot(snapshot, source="refresh")
@@ -826,4 +882,5 @@ __all__ = [
     "load_sales_30d_map",
     "decorate_items_with_sales",
     "materialize_vendor_inventory_snapshot",
+    "load_accumulated_inventory",
 ]

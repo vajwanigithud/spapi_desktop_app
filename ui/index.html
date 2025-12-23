@@ -97,12 +97,28 @@
     .worker-meta { font-size:12px; color:var(--muted); text-align:right; }
     .worker-what { font-size:12px; color:var(--muted); margin-top:2px; }
     .worker-details { font-size:12px; color:#b45309; margin-top:4px; }
+<<<<<<< HEAD
     .worker-status-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; margin-left:6px; }
     .worker-status-ok { background:#dcfce7; color:#166534; }
     .worker-status-waiting { background:#e5e7eb; color:#1d4ed8; }
     .worker-status-locked, .worker-status-cooldown { background:#e0f2fe; color:#0369a1; }
     .worker-status-overdue { background:#fef3c7; color:#b45309; }
     .worker-status-error { background:#fee2e2; color:#b91c1c; }
+=======
+    /* DF Payments */
+    #df-payments-tab table { font-size:13px; }
+    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
+    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
+    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-mini-table { width:100%; border-collapse: collapse; }
+    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
+    .dfp-table-wrap { padding:12px; overflow:auto; }
+    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
+>>>>>>> origin/main
     /* modal */
     .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
@@ -636,6 +652,7 @@
         <button id="tab-btn-vrt-trends" class="tab-btn" data-tab="vrt-trends" onclick="showTab('vrt-trends')">Vendor Real Time Trends</button>
         <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" onclick="showTab('vrt-audit')">Vendor Real Time Audit</button>
         <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
+        <button class="tab-btn" data-tab="df-payments" onclick="showTab('df-payments')">DF Payments</button>
         <!-- <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button> -->
         <!-- <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button> -->
       </div>
@@ -784,6 +801,74 @@
       </div>
     </div>
   </div>
+    <div class="panel" id="df-payments-tab" style="display:none; margin-top:14px;">
+      <h2>DF Payments</h2>
+      <div class="dfp-controls">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:600;">
+          Lookback
+          <select id="dfp-lookback">
+            <option value="90" selected>90 days</option>
+            <option value="60">60 days</option>
+            <option value="30">30 days</option>
+            <option value="7">7 days</option>
+          </select>
+        </label>
+        <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
+        <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
+        <button class="btn" id="dfp-reconcile-btn" type="button" style="background:#0f766e;">Reconcile Paid (Gmail)</button>
+        <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
+        <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
+        <div id="dfp-auto-status" class="dfp-status">Auto incremental: waiting…</div>
+      </div>
+
+      <div class="dfp-dashboard">
+        <div class="dfp-card">
+          <div class="dfp-card-title">Invoices (last 2 months)</div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Total Sales (incl VAT)</th></tr>
+            </thead>
+            <tbody id="dfp-invoices-body">
+              <tr><td colspan="2" class="empty">No invoices yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="dfp-card">
+          <div class="dfp-card-title">Cash Flow Projection (expected payments, 30d terms)</div>
+          <table class="dfp-mini-table">
+            <thead>
+              <tr><th>Month</th><th>Expected payment</th></tr>
+            </thead>
+            <tbody id="dfp-cashflow-body">
+              <tr><td colspan="2" class="empty">Projection unavailable</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="dfp-table-wrap">
+        <table id="dfp-orders-table">
+          <thead>
+            <tr>
+              <th>PO</th>
+              <th>Order Date</th>
+              <th>Status</th>
+              <th style="text-align:right;">Units</th>
+              <th style="text-align:right;">Subtotal</th>
+              <th style="text-align:right;">VAT</th>
+              <th>Currency</th>
+              <th>Payment Status</th>
+              <th>Payment Date</th>
+              <th>Remittance IDs</th>
+              <th>SKU List</th>
+            </tr>
+          </thead>
+          <tbody id="dfp-orders-body">
+            <tr><td colspan="11" class="empty">No DF orders yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
     <!--
     <div class="panel" id="tester-tab" style="display:none; margin-top:14px;">
       <h2>SP-API Endpoint Tester</h2>
@@ -1082,30 +1167,23 @@
     <h2>Real-Time Inventory</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div class="inventory-mode-toggle">
-        <div style="display:flex; flex-direction:column; gap:4px;">
-          <span id="inv-week-label" class="muted-text"></span>
-          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
-            <a id="inv-coverage-why" href="#" style="font-size:12px; color:#2563eb; text-decoration:none; display:none;" onclick="openInventoryCoverageModal(); return false;">ⓘ Why coverage is low?</a>
-          </div>
-          <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
-            Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            <span id="inv-week-label" class="muted-text">Accumulated Inventory | Loaded 0 ASINs</span>
+            <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
+              Accumulator model: ASINs never auto-delete; counts only grow.
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Controls row -->
-      <div class="inventory-controls">
-        <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Real-Time Snapshot</button>
-        <button id="inv-download-btn" class="btn" style="background:#16a34a;" onclick="downloadVendorInventorySnapshotCsv()">Download CSV (current view)</button>
-        <span id="inv-status-label" class="muted-text"></span>
-      </div>
+        <!-- Controls row -->
+        <div class="inventory-controls">
+          <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Inventory</button>
+          <span id="inv-status-label" class="muted-text"></span>
+        </div>
 
       <!-- Inner subtabs -->
       <div class="inventory-subtabs" style="display:none;">
-        <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">Snapshot (All ASINs)</button>
-        <button id="inv-subtab-aged" class="inventory-subtab-button" onclick="setInventorySubtab('aged')">Legacy 90+ Days</button>
-        <button id="inv-subtab-unhealthy" class="inventory-subtab-button" onclick="setInventorySubtab('unhealthy')">Legacy Excess</button>
+        <button id="inv-subtab-snapshot" class="inventory-subtab-button active" onclick="setInventorySubtab('snapshot')">All ASINs</button>
       </div>
 
       <!-- Search and Quick Filters -->
@@ -1177,16 +1255,6 @@
     </div>
   </div>
 
-  <!-- Inventory coverage explainer modal -->
-  <div class="backdrop" id="inventory-coverage-modal" style="display:none;">
-    <div class="modal" style="max-width:720px;">
-      <header>
-        <div id="inventory-coverage-title">Why real-time coverage can look low</div>
-        <button class="btn" style="background:#111827" onclick="closeInventoryCoverageModal()">Close</button>
-      </header>
-      <div class="modal-body" id="inventory-coverage-body"></div>
-    </div>
-  </div>
 
   <div id="catalog-context-menu">
     <button class="danger" onclick="handleCatalogContextDelete()">Delete from Catalog List</button>
@@ -1239,8 +1307,6 @@
     let vendorInventorySnapshot = [];
     let vendorInventoryMeta = null;
     let inventoryMode = 'realtime';
-    let realtimeInventorySnapshot = [];
-    let realtimeInventoryMeta = null;
     let currentInventorySubtab = 'snapshot';
     let invSortColumn = 'sellable';
     let invSortDirection = 'desc';
@@ -4415,21 +4481,6 @@
       statusEl.style.color = color || '';
     }
 
-    function isVendorInventorySnapshotStale(meta) {
-      if (typeof meta?.stale_hours === 'number') {
-        return meta.stale_hours >= 24;
-      }
-      if (!meta || !meta.as_of) {
-        return false;
-      }
-      const asOfDate = new Date(meta.as_of);
-      if (Number.isNaN(asOfDate.getTime())) {
-        return false;
-      }
-      const ageMs = Date.now() - asOfDate.getTime();
-      return ageMs > 24 * 60 * 60 * 1000;
-    }
-
     function formatInventoryAsOf(meta) {
       if (!meta) return null;
       if (meta.as_of_uae) {
@@ -4447,66 +4498,14 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
-      const coverageEl = document.getElementById('inv-coverage-label');
-      const coverageWhyEl = document.getElementById('inv-coverage-why');
       if (!labelEl) return;
-      const realtimeMeta = realtimeInventoryMeta || meta || {};
-      const count = realtimeInventorySnapshot.length;
-      const refreshMeta = realtimeMeta.refresh || {};
-      const windowStart =
-        realtimeMeta.window_start_uae ||
-        realtimeMeta.window_start_local ||
-        realtimeMeta.window_start_utc ||
-        realtimeMeta.report_window_start_utc ||
-        realtimeMeta.window_start ||
-        refreshMeta.window_start_uae ||
-        refreshMeta.window_start_local ||
-        refreshMeta.window_start_utc ||
-        refreshMeta.report_window_start_utc ||
-        refreshMeta.window_start;
-      const windowEnd =
-        realtimeMeta.window_end_uae ||
-        realtimeMeta.window_end_local ||
-        realtimeMeta.window_end_utc ||
-        realtimeMeta.report_window_end_utc ||
-        realtimeMeta.window_end ||
-        refreshMeta.window_end_uae ||
-        refreshMeta.window_end_local ||
-        refreshMeta.window_end_utc ||
-        refreshMeta.report_window_end_utc ||
-        refreshMeta.window_end;
+      const metaSafe = vendorInventoryMeta || meta || {};
+      const count = Array.isArray(vendorInventorySnapshot) ? vendorInventorySnapshot.length : 0;
       const asOfLabel = formatInventoryAsOf({
-        as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
-        as_of_uae: realtimeMeta.as_of_uae,
-      });
-      const coverageLabel = realtimeMeta.coverage_label;
-      const scopeExplanation = realtimeMeta.inventory_scope_explanation;
-      if (coverageEl) {
-        if (coverageLabel) {
-          const parts = [coverageLabel];
-          if (scopeExplanation) {
-            parts.push(scopeExplanation);
-          }
-          coverageEl.textContent = parts.join(' - ');
-          coverageEl.style.display = 'block';
-          if (coverageWhyEl) coverageWhyEl.style.display = 'inline-flex';
-        } else {
-          coverageEl.textContent = '';
-          coverageEl.style.display = 'none';
-          if (coverageWhyEl) coverageWhyEl.style.display = 'none';
-        }
-      }
-      let labelParts = [`Real-Time | Loaded ${count} ASINs`];
-      if (windowStart || windowEnd) {
-        const windowSegments = [];
-        if (windowStart) windowSegments.push(windowStart);
-        if (windowEnd) windowSegments.push(windowEnd);
-        const windowText = windowSegments.length === 2 ? `${windowSegments[0]} -> ${windowSegments[1]}` : windowSegments.join('');
-        labelParts.push(`Window: ${windowText}`);
-      } else if (asOfLabel) {
-        labelParts.push(`As of ${asOfLabel}`);
-      }
-      labelEl.textContent = labelParts.join(' | ');
+        as_of: metaSafe.as_of_utc || metaSafe.as_of,
+        as_of_uae: metaSafe.as_of_uae,
+      }) || metaSafe.as_of_utc || '—';
+      labelEl.textContent = `Accumulated Inventory | Loaded ${count} ASINs | As of ${asOfLabel}`;
     }
 
     function updateInventoryModeButtons() {
@@ -4521,14 +4520,7 @@
       inventoryMode = 'realtime';
       updateInventoryModeButtons();
       updateInventoryRefreshButtonState();
-      if (realtimeInventorySnapshot.length === 0) {
-        fetchRealtimeInventorySnapshot();
-      } else {
-        vendorInventorySnapshot = realtimeInventorySnapshot.slice();
-        vendorInventoryMeta = realtimeInventoryMeta;
-        updateInventoryFreshnessUi(realtimeInventoryMeta);
-        renderVendorInventoryCurrentSubtab();
-      }
+      loadInventorySnapshotIfNeeded();
     }
 
 
@@ -4536,14 +4528,14 @@
       const refreshBtn = document.getElementById('inv-refresh-btn');
       if (!refreshBtn) return;
       const refreshRunning = !!(
-        realtimeInventoryMeta?.refresh_in_progress || realtimeInventoryMeta?.refresh?.in_progress
+        vendorInventoryMeta?.refresh_in_progress || vendorInventoryMeta?.refresh?.in_progress
       );
       if (invRealtimeRefreshInFlight || refreshRunning) {
         refreshBtn.disabled = true;
-        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing Real-Time…';
+        refreshBtn.textContent = refreshRunning ? 'Refresh running…' : 'Refreshing inventory…';
       } else {
         refreshBtn.disabled = false;
-        refreshBtn.textContent = 'Refresh Real-Time Snapshot';
+        refreshBtn.textContent = 'Refresh Inventory';
       }
     }
 
@@ -4577,8 +4569,7 @@
     function updateInventoryFreshnessUi(meta, { clearStatusWhenFresh = false } = {}) {
       updateInventoryModeButtons();
       updateInventoryFreshnessLabel(meta);
-      const realtimeMeta = realtimeInventoryMeta || meta || {};
-      const refreshRunning = !!(realtimeMeta.refresh_in_progress || realtimeMeta.refresh?.in_progress);
+      const refreshRunning = !!(meta?.refresh_in_progress || meta?.refresh?.in_progress);
       if (refreshRunning) {
         setInventoryStatus('Refresh in progress…');
         inventoryAutoRefreshRequested = true;
@@ -4590,97 +4581,15 @@
       stopInventoryRefreshPolling();
       updateInventoryRefreshButtonState();
       inventoryAutoRefreshRequested = false;
-      const stale = isVendorInventorySnapshotStale({ as_of: realtimeMeta.as_of || realtimeMeta.generated_at });
-      if (stale) {
-        setInventoryStatus('⚠️ Snapshot older than 24 hours — refreshing…', '#b45309');
-        refreshRealtimeInventorySnapshot({ silent: true });
-      } else if (clearStatusWhenFresh) {
+      if (clearStatusWhenFresh) {
         setInventoryStatus('');
       }
     }
 
-    function openInventoryCoverageModal() {
-      const modal = document.getElementById('inventory-coverage-modal');
-      const body = document.getElementById('inventory-coverage-body');
-      if (!modal || !body) return;
-
-      const meta = vendorInventoryMeta || realtimeInventoryMeta || {};
-      const refreshMeta = meta.refresh || {};
-
-      const uniqueCount = Number.isFinite(meta.unique_count) ? meta.unique_count : null;
-      const catalogCount = Number.isFinite(meta.catalog_asin_count) ? meta.catalog_asin_count : null;
-      const coverageRatio = Number.isFinite(meta.coverage_ratio) ? meta.coverage_ratio : null;
-
-      const reportStartRaw =
-        meta.report_start_time ||
-        refreshMeta.report_start_time ||
-        meta.window_start_time ||
-        refreshMeta.window_start_time ||
-        meta.start_date ||
-        refreshMeta.start_date ||
-        meta.reportStartTime ||
-        refreshMeta.reportStartTime;
-
-      const reportEndRaw =
-        meta.report_end_time ||
-        refreshMeta.report_end_time ||
-        meta.window_end_time ||
-        refreshMeta.window_end_time ||
-        meta.end_date ||
-        refreshMeta.end_date ||
-        meta.reportEndTime ||
-        refreshMeta.reportEndTime;
-
-      const asOfUae = meta.as_of_uae || refreshMeta.as_of_uae || null;
-
-      const fmtNumber = (val) => (Number.isFinite(val) ? val.toLocaleString() : '—');
-      const fmtPercent = (val) => (Number.isFinite(val) ? `${(val * 100).toFixed(1)}%` : '—');
-      const fmtText = (val) => (val ? String(val) : '—');
-      const fmtUae = (val) => {
-        if (!val) return '—';
-        try {
-          if (typeof formatUaeTime === 'function') {
-            const formatted = formatUaeTime(val);
-            if (formatted) return formatted;
-          }
-        } catch (err) {
-          // fall through to raw string
-        }
-        return String(val);
-      };
-
-      body.innerHTML = `
-        <div style="display:flex; flex-direction:column; gap:12px; font-size:13px; color:#111827;">
-          <div>Realtime inventory comes from <strong>GET_VENDOR_REAL_TIME_INVENTORY_REPORT</strong>.</div>
-          <div>Amazon includes only ASINs present in that report window; Vendor Central exports can contain more ASINs.</div>
-          <div>We intentionally prune vendor_inventory_asin to the latest snapshot so the DB matches what the UI shows.</div>
-          <div style="border:1px solid var(--border); border-radius:10px; padding:10px; background:#f8fafc;">
-            <div style="font-weight:700; margin-bottom:8px;">Current snapshot metrics</div>
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
-              <div><span class="muted-text">Unique ASINs in snapshot:</span> ${fmtNumber(uniqueCount)}</div>
-              <div><span class="muted-text">Catalog ASINs (known):</span> ${fmtNumber(catalogCount)}</div>
-              <div><span class="muted-text">Coverage ratio:</span> ${fmtPercent(coverageRatio)}</div>
-              <div><span class="muted-text">Report start:</span> ${fmtUae(reportStartRaw)}</div>
-              <div><span class="muted-text">Report end:</span> ${fmtUae(reportEndRaw)}</div>
-              <div><span class="muted-text">As of (UAE):</span> ${fmtText(asOfUae)}</div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      modal.style.display = 'flex';
-    }
-
-    function closeInventoryCoverageModal() {
-      const modal = document.getElementById('inventory-coverage-modal');
-      if (modal) modal.style.display = 'none';
-    }
 
     function loadInventorySnapshotIfNeeded(forceReload = false) {
-      if (!forceReload && realtimeInventorySnapshot.length > 0) {
-        vendorInventorySnapshot = realtimeInventorySnapshot.slice();
-        vendorInventoryMeta = realtimeInventoryMeta;
-        updateInventoryFreshnessUi(realtimeInventoryMeta);
+      if (!forceReload && vendorInventorySnapshot.length > 0) {
+        updateInventoryFreshnessUi(vendorInventoryMeta);
         renderVendorInventoryCurrentSubtab();
         return;
       }
@@ -4696,10 +4605,10 @@
         return Promise.resolve();
       }
       if (!silent) {
-        setInventoryStatus('Loading real-time inventory…');
+        setInventoryStatus('Loading inventory…');
       }
       inventoryFetchInFlight = true;
-      const request = fetch('/api/vendor-inventory/realtime/snapshot')
+      const request = fetch('/api/vendor-inventory/realtime/accumulated')
         .then((resp) => {
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
@@ -4710,12 +4619,10 @@
         })
         .catch((err) => {
           console.error(err);
-          setInventoryStatus('Failed to load real-time snapshot: ' + (err?.message || err), '#b91c1c');
-          if (inventoryMode === 'realtime') {
-            vendorInventorySnapshot = [];
-            vendorInventoryMeta = null;
-            renderVendorInventoryCurrentSubtab();
-          }
+          setInventoryStatus('Failed to load inventory: ' + (err?.message || err), '#b91c1c');
+          vendorInventorySnapshot = [];
+          vendorInventoryMeta = null;
+          renderVendorInventoryCurrentSubtab();
         })
         .finally(() => {
           inventoryFetchInFlight = false;
@@ -4726,7 +4633,7 @@
     }
 
     function applyRealtimeInventoryPayload(data, { silent = false } = {}) {
-      const rows = Array.isArray(data?.items) ? data.items : [];
+      const rows = Array.isArray(data?.rows) ? data.rows : Array.isArray(data?.items) ? data.items : [];
       const refreshMeta = data?.refresh || {};
       const asOfUtc = data?.as_of_utc || data?.as_of || data?.generated_at || null;
       const meta = {
@@ -4737,25 +4644,15 @@
         generated_at: data?.generated_at || null,
         refresh_in_progress: Boolean(data?.refresh_in_progress || refreshMeta?.in_progress),
         refresh: refreshMeta,
-        coverage_label: data?.coverage_label || refreshMeta?.coverage_label || null,
-        inventory_scope_explanation: data?.inventory_scope_explanation || refreshMeta?.inventory_scope_explanation || null,
-        coverage_ratio: Number.isFinite(data?.coverage_ratio) ? Number(data.coverage_ratio) : null,
-        catalog_asin_count: Number.isFinite(data?.catalog_asin_count) ? Number(data.catalog_asin_count) : null,
-        unique_count: Number.isFinite(data?.unique_count) ? Number(data.unique_count) : null,
+        count: Number.isFinite(data?.count) ? Number(data.count) : rows.length,
       };
-      realtimeInventorySnapshot = rows.slice();
-      realtimeInventoryMeta = meta;
-      if (inventoryMode === 'realtime') {
-        vendorInventorySnapshot = rows.slice();
-        vendorInventoryMeta = meta;
-        if (!silent) {
-          setInventoryStatus(`Loaded ${rows.length} ASINs`);
-        }
-        updateInventoryFreshnessUi(meta, { clearStatusWhenFresh: silent });
-        renderVendorInventoryCurrentSubtab();
-      } else if (!silent) {
-        setInventoryStatus(`Real-time snapshot updated (${rows.length} ASINs)`);
+      vendorInventorySnapshot = rows.slice();
+      vendorInventoryMeta = meta;
+      if (!silent) {
+        setInventoryStatus(`Loaded ${rows.length} ASINs`);
       }
+      updateInventoryFreshnessUi(meta, { clearStatusWhenFresh: silent });
+      renderVendorInventoryCurrentSubtab();
       updateInventoryRefreshButtonState();
     }
 
@@ -4767,7 +4664,7 @@
       invRealtimeRefreshInFlight = true;
       updateInventoryRefreshButtonState();
       if (!silent) {
-        setInventoryStatus(force ? 'Force refreshing real-time snapshot…' : 'Refreshing real-time inventory…');
+        setInventoryStatus(force ? 'Force refreshing inventory…' : 'Refreshing inventory…');
       }
 
       fetch('/api/vendor-inventory/realtime/refresh', {
@@ -4781,7 +4678,7 @@
         .then((data) => {
           if (data?.status === 'error' || data?.status === 'quota_error') {
             const message = data?.error || 'Refresh failed';
-            setInventoryStatus('Failed to refresh real-time snapshot: ' + message, '#b91c1c');
+            setInventoryStatus('Failed to refresh inventory: ' + message, '#b91c1c');
             return;
           }
           if (data?.status === 'skipped') {
@@ -5211,140 +5108,6 @@
         <td class="text-right"><strong>${totalSales30d}</strong></td>
       `;
       footEl.appendChild(footerRow);
-    }
-
-    function downloadVendorInventorySnapshotCsv() {
-      if (!vendorInventorySnapshot || vendorInventorySnapshot.length === 0) {
-        alert('No inventory data to download.');
-        return;
-      }
-
-      // Reuse the same filtering logic as renderVendorInventoryTable()
-      let rows = vendorInventorySnapshot || [];
-      rows = dedupeInventoryRowsByAsin(rows);
-      if (currentInventorySubtab === 'aged') {
-        rows = rows.filter((r) => {
-          const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
-          return aged > 0;
-        });
-      } else if (currentInventorySubtab === 'unhealthy') {
-        rows = rows.filter((r) => {
-          const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
-          return unhealthy > 0;
-        });
-      }
-
-      const resolveSellable = (row) => {
-        const candidates = [
-          row.sellable,
-          row.sellable_onhand_units,
-          row.sellableOnHandInventoryUnits,
-        ];
-        for (const value of candidates) {
-          if (value !== undefined && value !== null) {
-            const num = Number(value);
-            if (!Number.isNaN(num)) {
-              return num;
-            }
-          }
-        }
-        return 0;
-      };
-
-      const header = [
-        'ASIN',
-        'Title',
-        'SellableUnits',
-        'sales_30d',
-      ];
-
-      const lines = [];
-      lines.push(header.join(','));
-
-      rows.forEach((r) => {
-        const asin = r.asin || '';
-        const title = getInventoryDisplayTitle(r).replace(/"/g, '""');
-
-        const sellable = resolveSellable(r);
-        const sales30dValue = getSales30dValue(r);
-        const row = [
-          asin,
-          `"${title}"`,
-          sellable,
-          sales30dValue,
-        ];
-
-        lines.push(row.join(','));
-      });
-
-      const csv = lines.join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = url;
-      const meta = vendorInventoryMeta || realtimeInventoryMeta || {};
-      const refreshMeta = meta.refresh || {};
-      const pickWindowValue = (start, end) => start || end;
-      const windowStartRaw =
-        meta.window_start_uae ||
-        meta.window_start_local ||
-        meta.window_start_utc ||
-        meta.report_window_start_utc ||
-        meta.window_start ||
-        refreshMeta.window_start_uae ||
-        refreshMeta.window_start_local ||
-        refreshMeta.window_start_utc ||
-        refreshMeta.report_window_start_utc ||
-        refreshMeta.window_start;
-      const windowEndRaw =
-        meta.window_end_uae ||
-        meta.window_end_local ||
-        meta.window_end_utc ||
-        meta.report_window_end_utc ||
-        meta.window_end ||
-        refreshMeta.window_end_uae ||
-        refreshMeta.window_end_local ||
-        refreshMeta.window_end_utc ||
-        refreshMeta.report_window_end_utc ||
-        refreshMeta.window_end;
-      const asOfRaw =
-        meta.as_of_uae ||
-        meta.as_of ||
-        meta.generated_at ||
-        refreshMeta.as_of_uae ||
-        refreshMeta.as_of ||
-        refreshMeta.generated_at ||
-        null;
-
-      const formatTimestampForFilename = (value) => {
-        if (!value) return null;
-        const date = new Date(value);
-        if (!Number.isNaN(date.getTime())) {
-          const pad = (n) => String(n).padStart(2, '0');
-          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}`;
-        }
-        return String(value).replace(/[^0-9A-Za-z_-]/g, '');
-      };
-
-      const startLabel = formatTimestampForFilename(windowStartRaw);
-      const endLabel = formatTimestampForFilename(windowEndRaw);
-      const asOfLabel = formatTimestampForFilename(asOfRaw);
-
-      if (startLabel && endLabel) {
-        a.download = `Inventory_Realtime_${startLabel}-${endLabel}.csv`;
-      } else if (asOfLabel) {
-        a.download = `Inventory_AsOf_${asOfLabel}.csv`;
-      } else {
-        const fallback = pickWindowValue(windowStartRaw, windowEndRaw) || asOfRaw;
-        const fallbackLabel = formatTimestampForFilename(fallback);
-        a.download = fallbackLabel ? `Inventory_${fallbackLabel}.csv` : 'vendor_inventory_snapshot.csv';
-      }
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     }
 
     document.getElementById("sync-btn").addEventListener("click", () => loadPOs(true));
@@ -5953,6 +5716,7 @@
         { id: "tab-vrt-trends", tab: "vrt-trends" },
         { id: "tab-vrt-audit", tab: "vrt-audit" },
         { id: "inventory-tab", tab: "inventory" },
+        { id: "df-payments-tab", tab: "df-payments" },
       ];
       panels.forEach(({ id, tab }) => {
         const panelEl = document.getElementById(id);
@@ -5982,6 +5746,14 @@
       if (tabName === "vrt-audit") {
         refreshAuditCalendar();
       }
+      if (tabName === "df-payments") {
+        if (typeof initDfPaymentsTab === "function") {
+          initDfPaymentsTab();
+        }
+        if (typeof loadDfPaymentsState === "function") {
+          loadDfPaymentsState();
+        }
+      }
       if (tabName === "pos") {
         refreshVendorPoStatus();
       }
@@ -5994,7 +5766,7 @@
         return;
       }
       updateInventoryFreshnessUi(vendorInventoryMeta);
-      if (inventoryMode === 'realtime' && Date.now() - lastRealtimeFetchAt > INVENTORY_FETCH_DEBOUNCE_MS) {
+      if (Date.now() - lastRealtimeFetchAt > INVENTORY_FETCH_DEBOUNCE_MS) {
         fetchRealtimeInventorySnapshot({ silent: true });
       }
     }
@@ -6030,10 +5802,12 @@
           <div class="worker-card" id="workers-section-inventory"></div>
           <div class="worker-card" id="workers-section-rt-sales"></div>
           <div class="worker-card" id="workers-section-vendor-po"></div>
+          <div class="worker-card" id="workers-section-df-payments"></div>
         </div>
       </div>
     </div>
   </div>
+  <script src="/ui/js/df_payments.js"></script>
   <script src="/ui/js/workers_status.js"></script>
   <div class="backdrop" id="printer-settings-modal" style="display:none;">
     <div class="modal" style="max-width:720px;">
