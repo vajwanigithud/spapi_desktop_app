@@ -46,6 +46,18 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     return dt
 
 
+def _fmt_iso_utc(value: Optional[Any]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = _parse_iso_datetime(str(value))
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -89,6 +101,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     details: Optional[str] = None
     cooldown_until_dt: Optional[datetime] = None
     last_run_iso: Optional[str] = None
+    last_run_dt: Optional[datetime] = None
     refresh_meta: Dict[str, Any] = {}
 
     try:
@@ -101,6 +114,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     last_refresh_dt = _parse_iso_datetime(last_refresh_raw) if last_refresh_raw else None
     if last_refresh_dt:
+        last_run_dt = last_refresh_dt
         last_run_iso = last_refresh_dt.isoformat()
         cooldown_until_dt = last_refresh_dt + timedelta(hours=getattr(rt_inventory, "COOLDOWN_HOURS", 1))
         if cooldown_until_dt > now_utc:
@@ -119,6 +133,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     if refresh_last_finished:
         last_run_iso = refresh_last_finished
+        last_run_dt = _parse_iso_datetime(refresh_last_finished) or last_run_dt
 
     if refresh_status == "FAILED":
         status = "error"
@@ -137,12 +152,16 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "name": "Realtime Inventory Refresh",
             "status": status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
+            "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
             "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else None,
+            "next_run_utc": _fmt_iso_utc(cooldown_until_dt if status == "cooldown" else None),
             "details": details,
+            "message": details,
             "expected_interval_minutes": None,
             "grace_minutes": None,
             "overdue_by_minutes": 0,
             "what": "Fetches Amazon RT inventory and stores snapshot",
+            "mode": "auto",
         }
     )
 
@@ -156,12 +175,16 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "name": "Inventory Materializer",
             "status": materializer_status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
+            "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
             "next_eligible_at_uae": None,
+            "next_run_utc": None,
             "details": materializer_details,
+            "message": materializer_details,
             "expected_interval_minutes": None,
             "grace_minutes": None,
             "overdue_by_minutes": 0,
             "what": "Writes inventory snapshot into SQLite safely",
+            "mode": "auto",
         }
     )
 
@@ -250,12 +273,16 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "name": "RT Sales Sync",
             "status": status,
             "last_run_at_uae": last_run_display,
+            "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
+            "next_run_utc": _fmt_iso_utc(next_eligible_dt),
             "details": details,
+            "message": details,
             "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
             "grace_minutes": RT_SALES_GRACE_MINUTES,
             "overdue_by_minutes": overdue_by_minutes,
             "what": "Ingests real-time sales and maintains hourly ledger",
+            "mode": "auto",
         }
     )
 
@@ -277,12 +304,16 @@ def _vendor_po_domain() -> Dict[str, Any]:
             "name": "Vendor PO Sync",
             "status": "ok",
             "last_run_at_uae": _fmt_uae(last_success),
+            "last_run_utc": _fmt_iso_utc(last_success),
             "next_eligible_at_uae": None,
+            "next_run_utc": None,
             "details": "Manual / on-demand",
+            "message": "Manual / on-demand",
             "expected_interval_minutes": None,
             "grace_minutes": None,
             "overdue_by_minutes": 0,
             "what": "Refreshes Vendor POs when run manually",
+            "mode": "manual",
         }
     )
 
@@ -294,6 +325,7 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
     status = "ok"
     details: Optional[str] = None
     next_eligible_dt: Optional[datetime] = None
+    auto_enabled = False
 
     try:
         meta = get_df_payments_worker_metadata(marketplace_id)
@@ -317,6 +349,7 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
         details = meta.get("incremental_worker_details") or meta.get("incremental_wait_reason") or details
         status = meta.get("incremental_worker_status") or status
         last_success = meta.get("incremental_last_success_at_utc")
+        auto_enabled = bool(meta.get("incremental_auto_enabled"))
 
     last_finished_dt = _parse_iso_datetime(last_finished)
     last_started_dt = _parse_iso_datetime(last_started)
@@ -333,9 +366,13 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
             "name": "DF Payments Incremental Scan",
             "status": status,
             "last_run_at_uae": last_run_display,
+            "last_run_utc": _fmt_iso_utc(last_success_dt or last_finished_dt or last_finished or last_started_dt),
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt) if next_eligible_dt else None,
+            "next_run_utc": _fmt_iso_utc(next_eligible_dt) if next_eligible_dt else None,
             "details": details,
+            "message": details,
             "what": "Incrementally fetches new DF orders since last successful scan (10-min cadence)",
+            "mode": "auto" if auto_enabled else "manual",
         }
     )
 
@@ -368,24 +405,32 @@ def get_worker_status() -> Dict[str, Any]:
                     "name": "Realtime Inventory Refresh",
                     "status": "error",
                     "last_run_at_uae": None,
+                    "last_run_utc": None,
                     "next_eligible_at_uae": None,
+                    "next_run_utc": None,
                     "details": str(exc),
+                    "message": str(exc),
                     "expected_interval_minutes": None,
                     "grace_minutes": None,
                     "overdue_by_minutes": 0,
                     "what": "Fetches Amazon RT inventory and stores snapshot",
+                    "mode": "auto",
                 },
                 {
                     "key": "inventory_materializer",
                     "name": "Inventory Materializer",
                     "status": "error",
                     "last_run_at_uae": None,
+                    "last_run_utc": None,
                     "next_eligible_at_uae": None,
+                    "next_run_utc": None,
                     "details": str(exc),
+                    "message": str(exc),
                     "expected_interval_minutes": None,
                     "grace_minutes": None,
                     "overdue_by_minutes": 0,
                     "what": "Writes inventory snapshot into SQLite safely",
+                    "mode": "auto",
                 },
             ],
         }
@@ -401,12 +446,16 @@ def get_worker_status() -> Dict[str, Any]:
                     "name": "RT Sales Sync",
                     "status": "error",
                     "last_run_at_uae": None,
+                    "last_run_utc": None,
                     "next_eligible_at_uae": None,
+                    "next_run_utc": None,
                     "details": str(exc),
+                    "message": str(exc),
                     "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
                     "grace_minutes": RT_SALES_GRACE_MINUTES,
                     "overdue_by_minutes": 0,
                     "what": "Ingests real-time sales and maintains hourly ledger",
+                    "mode": "auto",
                 }
             ],
         }
@@ -422,12 +471,16 @@ def get_worker_status() -> Dict[str, Any]:
                     "name": "Vendor PO Sync",
                     "status": "error",
                     "last_run_at_uae": None,
+                    "last_run_utc": None,
                     "next_eligible_at_uae": None,
+                    "next_run_utc": None,
                     "details": str(exc),
+                    "message": str(exc),
                     "expected_interval_minutes": None,
                     "grace_minutes": None,
                     "overdue_by_minutes": 0,
                     "what": "Refreshes Vendor POs when run manually",
+                    "mode": "manual",
                 }
             ],
         }
@@ -443,9 +496,13 @@ def get_worker_status() -> Dict[str, Any]:
                     "name": "DF Payments Incremental Scan",
                     "status": "error",
                     "last_run_at_uae": None,
+                    "last_run_utc": None,
                     "next_eligible_at_uae": None,
+                    "next_run_utc": None,
                     "details": str(exc),
+                    "message": str(exc),
                     "what": "Fetches new DF orders (10m cooldown, DB-first)",
+                    "mode": "auto",
                 }
             ],
         }
