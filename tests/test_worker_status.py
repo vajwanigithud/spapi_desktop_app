@@ -24,20 +24,24 @@ def _stub_worker_status_dependencies(
     cooldown: bool = False,
     cooldown_until_iso: str | None = None,
     lock_row: dict | None = None,
+    inventory_last_refresh_iso: str | None = "2025-12-21T15:00:00Z",
+    inventory_refresh_status: str = "SUCCESS",
+    inventory_last_error: str | None = None,
+    inventory_in_progress: bool = False,
 ) -> None:
     monkeypatch.setattr(routes, "_utcnow", lambda: now_utc)
     monkeypatch.setattr(routes, "get_db_connection", lambda: contextlib.nullcontext(None))
     monkeypatch.setattr(routes, "ensure_app_kv_table", lambda: None)
     monkeypatch.setattr(rt_inventory, "COOLDOWN_HOURS", 1, raising=False)
-    monkeypatch.setattr(routes, "get_app_kv", lambda *_args, **_kwargs: "2025-12-21T15:00:00Z")
+    monkeypatch.setattr(routes, "get_app_kv", lambda *_args, **_kwargs: inventory_last_refresh_iso)
     monkeypatch.setattr(
         routes,
         "get_refresh_metadata",
         lambda *_args, **_kwargs: {
-            "last_refresh_finished_at": "2025-12-21T15:00:00Z",
-            "last_refresh_status": "SUCCESS",
-            "last_error": None,
-            "in_progress": False,
+            "last_refresh_finished_at": inventory_last_refresh_iso,
+            "last_refresh_status": inventory_refresh_status,
+            "last_error": inventory_last_error,
+            "in_progress": inventory_in_progress,
         },
     )
     monkeypatch.setattr(
@@ -158,6 +162,55 @@ def test_rt_sales_cooldown_not_error(monkeypatch):
     assert worker["next_run_utc"] is not None
     assert data["summary"]["error_count"] == 0
     assert data["summary"]["overall"] == "ok"
+
+
+def test_inventory_cooldown_marked_waiting(monkeypatch):
+    now_utc = datetime(2025, 12, 21, 15, 5, tzinfo=timezone.utc)
+    _stub_worker_status_dependencies(
+        monkeypatch,
+        now_utc=now_utc,
+        last_applied_iso="2025-12-21T15:00:00+00:00",
+    )
+
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/workers/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    assert worker["status"] == "waiting"
+    assert worker["next_run_utc"] is not None
+    assert "cooldown" in (worker["message"] or "").lower()
+    assert data["summary"]["error_count"] == 0
+    assert data["summary"]["overall"] == "ok"
+
+
+def test_inventory_error_shows_reason(monkeypatch):
+    now_utc = datetime(2025, 12, 21, 15, 5, tzinfo=timezone.utc)
+    error_reason = "API failure"
+    _stub_worker_status_dependencies(
+        monkeypatch,
+        now_utc=now_utc,
+        last_applied_iso="2025-12-21T15:00:00+00:00",
+        inventory_refresh_status="FAILED",
+        inventory_last_error=error_reason,
+    )
+
+    app = _build_app()
+    client = TestClient(app)
+
+    resp = client.get("/api/workers/status")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    assert worker["status"] == "error"
+    assert worker["message"] == error_reason
+    assert worker["next_run_utc"] is not None
+    assert data["summary"]["error_count"] >= 1
+    assert data["summary"]["overall"] == "error"
 
 
 def test_overall_prioritizes_error(monkeypatch):
