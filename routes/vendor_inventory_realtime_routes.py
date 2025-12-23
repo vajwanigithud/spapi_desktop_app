@@ -18,6 +18,7 @@ from services.vendor_inventory_realtime import (
     DEFAULT_LOOKBACK_HOURS,
     decorate_items_with_sales,
     get_cached_realtime_inventory_snapshot,
+    load_accumulated_inventory,
     load_sales_30d_map,
     refresh_realtime_inventory_snapshot,
 )
@@ -164,7 +165,7 @@ def _format_snapshot_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(item, dict) and item.get("image_url") and not item.get("imageUrl"):
             item["imageUrl"] = item.get("image_url")
     attach_image_urls(items)
-    refresh_meta = snapshot.get("refresh") or {}
+    refresh_meta = dict(snapshot.get("refresh") or {})
     refresh_in_progress = bool(refresh_meta.get("in_progress"))
     computed = _compute_as_of_fields(snapshot)
     status = snapshot.get("status")
@@ -274,19 +275,11 @@ def _refresh_snapshot_payload() -> Dict[str, Any]:
         sync_callable=_refresh_singleflight_callable,
     )
 
-    snapshot = get_cached_realtime_inventory_snapshot()
-    snapshot.setdefault("marketplace_id", marketplace_id)
-
-    refresh_meta = result.get("refresh") or {}
-    snapshot["refresh"] = refresh_meta
-    if result.get("status"):
-        snapshot["status"] = result["status"]
-    if result.get("source"):
-        snapshot["source"] = result["source"]
-    if result.get("status") == "fresh_skipped":
-        snapshot["refresh_skipped"] = True
-
-    return _format_snapshot_response(snapshot)
+    payload = load_accumulated_inventory(marketplace_id)
+    payload["status"] = result.get("status") or "ok"
+    payload["refresh"] = result.get("refresh") or {}
+    payload["source"] = result.get("source") or "accumulator"
+    return payload
 
 
 @router.get("/snapshot")
@@ -295,6 +288,12 @@ def get_realtime_inventory_snapshot() -> Dict[str, Any]:
     Return the cached GET_VENDOR_REAL_TIME_INVENTORY_REPORT snapshot + freshness metadata.
     """
     return _build_snapshot_payload()
+
+
+@router.get("/accumulated")
+def get_accumulated_inventory() -> Dict[str, Any]:
+    """Return accumulated vendor_inventory_asin rows (no deletes)."""
+    return load_accumulated_inventory(DEFAULT_MARKETPLACE_ID)
 
 
 @router.get(

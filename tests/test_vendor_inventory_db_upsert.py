@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 from services import db as db_service
 from services.db import (
     ensure_vendor_inventory_table,
@@ -11,7 +9,6 @@ from services.db import (
     get_vendor_inventory_snapshot,
     replace_vendor_inventory_snapshot,
 )
-
 
 os.environ.setdefault("LWA_CLIENT_ID", "dummy")
 os.environ.setdefault("LWA_CLIENT_SECRET", "dummy")
@@ -80,3 +77,43 @@ def test_upsert_preserves_existing_asins(tmp_path, monkeypatch):
     assert data_by_asin["ASIN-A"]["end_date"] == updated_end
     assert data_by_asin["ASIN-B"]["sellable_onhand_units"] == 2
     assert data_by_asin["ASIN-B"]["start_date"] == start_b
+
+
+def test_partial_payload_accumulates_asins(tmp_path, monkeypatch):
+    db_path = tmp_path / "inventory.db"
+    monkeypatch.setattr(db_service, "CATALOG_DB_PATH", db_path)
+    ensure_vendor_inventory_table()
+
+    marketplace_id = "TEST-MKT"
+    now = "2024-03-01T00:00:00Z"
+
+    initial_rows = [
+        _inventory_row(marketplace_id, "ASIN-A", 5, now, now, now),
+        _inventory_row(marketplace_id, "ASIN-B", 2, now, now, now),
+    ]
+
+    with get_db_connection() as conn:
+        replace_vendor_inventory_snapshot(conn, marketplace_id, initial_rows)
+        first = get_vendor_inventory_snapshot(conn, marketplace_id)
+
+    assert len(first) == 2
+
+    # Second payload omits ASIN-A and introduces ASIN-C (partial/windowed report)
+    later = "2024-03-02T00:00:00Z"
+    second_rows = [
+        _inventory_row(marketplace_id, "ASIN-B", 7, later, later, later),
+        _inventory_row(marketplace_id, "ASIN-C", 3, later, later, later),
+    ]
+
+    with get_db_connection() as conn:
+        replace_vendor_inventory_snapshot(conn, marketplace_id, second_rows)
+        final = get_vendor_inventory_snapshot(conn, marketplace_id)
+
+    asins = {row["asin"] for row in final}
+    assert asins == {"ASIN-A", "ASIN-B", "ASIN-C"}
+    # Count is monotonic non-decreasing
+    assert len(final) >= len(first)
+    # ASIN-B quantity updated, ASIN-A retained
+    by_asin = {row["asin"]: row for row in final}
+    assert by_asin["ASIN-B"]["sellable_onhand_units"] == 7
+    assert by_asin["ASIN-A"]["sellable_onhand_units"] == 5

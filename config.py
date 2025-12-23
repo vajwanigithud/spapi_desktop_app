@@ -1,4 +1,19 @@
-﻿import os
+﻿import logging
+import os
+from pathlib import Path
+
+# Load .env early so os.getenv picks up local dev secrets.
+try:  # pragma: no cover - environment bootstrap
+    from dotenv import load_dotenv
+
+    _DOTENV_PATHS = [Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"]
+    for _env_path in _DOTENV_PATHS:
+        if _env_path.exists():
+            load_dotenv(dotenv_path=_env_path, override=False)
+except ImportError:  # python-dotenv optional in some deployments
+    logging.getLogger(__name__).debug("python-dotenv not installed; skipping .env load")
+except Exception as exc:  # Defensive: never crash on dotenv load issues
+    logging.getLogger(__name__).warning("Failed to load .env: %s", exc)
 
 APP_NAME = "Amazon SP-API Desktop App"
 APP_VERSION = "1.0.0"
