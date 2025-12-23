@@ -310,7 +310,12 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
+<<<<<<< HEAD
+        # Start realtime inventory auto-refresh loop (single-flight + cooldown inside)
+        start_vendor_rt_inventory_auto_refresh()
+=======
         start_df_payments_incremental_scheduler()
+>>>>>>> origin/main
         logger.info("[Startup] Background tasks initialized successfully")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
@@ -622,6 +627,12 @@ except Exception as e:
 VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES = 15  # Now 15 minutes instead of 60
 _rt_sales_auto_sync_thread = None
 _rt_sales_auto_sync_stop = False
+
+# Vendor RT Inventory auto-refresh (realtime inventory snapshot)
+VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED", "false").lower() != "false"
+VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES = int(os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES", "60"))
+_rt_inventory_auto_refresh_thread = None
+_rt_inventory_auto_refresh_stop = False
 
 
 def start_vendor_rt_sales_startup_backfill_thread():
@@ -954,6 +965,87 @@ def start_vendor_rt_sales_auto_sync():
     )
     _rt_sales_auto_sync_thread.start()
     logger.info("[RTSalesAutoSync] Background thread started")
+
+
+# ========================================
+# Vendor Real-Time Inventory Auto-Refresh
+# ========================================
+
+
+def _rt_inventory_sleep(interval_seconds: int) -> None:
+    """Sleep in small chunks so the stop flag can be checked frequently."""
+    chunk = 5
+    slept = 0
+    while not _rt_inventory_auto_refresh_stop and slept < interval_seconds:
+        remaining = interval_seconds - slept
+        time.sleep(chunk if remaining > chunk else remaining)
+        slept += chunk if remaining > chunk else remaining
+
+
+def vendor_rt_inventory_auto_refresh_loop():
+    """Background loop to refresh realtime inventory roughly hourly."""
+    global _rt_inventory_auto_refresh_stop
+
+    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[RtInventoryAutoRefresh] Disabled via config; loop will not run")
+        return
+
+    interval_seconds = max(60, VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES * 60)
+    marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
+    marketplace_id = marketplace_ids[0]
+
+    logger.info(
+        "[RtInventoryAutoRefresh] Started for %s; interval=%s minutes",
+        marketplace_id,
+        VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES,
+    )
+
+    while not _rt_inventory_auto_refresh_stop:
+        try:
+            from services.vendor_inventory_realtime import (
+                DEFAULT_LOOKBACK_HOURS,
+                refresh_realtime_inventory_snapshot,
+            )
+            from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
+
+            result = refresh_vendor_rt_inventory_singleflight(
+                marketplace_id,
+                hours=DEFAULT_LOOKBACK_HOURS,
+                sync_callable=lambda mp_id, **_kwargs: refresh_realtime_inventory_snapshot(
+                    mp_id,
+                    lookback_hours=DEFAULT_LOOKBACK_HOURS,
+                ),
+            )
+            status = result.get("status")
+            logger.info("[RtInventoryAutoRefresh] Cycle complete status=%s", status)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("[RtInventoryAutoRefresh] Cycle failed: %s", exc, exc_info=True)
+
+        _rt_inventory_sleep(interval_seconds)
+
+
+def start_vendor_rt_inventory_auto_refresh():
+    """Start the vendor realtime inventory auto-refresh thread."""
+    global _rt_inventory_auto_refresh_thread, _rt_inventory_auto_refresh_stop
+
+    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[RtInventoryAutoRefresh] Disabled via config; not starting thread")
+        return
+
+    if _rt_inventory_auto_refresh_thread is not None and _rt_inventory_auto_refresh_thread.is_alive():
+        logger.warning("[RtInventoryAutoRefresh] Already running; skipping duplicate start")
+        return
+
+    _rt_inventory_auto_refresh_stop = False
+    import threading
+
+    _rt_inventory_auto_refresh_thread = threading.Thread(
+        target=vendor_rt_inventory_auto_refresh_loop,
+        daemon=True,
+        name="VendorRtInventoryAutoRefresh",
+    )
+    _rt_inventory_auto_refresh_thread.start()
+    logger.info("[RtInventoryAutoRefresh] Background thread started")
 
 
 

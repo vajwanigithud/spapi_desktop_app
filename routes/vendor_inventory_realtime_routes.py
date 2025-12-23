@@ -99,8 +99,6 @@ def _decorate_snapshot_items(snapshot: Dict[str, Any]) -> None:
             item["title"] = meta["title"]
         if not item.get("image_url") and meta.get("image_url"):
             item["image_url"] = meta["image_url"]
-        if item.get("sales_30d") is None:
-            item["sales_30d"] = sales_map.get(asin) or 0
     snapshot["items"] = items
 
 
