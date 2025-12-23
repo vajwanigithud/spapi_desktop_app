@@ -17,14 +17,10 @@ from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
-<<<<<<< HEAD
 RT_SALES_EXPECTED_INTERVAL_MINUTES = 15
 RT_SALES_GRACE_MINUTES = 5
 WAITING_STATUSES = {"cooldown", "locked", "waiting"}
 OVERDUE_STATUSES = {"overdue"}
-=======
-WAITING_STATUSES = {"cooldown", "locked", "waiting"}
->>>>>>> origin/main
 MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
@@ -235,7 +231,6 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         status = "error"
         details = "Failed ledger hours present"
 
-<<<<<<< HEAD
     overdue_by_minutes = 0
     overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, RT_SALES_GRACE_MINUTES)
     if status not in {"error", "cooldown", "locked"} and overdue_status:
@@ -243,12 +238,10 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         overdue_by_minutes = overdue_delta
         if overdue_by_minutes and not details:
             details = f"Overdue by {overdue_by_minutes} minutes"
-=======
+
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
-    last_run_dt = _parse_iso_datetime(last_run_iso) if last_run_iso else None
     if not next_eligible_dt and last_run_dt:
-        next_eligible_dt = last_run_dt + timedelta(minutes=15)
->>>>>>> origin/main
+        next_eligible_dt = last_run_dt + timedelta(minutes=RT_SALES_EXPECTED_INTERVAL_MINUTES)
 
     last_run_display = _fmt_uae(last_run_dt or last_run_iso)
     workers.append(
@@ -256,11 +249,7 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "key": "rt_sales_sync",
             "name": "RT Sales Sync",
             "status": status,
-<<<<<<< HEAD
-            "last_run_at_uae": _fmt_uae(last_run_dt),
-=======
             "last_run_at_uae": last_run_display,
->>>>>>> origin/main
             "next_eligible_at_uae": _fmt_uae(next_eligible_dt),
             "details": details,
             "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,

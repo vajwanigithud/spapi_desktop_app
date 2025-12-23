@@ -310,12 +310,9 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
-<<<<<<< HEAD
         # Start realtime inventory auto-refresh loop (single-flight + cooldown inside)
         start_vendor_rt_inventory_auto_refresh()
-=======
         start_df_payments_incremental_scheduler()
->>>>>>> origin/main
         logger.info("[Startup] Background tasks initialized successfully")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")

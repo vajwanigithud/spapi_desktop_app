@@ -97,14 +97,12 @@
     .worker-meta { font-size:12px; color:var(--muted); text-align:right; }
     .worker-what { font-size:12px; color:var(--muted); margin-top:2px; }
     .worker-details { font-size:12px; color:#b45309; margin-top:4px; }
-<<<<<<< HEAD
     .worker-status-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; margin-left:6px; }
     .worker-status-ok { background:#dcfce7; color:#166534; }
     .worker-status-waiting { background:#e5e7eb; color:#1d4ed8; }
     .worker-status-locked, .worker-status-cooldown { background:#e0f2fe; color:#0369a1; }
     .worker-status-overdue { background:#fef3c7; color:#b45309; }
     .worker-status-error { background:#fee2e2; color:#b91c1c; }
-=======
     /* DF Payments */
     #df-payments-tab table { font-size:13px; }
     .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
@@ -118,7 +116,19 @@
     .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
     .dfp-table-wrap { padding:12px; overflow:auto; }
     .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
->>>>>>> origin/main
+    /* DF Payments */
+    #df-payments-tab table { font-size:13px; }
+    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
+    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
+    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-mini-table { width:100%; border-collapse: collapse; }
+    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
+    .dfp-table-wrap { padding:12px; overflow:auto; }
+    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
     /* modal */
     .backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:20; }
     .modal { background:#fff; width:90%; max-width:1100px; max-height:85vh; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
@@ -1167,7 +1177,6 @@
     <h2>Real-Time Inventory</h2>
     <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
       <div class="inventory-mode-toggle">
-<<<<<<< HEAD
         <div style="display:flex; flex-direction:column; gap:4px;">
           <span id="inv-week-label" class="muted-text"></span>
           <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
@@ -1176,13 +1185,6 @@
           </div>
           <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
             Shows ASINs included in Amazon's Real-Time Inventory report window. This report is partial by design and may not include all catalog ASINs.
-=======
-          <div style="display:flex; flex-direction:column; gap:4px;">
-            <span id="inv-week-label" class="muted-text">Accumulated Inventory | Loaded 0 ASINs</span>
-            <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
-              Accumulator model: ASINs never auto-delete; counts only grow.
-            </div>
->>>>>>> origin/main
           </div>
         </div>
 
@@ -1266,7 +1268,6 @@
     </div>
   </div>
 
-<<<<<<< HEAD
   <!-- Inventory coverage explainer modal -->
   <div class="backdrop" id="inventory-coverage-modal" style="display:none;">
     <div class="modal" style="max-width:720px;">
@@ -1277,8 +1278,6 @@
       <div class="modal-body" id="inventory-coverage-body"></div>
     </div>
   </div>
-=======
->>>>>>> origin/main
 
   <div id="catalog-context-menu">
     <button class="danger" onclick="handleCatalogContextDelete()">Delete from Catalog List</button>
@@ -4522,21 +4521,18 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
-<<<<<<< HEAD
       const coverageEl = document.getElementById('inv-coverage-label');
       const coverageWhyEl = document.getElementById('inv-coverage-why');
-=======
->>>>>>> origin/main
       if (!labelEl) return;
       const metaSafe = vendorInventoryMeta || meta || {};
       const count = Array.isArray(vendorInventorySnapshot) ? vendorInventorySnapshot.length : 0;
-      const asOfLabel = formatInventoryAsOf({
-<<<<<<< HEAD
-        as_of: realtimeMeta.as_of || realtimeMeta.generated_at,
-        as_of_uae: realtimeMeta.as_of_uae,
-      });
-      const coverageLabel = realtimeMeta.coverage_label;
-      const scopeExplanation = realtimeMeta.inventory_scope_explanation;
+      const asOfLabel =
+        formatInventoryAsOf({
+          as_of: metaSafe.as_of || metaSafe.generated_at || metaSafe.as_of_utc,
+          as_of_uae: metaSafe.as_of_uae,
+        }) || metaSafe.as_of_utc || '—';
+      const coverageLabel = metaSafe.coverage_label;
+      const scopeExplanation = metaSafe.inventory_scope_explanation;
       if (coverageEl) {
         if (coverageLabel) {
           const parts = [coverageLabel];
@@ -4552,6 +4548,21 @@
           if (coverageWhyEl) coverageWhyEl.style.display = 'none';
         }
       }
+      const windowStart =
+        metaSafe.window_start_uae ||
+        metaSafe.report_window_start_uae ||
+        metaSafe.window_start_local ||
+        metaSafe.window_start_utc ||
+        metaSafe.report_window_start_utc ||
+        metaSafe.window_start;
+      const windowEnd =
+        metaSafe.window_end_uae ||
+        metaSafe.report_window_end_uae ||
+        metaSafe.window_end_local ||
+        metaSafe.window_end_utc ||
+        metaSafe.report_window_end_utc ||
+        metaSafe.window_end;
+
       let labelParts = [`Real-Time | Loaded ${count} ASINs`];
       if (windowStart || windowEnd) {
         const windowSegments = [];
@@ -4563,12 +4574,6 @@
         labelParts.push(`As of ${asOfLabel}`);
       }
       labelEl.textContent = labelParts.join(' | ');
-=======
-        as_of: metaSafe.as_of_utc || metaSafe.as_of,
-        as_of_uae: metaSafe.as_of_uae,
-      }) || metaSafe.as_of_utc || '—';
-      labelEl.textContent = `Accumulated Inventory | Loaded ${count} ASINs | As of ${asOfLabel}`;
->>>>>>> origin/main
     }
 
     function updateInventoryModeButtons() {
@@ -4649,7 +4654,6 @@
       }
     }
 
-<<<<<<< HEAD
     function openInventoryCoverageModal() {
       const modal = document.getElementById('inventory-coverage-modal');
       const body = document.getElementById('inventory-coverage-body');
@@ -4722,8 +4726,6 @@
       const modal = document.getElementById('inventory-coverage-modal');
       if (modal) modal.style.display = 'none';
     }
-=======
->>>>>>> origin/main
 
     function loadInventorySnapshotIfNeeded(forceReload = false) {
       if (!forceReload && vendorInventorySnapshot.length > 0) {
