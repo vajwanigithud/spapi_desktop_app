@@ -5972,11 +5972,7 @@
           status.textContent = data.reason || "Localhost only";
           return;
         }
-        const isEnabled = !!data.enabled;
-        toggle.checked = isEnabled;
-        btn.disabled = !isEnabled;
-        status.style.color = isEnabled ? "#059669" : "#6b7280";
-        status.textContent = isEnabled ? "Restart enabled (localhost only)" : "Disabled. Toggle to enable.";
+        await refreshDevRestartAvailability();
       } catch (err) {
         status.style.color = "#b91c1c";
         status.textContent = `Failed to save: ${err.message}`;
