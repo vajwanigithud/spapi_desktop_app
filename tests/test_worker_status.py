@@ -129,6 +129,7 @@ def test_rt_sales_worker_marks_overdue(monkeypatch):
     assert worker["overdue_by_minutes"] > 0
     assert worker["expected_interval_minutes"] == routes.RT_SALES_EXPECTED_INTERVAL_MINUTES
     assert worker["grace_minutes"] == routes.RT_SALES_GRACE_MINUTES
+    assert worker.get("overdue_reason") == "missed next eligible time"
     assert data["summary"]["overall"] == "overdue"
 
 
@@ -150,6 +151,7 @@ def test_rt_sales_worker_waiting_before_next(monkeypatch):
     worker = next(w for w in data["domains"]["rt_sales"]["workers"] if w["key"] == "rt_sales_sync")
     assert worker["status"] == "waiting"
     assert worker["overdue_by_minutes"] == 0
+    assert worker.get("overdue_reason") is None
     assert data["summary"]["overall"] == "ok"
 
 
@@ -175,6 +177,7 @@ def test_rt_sales_cooldown_not_error(monkeypatch):
     assert worker["status"] == "cooldown"
     assert worker["message"].startswith("Cooldown until")
     assert worker["next_run_utc"] is not None
+    assert worker.get("overdue_reason") is None
     assert data["summary"]["error_count"] == 0
     assert data["summary"]["overall"] == "ok"
 
@@ -298,4 +301,5 @@ def test_missing_schedule_marks_error(monkeypatch):
     worker = next(w for w in data["domains"]["rt_sales"]["workers"] if w["key"] == "rt_sales_sync")
     assert worker["status"] == "error"
     assert "schedule" in (worker["message"] or "").lower()
+    assert worker.get("overdue_reason") is None
     assert data["summary"]["overall"] == "error"
