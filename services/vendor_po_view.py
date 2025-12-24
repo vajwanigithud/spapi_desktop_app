@@ -1,8 +1,17 @@
 # DB-FIRST: SQLite is the single source of truth.
 # JSON files are debug/export only and must not be used for live state.
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
+
+CANCELLED_STATUSES = {
+    "CANCELLED",
+    "CANCELED",
+    "CLOSED_CANCELLED",
+    "CLOSED-CANCELLED",
+    "CLOSED_CANCELED",
+    "CLOSED-CANCELED",
+}
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -22,6 +31,27 @@ def _pick_first_int(*values: Any) -> Optional[int]:
         if parsed is not None:
             return parsed
     return None
+
+
+def _normalize_status(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().upper()
+
+
+def _extract_amazon_status(header: Dict[str, Any]) -> str:
+    return _normalize_status(
+        header.get("purchaseOrderState")
+        or header.get("purchase_order_state")
+        or header.get("amazonStatus")
+        or header.get("amazon_status")
+    )
+
+
+def _is_explicit_cancel(status_value: str) -> bool:
+    if not status_value:
+        return False
+    return status_value in CANCELLED_STATUSES
 
 
 def compute_po_status(header: Dict[str, Any], totals: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
@@ -60,6 +90,61 @@ def compute_po_status(header: Dict[str, Any], totals: Optional[Dict[str, Any]] =
 
     if accepted_header is not None and accepted_header == 0:
         return "CANCELLED", "accepted_zero"
+
+    if pending is not None:
+        remaining = max(0, pending)
+        if remaining > 0:
+            return "OPEN", "remaining_positive"
+        return "CLOSED", "remaining_zero"
+
+    base = accepted if accepted is not None else ordered
+    if base is None:
+        return "CLOSED", "remaining_zero"
+
+    remaining = max(0, base - received - cancelled)
+    if remaining > 0:
+        return "OPEN", "remaining_positive"
+    return "CLOSED", "remaining_zero"
+
+
+def compute_table_po_status(header: Dict[str, Any], totals: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """
+    Table-only status: require explicit cancel signal; treat brand-new zero-quantity POs as NEW.
+    """
+    totals = totals or {}
+    amazon_status = _extract_amazon_status(header)
+    if _is_explicit_cancel(amazon_status):
+        return "CANCELLED", "amazon_status_cancelled"
+
+    accepted = _pick_first_int(
+        header.get("acceptedQty"),
+        header.get("accepted_qty"),
+        totals.get("accepted_qty"),
+    )
+    received = _pick_first_int(
+        header.get("receivedQty"),
+        header.get("received_qty"),
+        totals.get("received_qty"),
+    ) or 0
+    cancelled = _pick_first_int(
+        header.get("cancelledQty"),
+        header.get("cancelled_qty"),
+        totals.get("cancelled_qty"),
+    ) or 0
+    pending = _pick_first_int(
+        header.get("remainingQty"),
+        header.get("remaining_qty"),
+        totals.get("pending_qty"),
+    )
+    ordered = _pick_first_int(
+        header.get("requestedQty"),
+        header.get("requested_qty"),
+        totals.get("requested_qty"),
+    )
+
+    qty_fields = (accepted, received, cancelled, pending)
+    if all(q is None or q == 0 for q in qty_fields):
+        return "NEW", "all_zero_uncancelled"
 
     if pending is not None:
         remaining = max(0, pending)

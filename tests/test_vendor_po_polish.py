@@ -271,3 +271,64 @@ def test_amount_reconciliation_mixed_currency_warning(vendor_po_client):
     assert recon["ok"] is False
     assert recon["error"] == "mixed_currencies"
     assert recon["delta"] is None
+
+
+def test_vendor_po_table_status_marks_new(vendor_po_client):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    upsert_vendor_po_headers(
+        [
+            {
+                "purchaseOrderNumber": "PO-NEW-0",
+                "purchaseOrderDate": "2025-12-20T00:00:00Z",
+                "requestedQty": 10,
+                "acceptedQty": 0,
+                "receivedQty": 0,
+                "cancelledQty": 0,
+                "remainingQty": 0,
+                "amazonStatus": "OPEN",
+                "orderDetails": {"items": []},
+            }
+        ],
+        source="tests",
+        source_detail="table-status",
+        synced_at=now,
+    )
+
+    resp = vendor_po_client.get("/api/vendor-pos", params={"createdAfter": "2025-01-01T00:00:00"})
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    po = next((it for it in items if it.get("purchaseOrderNumber") == "PO-NEW-0"), None)
+    assert po is not None
+    assert po["po_status"] == "NEW"
+    assert po["po_status_reason"] == "all_zero_uncancelled"
+
+
+def test_vendor_po_table_status_respects_explicit_cancel(vendor_po_client):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    upsert_vendor_po_headers(
+        [
+            {
+                "purchaseOrderNumber": "PO-CANCELLED-1",
+                "purchaseOrderDate": "2025-12-19T00:00:00Z",
+                "requestedQty": 5,
+                "acceptedQty": 0,
+                "receivedQty": 0,
+                "cancelledQty": 0,
+                "remainingQty": 0,
+                "amazonStatus": "CANCELLED",
+                "purchaseOrderState": "CANCELLED",
+                "orderDetails": {"items": []},
+            }
+        ],
+        source="tests",
+        source_detail="table-status",
+        synced_at=now,
+    )
+
+    resp = vendor_po_client.get("/api/vendor-pos", params={"createdAfter": "2025-01-01T00:00:00"})
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    po = next((it for it in items if it.get("purchaseOrderNumber") == "PO-CANCELLED-1"), None)
+    assert po is not None
+    assert po["po_status"] == "CANCELLED"
+    assert po["po_status_reason"] == "amazon_status_cancelled"

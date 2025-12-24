@@ -45,6 +45,7 @@
     .po-status-chip.po-status-open { background:#dcfce7; color:#166534; }
     .po-status-chip.po-status-closed { background:#dbeafe; color:#1d4ed8; }
     .po-status-chip.po-status-cancelled { background:#fee2e2; color:#b91c1c; }
+    .po-status-chip.po-status-new { background:#fef9c3; color:#92400e; }
     .po-money-footer {
       border-top:1px solid var(--border);
       margin-top:10px;
@@ -2728,6 +2729,8 @@
         "OPEN": { icon: "🟢", cls: "po-status-open" },
         "CLOSED": { icon: "🔵", cls: "po-status-closed" },
         "CANCELLED": { icon: "🔴", cls: "po-status-cancelled" },
+        "NEW": { icon: "🟡", cls: "po-status-new" },
+        "PENDING ACKNOWLEDGEMENT": { icon: "🟡", cls: "po-status-new" },
       };
       const meta = map[normalized] || map.OPEN;
       return `<span class="po-status-chip ${meta.cls}">${meta.icon} ${normalized}</span>`;

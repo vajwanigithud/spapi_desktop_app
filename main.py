@@ -193,7 +193,11 @@ from services.vendor_po_store import (
 from services.vendor_po_store import (
     get_vendor_po_lines as store_get_vendor_po_lines,
 )
-from services.vendor_po_view import compute_amount_reconciliation, compute_po_status
+from services.vendor_po_view import (
+    compute_amount_reconciliation,
+    compute_po_status,
+    compute_table_po_status,
+)
 from services.vendor_rt_sales_ledger import (
     LEDGER_NORMALIZATION_FLAG,
     normalize_existing_ledger_rows,
@@ -2423,12 +2427,12 @@ def get_vendor_pos(
 
         try:
             po_totals = line_totals_map.get(po_num) if po_num else None
-            status, reason = compute_po_status(po, po_totals)
+            status, reason = compute_table_po_status(po, po_totals)
             po["po_status"] = status
             po["po_status_reason"] = reason
         except Exception as exc:
             logger.warning(f"[VendorPO] Failed to compute po_status for {po_num}: {exc}")
-            fallback_status, fallback_reason = compute_po_status(po, {})
+            fallback_status, fallback_reason = compute_table_po_status(po, {})
             po["po_status"] = fallback_status
             po["po_status_reason"] = fallback_reason
     logger.info("[vendor-pos] filtered POs (>= 2025-10-01): %d", len(filtered))
