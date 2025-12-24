@@ -105,12 +105,16 @@ def _classify_worker_state(
 ) -> tuple[str, Optional[str], int]:
     """Classify worker status with cooldown and error awareness."""
 
+    if cooldown_until_dt and cooldown_until_dt > now_utc:
+        normalized_error = (last_error or "").strip() or None
+        cooldown_msg = f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
+        if normalized_error:
+            cooldown_msg = f"{cooldown_msg} (last error: {normalized_error})"
+        return "waiting", cooldown_msg, 0
+
     normalized_error = (last_error or "").strip() or None
     if normalized_error:
         return "error", normalized_error, 0
-
-    if cooldown_until_dt and cooldown_until_dt > now_utc:
-        return "waiting", f"Cooldown until {_fmt_uae(cooldown_until_dt)}", 0
 
     overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, grace_minutes)
     if overdue_status:
@@ -166,9 +170,10 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         last_run_iso = refresh_last_finished
         last_run_dt = _parse_iso_datetime(refresh_last_finished) or last_run_dt
 
-    if refresh_in_progress and status == "ok":
+    if refresh_in_progress:
         status = "locked"
         details = "Refresh in progress"
+        overdue_by_minutes = 0
     else:
         status, details, overdue_by_minutes = _classify_worker_state(
             now_utc,
@@ -179,10 +184,6 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         )
         if not details:
             details = base_details
-
-    if status not in {"error", "locked", "waiting"} and next_eligible_dt is None:
-        status = "error"
-        details = details or "No schedule available"
 
     next_display_dt = cooldown_until_dt or next_eligible_dt
 
@@ -205,10 +206,8 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         }
     )
 
-    materializer_status = "ok" if status != "error" else "error"
-    materializer_details = None
-    if refresh_status == "FAILED":
-        materializer_details = refresh_error or "Last materialization failed"
+    materializer_status = status
+    materializer_details = details
     workers.append(
         {
             "key": "inventory_materializer",
@@ -222,7 +221,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "message": materializer_details,
             "expected_interval_minutes": None,
             "grace_minutes": None,
-            "overdue_by_minutes": 0,
+            "overdue_by_minutes": overdue_by_minutes,
             "what": "Writes inventory snapshot into SQLite safely",
             "mode": "auto",
         }
