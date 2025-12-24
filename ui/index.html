@@ -4392,7 +4392,7 @@
       await updateRtSalesSyncStatus();
     }
 
-    async function loadVendorRtSalesSummary() {
+    async function loadVendorRtSalesSummary(options = {}) {
       try {
         const lookbackHours = parseInt(document.getElementById("rt-sales-lookback").value, 10);
         const viewBy = document.getElementById("rt-sales-view-by").value;
@@ -4451,16 +4451,18 @@
           sortRtSalesTable(rtSalesSortState.column);
         }
       } catch (err) {
-        console.error("Failed to load RT sales summary:", err);
-        rtSalesWindowMeta = null;
-        rtSalesCoverageMeta = null;
-        updateRtSalesWindowInfo();
-        updateRtSalesCoverageInfo();
-        renderRtSalesTable([]);
-        const tbody = rtSalesCurrentViewBy === "asin" 
-          ? document.getElementById("rt-sales-top-asins-rows")
-          : document.getElementById("rt-sales-time-rows");
-        if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 4 : 3}" class="empty">Error: ${err.message}</td></tr>`;
+        if (!options.silent) {
+          console.error("Failed to load RT sales summary:", err);
+          rtSalesWindowMeta = null;
+          rtSalesCoverageMeta = null;
+          updateRtSalesWindowInfo();
+          updateRtSalesCoverageInfo();
+          renderRtSalesTable([]);
+          const tbody = rtSalesCurrentViewBy === "asin" 
+            ? document.getElementById("rt-sales-top-asins-rows")
+            : document.getElementById("rt-sales-time-rows");
+          if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 4 : 3}" class="empty">Error: ${err.message}</td></tr>`;
+        }
       }
     }
 
@@ -4508,6 +4510,51 @@
       loadRtSalesViewBy();
       loadRtSalesSortState();
       updateRtSalesWindowInfo();
+    }
+
+    // ========================================
+    // Vendor RT Summary Auto Refresh
+    // ========================================
+    let rtSalesAutoTimer = null;
+    let rtSalesAutoInFlight = false;
+    const RT_SALES_AUTO_INTERVAL_MS = 60000;
+
+    function isRtSummaryTabVisible() {
+      const panel = document.getElementById("tab-vrt-summary");
+      if (!panel) return false;
+      const style = window.getComputedStyle(panel);
+      return style.display !== "none";
+    }
+
+    async function tickRtSummaryAutoRefresh() {
+      if (!isRtSummaryTabVisible()) return;
+      if (document.hidden) return;
+      if (rtSalesAutoInFlight) return;
+      rtSalesAutoInFlight = true;
+      const wrapper = document.querySelector(".rt-summary-table-wrapper");
+      const prevScroll = wrapper ? wrapper.scrollTop : null;
+      try {
+        await loadVendorRtSalesSummary({ silent: true });
+      } catch (err) {
+        // silent auto-refresh; suppress
+      } finally {
+        if (wrapper !== null && prevScroll !== null) {
+          wrapper.scrollTop = prevScroll;
+        }
+        rtSalesAutoInFlight = false;
+      }
+    }
+
+    function startRtSummaryAutoRefresh() {
+      if (rtSalesAutoTimer !== null) return;
+      rtSalesAutoTimer = setInterval(tickRtSummaryAutoRefresh, RT_SALES_AUTO_INTERVAL_MS);
+    }
+
+    function stopRtSummaryAutoRefresh() {
+      if (rtSalesAutoTimer !== null) {
+        clearInterval(rtSalesAutoTimer);
+        rtSalesAutoTimer = null;
+      }
     }
 
     // ========================================
@@ -5894,8 +5941,10 @@
         initRtSalesTab();
         loadVendorRtSalesSummary();
         startRtSalesStatusPolling();
+        startRtSummaryAutoRefresh();
       } else {
         stopRtSalesStatusPolling();
+        stopRtSummaryAutoRefresh();
       }
       if (tabName === "vrt-trends") {
         loadSalesTrends();
