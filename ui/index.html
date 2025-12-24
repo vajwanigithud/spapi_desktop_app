@@ -664,10 +664,6 @@
       <button class="btn btn-outline-secondary" id="workers-status-btn" type="button" style="height:36px;">
         🛠 Workers: OK
       </button>
-      <div id="dev-restart-controls" style="display:none; align-items:center; gap:6px; font-size:12px; color:#6b7280;">
-        <button class="btn btn-outline-secondary" id="dev-restart-btn" type="button" style="height:36px; background:#111827; color:#fff;">Restart (Dev)</button>
-        <span id="dev-restart-status" style="min-width:120px;"></span>
-      </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
@@ -692,6 +688,17 @@
   </div>
 
   <div class="layout">
+    <div class="panel" id="dev-tools-panel" style="margin-bottom:12px;">
+      <h2>Dev Tools</h2>
+      <div style="padding:12px; display:flex; flex-wrap:wrap; gap:12px; align-items:center;">
+        <label style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="dev-restart-toggle" />
+          Enable Restart Button (local only)
+        </label>
+        <button class="btn btn-outline-secondary" id="dev-restart-btn" type="button" disabled>Restart Server</button>
+        <span id="dev-restart-status" style="font-size:12px; color:#6b7280; min-width:200px;">Local only. Disabled by default.</span>
+      </div>
+    </div>
     <div class="panel" id="pos-tab">
       <h2>Vendor POs (raw Amazon fields)</h2>
       <div style="padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
@@ -5910,35 +5917,84 @@
     }
 
     async function refreshDevRestartAvailability() {
-      const controls = document.getElementById("dev-restart-controls");
+      const toggle = document.getElementById("dev-restart-toggle");
       const btn = document.getElementById("dev-restart-btn");
       const status = document.getElementById("dev-restart-status");
-      if (!controls || !btn || !status) return;
-      controls.style.display = "none";
-      status.textContent = "";
+      if (!toggle || !btn || !status) return;
+      btn.disabled = true;
       status.style.color = "#6b7280";
-      btn.disabled = false;
+      status.textContent = "Checking dev restart…";
       try {
         const resp = await fetch("/api/dev/restart-enabled");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data && data.enabled) {
-          controls.style.display = "flex";
-          status.textContent = "";
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 403) {
+          toggle.checked = false;
+          toggle.disabled = true;
+          btn.disabled = true;
+          status.style.color = "#b91c1c";
+          status.textContent = data.reason || "Localhost only";
+          return;
         }
+        const enabled = !!data.enabled;
+        toggle.disabled = false;
+        toggle.checked = enabled;
+        btn.disabled = !enabled;
+        status.style.color = enabled ? "#059669" : "#6b7280";
+        status.textContent = enabled ? "Restart enabled (localhost only)" : (data.reason || "Disabled. Toggle to enable.");
       } catch (err) {
-        // dev-only helper; suppress failures silently
+        status.style.color = "#b91c1c";
+        status.textContent = "Dev restart unavailable";
+        btn.disabled = true;
+      }
+    }
+
+    async function toggleDevRestart(event) {
+      const toggle = document.getElementById("dev-restart-toggle");
+      const btn = document.getElementById("dev-restart-btn");
+      const status = document.getElementById("dev-restart-status");
+      if (!toggle || !btn || !status) return;
+      const enabled = !!(event?.target?.checked);
+      btn.disabled = true;
+      status.style.color = "#6b7280";
+      status.textContent = "Saving…";
+      try {
+        const resp = await fetch("/api/dev/restart-enabled", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 403) {
+          toggle.checked = false;
+          toggle.disabled = true;
+          btn.disabled = true;
+          status.style.color = "#b91c1c";
+          status.textContent = data.reason || "Localhost only";
+          return;
+        }
+        const isEnabled = !!data.enabled;
+        toggle.checked = isEnabled;
+        btn.disabled = !isEnabled;
+        status.style.color = isEnabled ? "#059669" : "#6b7280";
+        status.textContent = isEnabled ? "Restart enabled (localhost only)" : "Disabled. Toggle to enable.";
+      } catch (err) {
+        status.style.color = "#b91c1c";
+        status.textContent = `Failed to save: ${err.message}`;
       }
     }
 
     async function triggerDevRestart() {
-      const controls = document.getElementById("dev-restart-controls");
+      const toggle = document.getElementById("dev-restart-toggle");
       const btn = document.getElementById("dev-restart-btn");
       const status = document.getElementById("dev-restart-status");
-      if (!controls || !btn || !status) return;
+      if (!toggle || !btn || !status) return;
+      if (!toggle.checked) {
+        status.style.color = "#b91c1c";
+        status.textContent = "Enable restart before using.";
+        return;
+      }
       if (!confirm("Restart server now?")) return;
       btn.disabled = true;
-      status.style.display = "inline";
       status.style.color = "#6b7280";
       status.textContent = "Restarting…";
       try {
@@ -5948,6 +6004,7 @@
           const detail = data.detail || data.message || `HTTP ${resp.status}`;
           throw new Error(detail);
         }
+        status.style.color = "#059669";
         status.textContent = data.message || "Restarting…";
       } catch (err) {
         status.style.color = "#b91c1c";
@@ -5957,7 +6014,11 @@
     }
 
     function initDevRestartControls() {
+      const toggle = document.getElementById("dev-restart-toggle");
       const btn = document.getElementById("dev-restart-btn");
+      if (toggle) {
+        toggle.addEventListener("change", toggleDevRestart);
+      }
       if (btn) {
         btn.addEventListener("click", triggerDevRestart);
       }

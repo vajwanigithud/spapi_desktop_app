@@ -385,11 +385,8 @@ def ping() -> JSONResponse:
 # Dev restart (local only)
 # -------------------------------
 DEV_RESTART_DELAY_SECONDS = 0.3
+DEV_RESTART_KV_KEY = "dev_restart_enabled"
 _DEV_RESTART_EXIT = os._exit
-
-
-def _is_dev_restart_enabled() -> bool:
-    return os.getenv("DEV_ALLOW_RESTART") == "1"
 
 
 def _get_client_host(request: Request) -> str:
@@ -400,6 +397,35 @@ def _get_client_host(request: Request) -> str:
 def _is_localhost_request(request: Request) -> bool:
     host = _get_client_host(request)
     return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def _read_dev_restart_flag() -> bool:
+    try:
+        from services.db import get_app_kv, get_db_connection, set_app_kv
+
+        with get_db_connection() as conn:
+            val = get_app_kv(conn, DEV_RESTART_KV_KEY)
+            if val is None:
+                set_app_kv(conn, DEV_RESTART_KV_KEY, "0")
+                return False
+            return str(val).strip() == "1"
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("[DevRestart] Failed to read flag: %s", exc)
+        return False
+
+
+def _write_dev_restart_flag(enabled: bool) -> None:
+    try:
+        from services.db import get_db_connection, set_app_kv
+
+        with get_db_connection() as conn:
+            set_app_kv(conn, DEV_RESTART_KV_KEY, "1" if enabled else "0")
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("[DevRestart] Failed to persist flag: %s", exc)
+
+
+def _is_dev_restart_enabled() -> bool:
+    return _read_dev_restart_flag()
 
 
 def _schedule_dev_restart(exit_code: int = 3, delay_seconds: Optional[float] = None) -> None:
@@ -417,19 +443,28 @@ def _schedule_dev_restart(exit_code: int = 3, delay_seconds: Optional[float] = N
 
 @app.get("/api/dev/restart-enabled")
 def api_dev_restart_enabled(request: Request) -> JSONResponse:
-    if not _is_dev_restart_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
     if not _is_localhost_request(request):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    return JSONResponse({"enabled": True})
+        return JSONResponse({"enabled": False, "reason": "localhost only"}, status_code=403)
+    enabled = _is_dev_restart_enabled()
+    reason = None if enabled else "Dev restart disabled"
+    return JSONResponse({"enabled": enabled, "reason": reason})
+
+
+@app.post("/api/dev/restart-enabled")
+def api_dev_set_restart_enabled(request: Request, payload: Dict[str, Any] = Body(...)) -> JSONResponse:
+    if not _is_localhost_request(request):
+        return JSONResponse({"enabled": False, "reason": "localhost only"}, status_code=403)
+    enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
+    _write_dev_restart_flag(enabled)
+    return JSONResponse({"enabled": enabled})
 
 
 @app.post("/api/dev/restart")
 def api_dev_restart(request: Request) -> JSONResponse:
-    if not _is_dev_restart_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
     if not _is_localhost_request(request):
-        raise HTTPException(status_code=403, detail="Forbidden")
+        return JSONResponse({"ok": False, "detail": "Localhost only"}, status_code=403)
+    if not _is_dev_restart_enabled():
+        return JSONResponse({"ok": False, "detail": "Dev restart disabled"}, status_code=403)
 
     host = _get_client_host(request) or "unknown"
     logger.warning("[DEV] Restart requested from %s", host)
