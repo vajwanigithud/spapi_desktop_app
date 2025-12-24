@@ -195,7 +195,6 @@ from services.vendor_po_store import (
 )
 from services.vendor_po_view import (
     compute_amount_reconciliation,
-    compute_po_status,
     compute_table_po_status,
 )
 from services.vendor_rt_sales_ledger import (
@@ -2486,16 +2485,6 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
     except Exception as exc:
         logger.warning(f"[VendorPO] Failed to load DB totals for PO {po_number}: {exc}")
         line_totals = {}
-    try:
-        status, reason = compute_po_status(po, line_totals)
-        po["po_status"] = status
-        po["po_status_reason"] = reason
-    except Exception as exc:
-        logger.warning(f"[VendorPO] Failed to compute po_status for detail {po_number}: {exc}")
-        fallback_status, fallback_reason = compute_po_status(po, {})
-        po["po_status"] = fallback_status
-        po["po_status_reason"] = fallback_reason
-
     # Ensure detail exists for modal display
     if not po.get("orderDetails", {}).get("items"):
         try:
@@ -2505,6 +2494,17 @@ async def get_single_vendor_po(po_number: str, enrich: int = 0):
             used_db_lines = used_db_lines or hydrated_again
         except Exception as exc:
             logger.warning(f"[VendorPO] Could not fetch detail for PO {po_number}: {exc}")
+
+    # Recompute status for modal after any refresh/re-hydration
+    try:
+        status, reason = compute_table_po_status(po, line_totals)
+        po["po_status"] = status
+        po["po_status_reason"] = reason
+    except Exception as exc:
+        logger.warning(f"[VendorPO] Failed to compute po_status for detail {po_number}: {exc}")
+        fallback_status, fallback_reason = compute_table_po_status(po, {})
+        po["po_status"] = fallback_status
+        po["po_status_reason"] = fallback_reason
 
     # Compute accepted line amounts for modal display
     try:
