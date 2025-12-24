@@ -332,3 +332,60 @@ def test_vendor_po_table_status_respects_explicit_cancel(vendor_po_client):
     assert po is not None
     assert po["po_status"] == "CANCELLED"
     assert po["po_status_reason"] == "amazon_status_cancelled"
+
+
+def test_vendor_po_modal_status_marks_new(vendor_po_client):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    upsert_vendor_po_headers(
+        [
+            {
+                "purchaseOrderNumber": "PO-MODAL-NEW",
+                "purchaseOrderDate": "2025-12-21T00:00:00Z",
+                "requestedQty": 0,
+                "acceptedQty": 0,
+                "receivedQty": 0,
+                "cancelledQty": 0,
+                "remainingQty": 0,
+                "amazonStatus": "OPEN",
+                "orderDetails": {"items": []},
+            }
+        ],
+        source="tests",
+        source_detail="modal-status",
+        synced_at=now,
+    )
+
+    resp = vendor_po_client.get("/api/vendor-pos/PO-MODAL-NEW")
+    assert resp.status_code == 200
+    payload = resp.json()["item"]
+    assert payload["po_status"] == "NEW"
+    assert payload["po_status_reason"] == "all_zero_uncancelled"
+
+
+def test_vendor_po_modal_status_respects_explicit_cancel(vendor_po_client):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    upsert_vendor_po_headers(
+        [
+            {
+                "purchaseOrderNumber": "PO-MODAL-CANCELLED",
+                "purchaseOrderDate": "2025-12-18T00:00:00Z",
+                "requestedQty": 0,
+                "acceptedQty": 0,
+                "receivedQty": 0,
+                "cancelledQty": 0,
+                "remainingQty": 0,
+                "amazonStatus": "CANCELLED",
+                "purchaseOrderState": "CANCELLED",
+                "orderDetails": {"items": []},
+            }
+        ],
+        source="tests",
+        source_detail="modal-status",
+        synced_at=now,
+    )
+
+    resp = vendor_po_client.get("/api/vendor-pos/PO-MODAL-CANCELLED")
+    assert resp.status_code == 200
+    payload = resp.json()["item"]
+    assert payload["po_status"] == "CANCELLED"
+    assert payload["po_status_reason"] == "amazon_status_cancelled"
