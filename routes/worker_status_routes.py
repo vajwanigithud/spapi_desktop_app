@@ -95,15 +95,48 @@ def _compute_overdue_status(
     return None, 0
 
 
+def _classify_worker_state(
+    now_utc: datetime,
+    *,
+    cooldown_until_dt: Optional[datetime],
+    last_error: Optional[str],
+    next_eligible_dt: Optional[datetime],
+    grace_minutes: Optional[int] = None,
+) -> tuple[str, Optional[str], int]:
+    """Classify worker status with cooldown and error awareness."""
+
+    if cooldown_until_dt and cooldown_until_dt > now_utc:
+        normalized_error = (last_error or "").strip() or None
+        cooldown_msg = f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
+        if normalized_error:
+            cooldown_msg = f"{cooldown_msg} (last error: {normalized_error})"
+        return "waiting", cooldown_msg, 0
+
+    normalized_error = (last_error or "").strip() or None
+    if normalized_error:
+        return "error", normalized_error, 0
+
+    overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, grace_minutes)
+    if overdue_status:
+        details = None
+        if overdue_delta:
+            details = f"Overdue by {overdue_delta} minutes"
+        return overdue_status, details, overdue_delta
+
+    return "ok", None, 0
+
+
 def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     workers: List[Dict[str, Any]] = []
     status = "ok"
     details: Optional[str] = None
+    base_details: Optional[str] = None
     cooldown_until_dt: Optional[datetime] = None
     next_eligible_dt: Optional[datetime] = None
     last_run_iso: Optional[str] = None
     last_run_dt: Optional[datetime] = None
     refresh_meta: Dict[str, Any] = {}
+    overdue_by_minutes = 0
 
     try:
         ensure_app_kv_table()
@@ -111,7 +144,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             last_refresh_raw = get_app_kv(conn, rt_inventory.COOLDOWN_KV_KEY)
     except Exception as exc:
         last_refresh_raw = None
-        details = f"Cooldown read failed: {exc}"
+        base_details = f"Cooldown read failed: {exc}"
 
     last_refresh_dt = _parse_iso_datetime(last_refresh_raw) if last_refresh_raw else None
     if last_refresh_dt:
@@ -119,38 +152,40 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         last_run_iso = last_refresh_dt.isoformat()
         cooldown_until_dt = last_refresh_dt + timedelta(hours=getattr(rt_inventory, "COOLDOWN_HOURS", 1))
         next_eligible_dt = cooldown_until_dt
-        if cooldown_until_dt > now_utc:
-            status = "cooldown"
 
     try:
         refresh_meta = get_refresh_metadata(marketplace_id)
     except Exception as exc:  # pragma: no cover - defensive
         refresh_meta = {}
-        details = details or f"Refresh metadata unavailable: {exc}"
+        base_details = base_details or f"Refresh metadata unavailable: {exc}"
 
     refresh_last_finished = refresh_meta.get("last_refresh_finished_at") if isinstance(refresh_meta, dict) else None
     refresh_status = (refresh_meta or {}).get("last_refresh_status") if isinstance(refresh_meta, dict) else None
     refresh_error = (refresh_meta or {}).get("last_error") if isinstance(refresh_meta, dict) else None
     refresh_in_progress = bool((refresh_meta or {}).get("in_progress"))
+    refresh_failed = refresh_status == "FAILED"
+    error_reason = refresh_error or ("Last refresh failed" if refresh_failed else None)
 
     if refresh_last_finished:
         last_run_iso = refresh_last_finished
         last_run_dt = _parse_iso_datetime(refresh_last_finished) or last_run_dt
 
-    refresh_failed = refresh_status == "FAILED"
-    if refresh_in_progress and status == "ok":
+    if refresh_in_progress:
         status = "locked"
         details = "Refresh in progress"
-    elif refresh_failed and status != "cooldown":
-        status = "error"
-        details = refresh_error or "Last refresh failed"
+        overdue_by_minutes = 0
+    else:
+        status, details, overdue_by_minutes = _classify_worker_state(
+            now_utc,
+            cooldown_until_dt=cooldown_until_dt,
+            last_error=error_reason,
+            next_eligible_dt=next_eligible_dt,
+            grace_minutes=None,
+        )
+        if not details:
+            details = base_details
 
-    if status == "cooldown" and cooldown_until_dt:
-        details = details or f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
-
-    if status not in {"error", "locked", "cooldown"} and next_eligible_dt is None:
-        status = "error"
-        details = details or "No schedule available"
+    next_display_dt = cooldown_until_dt or next_eligible_dt
 
     workers.append(
         {
@@ -159,22 +194,20 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "status": status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
-            "next_eligible_at_uae": _fmt_uae(cooldown_until_dt) if status == "cooldown" else _fmt_uae(next_eligible_dt),
-            "next_run_utc": _fmt_iso_utc(cooldown_until_dt if status == "cooldown" else next_eligible_dt),
+            "next_eligible_at_uae": _fmt_uae(next_display_dt),
+            "next_run_utc": _fmt_iso_utc(next_display_dt),
             "details": details,
             "message": details,
             "expected_interval_minutes": None,
             "grace_minutes": None,
-            "overdue_by_minutes": 0,
+            "overdue_by_minutes": overdue_by_minutes,
             "what": "Fetches Amazon RT inventory and stores snapshot",
             "mode": "auto",
         }
     )
 
-    materializer_status = "ok" if status != "error" else "error"
-    materializer_details = None
-    if refresh_status == "FAILED":
-        materializer_details = refresh_error or "Last materialization failed"
+    materializer_status = status
+    materializer_details = details
     workers.append(
         {
             "key": "inventory_materializer",
@@ -188,7 +221,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "message": materializer_details,
             "expected_interval_minutes": None,
             "grace_minutes": None,
-            "overdue_by_minutes": 0,
+            "overdue_by_minutes": overdue_by_minutes,
             "what": "Writes inventory snapshot into SQLite safely",
             "mode": "auto",
         }

@@ -221,9 +221,15 @@
     }
     if (refs.desc) refs.desc.textContent = state.description;
     if (refs.message) {
-      if (state.message) {
+      const trimmed = (state.message || "").trim();
+      const showReason = statusValue === "error" && trimmed;
+      const showWaitingMessage = statusValue === "waiting" && trimmed;
+      if (showReason) {
         refs.message.style.display = "block";
-        refs.message.textContent = state.message;
+        refs.message.textContent = `Reason: ${trimmed}`;
+      } else if (showWaitingMessage) {
+        refs.message.style.display = "block";
+        refs.message.textContent = trimmed;
       } else {
         refs.message.style.display = "none";
         refs.message.textContent = "";
