@@ -70,6 +70,7 @@
       lastRunUtc: raw.last_run_utc || raw.last_run_at_utc || null,
       nextRunUtc: raw.next_run_utc || raw.next_eligible_at_utc || null,
       message: raw.message || raw.details || "",
+      overdueReason: raw.overdue_reason || null,
       mode: (raw.mode || (raw.expected_interval_minutes ? "auto" : "manual")).toLowerCase(),
       what: raw.what || "",
       overdueByMinutes: Number(raw.overdue_by_minutes || 0),
@@ -132,7 +133,8 @@
     const lastRun = pickMostRecentByUtc(workers, "lastRunUtc") || workers.find((w) => w.lastRunUae)?.lastRunUae || "—";
     const nextRun = pickEarliestNextRun(workers) || workers.find((w) => w.nextRunUae)?.nextRunUae || (group.defaultMode === "manual" ? "—" : "");
     const mode = (workers.find((w) => w.mode)?.mode || group.defaultMode || "manual").toLowerCase();
-    const message = (workers.find((w) => w.message)?.message || "").trim();
+    const overdueReason = workers.find((w) => w.overdueReason && w.status === "overdue")?.overdueReason || null;
+    const message = (overdueReason || workers.find((w) => w.message)?.message || "").trim();
     const overdueMinutes = workers.reduce((max, w) => Math.max(max, w.overdueByMinutes || 0), 0);
 
     return {
@@ -145,6 +147,7 @@
       nextRun: nextRun || "—",
       mode,
       message,
+      overdueReason,
       overdueMinutes,
     };
   };
@@ -222,11 +225,16 @@
     if (refs.desc) refs.desc.textContent = state.description;
     if (refs.message) {
       const trimmed = (state.message || "").trim();
+      const overdueReason = (state.overdueReason || "").trim();
       const showReason = statusValue === "error" && trimmed;
+      const showOverdueReason = statusValue === "overdue" && overdueReason;
       const showWaitingMessage = statusValue === "waiting" && trimmed;
       if (showReason) {
         refs.message.style.display = "block";
         refs.message.textContent = `Reason: ${trimmed}`;
+      } else if (showOverdueReason) {
+        refs.message.style.display = "block";
+        refs.message.textContent = `Reason: ${overdueReason}`;
       } else if (showWaitingMessage) {
         refs.message.style.display = "block";
         refs.message.textContent = trimmed;

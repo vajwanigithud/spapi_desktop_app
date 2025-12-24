@@ -299,6 +299,7 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         details = "Failed ledger hours present"
 
     overdue_by_minutes = 0
+    overdue_reason: Optional[str] = None
     overdue_status, overdue_delta = _compute_overdue_status(now_utc, next_eligible_dt, RT_SALES_GRACE_MINUTES)
     if status not in {"error", "cooldown", "locked"} and overdue_status:
         status = overdue_status
@@ -313,6 +314,24 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     last_run_iso = ledger_summary.get("last_applied_hour_utc")
     if not next_eligible_dt and last_run_dt:
         next_eligible_dt = last_run_dt + timedelta(minutes=RT_SALES_EXPECTED_INTERVAL_MINUTES)
+
+    cooldown_hint = (details or "").strip().lower()
+    if status == "overdue":
+        if "cooldown" in cooldown_hint:
+            status = "waiting"
+            overdue_by_minutes = 0
+        else:
+            if not last_run_dt:
+                overdue_reason = "never ran"
+            elif next_eligible_dt and now_utc > next_eligible_dt:
+                overdue_reason = "missed next eligible time"
+            elif RT_SALES_EXPECTED_INTERVAL_MINUTES and last_run_dt:
+                interval_with_grace = RT_SALES_EXPECTED_INTERVAL_MINUTES + (RT_SALES_GRACE_MINUTES or 0)
+                if now_utc - last_run_dt > timedelta(minutes=interval_with_grace):
+                    overdue_reason = "missed expected interval"
+
+            if not overdue_reason:
+                overdue_reason = "stale; investigate scheduler/lock"
 
     last_run_display = _fmt_uae(last_run_dt or last_run_iso)
     workers.append(
@@ -329,6 +348,7 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "expected_interval_minutes": RT_SALES_EXPECTED_INTERVAL_MINUTES,
             "grace_minutes": RT_SALES_GRACE_MINUTES,
             "overdue_by_minutes": overdue_by_minutes,
+            "overdue_reason": overdue_reason,
             "what": "Ingests real-time sales and maintains hourly ledger",
             "mode": "auto",
         }
