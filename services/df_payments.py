@@ -393,6 +393,24 @@ def _aggregate_invoice_totals(marketplace_id: str, *, db_path: Path) -> Dict[str
     }
 
 
+def _aggregate_cashflow_totals(marketplace_id: str, *, db_path: Path) -> Dict[str, float]:
+    with _connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT substr(order_date_utc, 1, 7) AS month, SUM(subtotal_amount + vat_amount) AS total
+            FROM df_payments_orders
+            WHERE marketplace_id = ? AND (payment_status IS NULL OR payment_status != 'PAID')
+            GROUP BY substr(order_date_utc, 1, 7)
+            """,
+            (marketplace_id,),
+        ).fetchall()
+    return {
+        row["month"]: float(row["total"] or 0)
+        for row in rows
+        if row["month"]
+    }
+
+
 def _slice_invoices_window(month_totals: Dict[str, float], *, now_utc: datetime) -> List[Dict[str, Any]]:
     current_month = _month_key(now_utc)
     prev_month = _month_key(_add_months(now_utc, -1))
@@ -659,11 +677,12 @@ def get_df_payments_state(
     ensure_df_payments_tables(db_path)
     orders = _load_orders(marketplace_id, db_path=db_path)
     month_totals = _aggregate_invoice_totals(marketplace_id, db_path=db_path)
+    cashflow_totals = _aggregate_cashflow_totals(marketplace_id, db_path=db_path)
     invoices_by_month = _slice_invoices_window(month_totals, now_utc=effective_now)
     dashboard = {
         "invoices_by_month": invoices_by_month,
         "cashflow_projection": _build_cashflow_projection(
-            month_totals, now_utc=effective_now, payment_terms_days=DF_PAYMENTS_TERMS_DAYS
+            cashflow_totals, now_utc=effective_now, payment_terms_days=DF_PAYMENTS_TERMS_DAYS
         ),
     }
     state_row = _get_state_row(marketplace_id, db_path=db_path)

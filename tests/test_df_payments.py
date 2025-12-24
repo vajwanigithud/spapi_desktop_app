@@ -183,6 +183,82 @@ def test_df_payments_dashboard_windows(tmp_path):
     assert round(cashflow[1]["unpaid_amount"], 2) == 315.0
 
 
+def test_cashflow_excludes_paid_invoices(tmp_path):
+    db_path = tmp_path / "df_payments_cashflow.db"
+    ensure_df_payments_tables(db_path)
+
+    now_utc = datetime(2025, 1, 15, 12, 0, tzinfo=timezone.utc)
+    now_iso = now_utc.isoformat()
+
+    with get_db_connection_for_path(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list,
+                payment_status, payment_date, remittance_ids, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-PAID",
+                "CO-PAID",
+                "2025-01-05T00:00:00+00:00",
+                "OPEN",
+                1,
+                1,
+                100.0,
+                5.0,
+                "AED",
+                "SKU-PAID",
+                "PAID",
+                "2025-01-10",
+                "REM-PAID",
+                now_iso,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO df_payments_orders (
+                marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status,
+                items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list,
+                payment_status, payment_date, remittance_ids, last_updated_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                MARKETPLACE_ID,
+                "PO-UNPAID",
+                "CO-UNPAID",
+                "2025-01-12T00:00:00+00:00",
+                "OPEN",
+                1,
+                2,
+                200.0,
+                10.0,
+                "AED",
+                "SKU-UNPAID",
+                "UNPAID",
+                "",
+                "",
+                now_iso,
+            ),
+        )
+        conn.commit()
+
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=now_utc)
+
+    cashflow = state["dashboard"]["cashflow_projection"]
+    assert [row["month"] for row in cashflow] == ["2025-01", "2025-02"]
+    assert round(cashflow[0]["unpaid_amount"], 2) == 0.0
+    assert round(cashflow[1]["unpaid_amount"], 2) == 210.0
+
+    invoices = state["dashboard"]["invoices_by_month"]
+    assert invoices[1]["month"] == "2025-01"
+    assert round(invoices[1]["total_incl_vat"], 2) == 315.0
+
+    assert len(state["orders"]) == 2
+
+
 def test_df_payments_lookback_respects_90_days(tmp_path):
     db_path = tmp_path / "df_payments_lookback.db"
     ensure_df_payments_tables(db_path)
