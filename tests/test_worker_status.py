@@ -194,10 +194,14 @@ def test_inventory_cooldown_marked_waiting(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
 
-    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
-    assert worker["status"] == "waiting"
-    assert worker["next_run_utc"] is not None
-    assert "cooldown" in (worker["message"] or "").lower()
+    refresh_worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    materializer_worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "inventory_materializer")
+
+    for worker in (refresh_worker, materializer_worker):
+        assert worker["status"] == "waiting"
+        assert worker["next_run_utc"] is not None
+        assert "cooldown" in (worker["message"] or "").lower()
+
     assert data["summary"]["error_count"] == 0
     assert data["summary"]["overall"] == "ok"
 
@@ -253,8 +257,11 @@ def test_inventory_cooldown_with_error_shows_waiting(monkeypatch):
     for worker in (refresh_worker, materializer_worker):
         assert worker["status"] == "waiting"
         msg = (worker.get("message") or "").lower()
-        assert "cooldown" in msg
-        assert "last error" in msg
+        details = (worker.get("details") or "").lower()
+        assert msg == "cooldown"
+        assert "cooldown" in details
+        assert "last error" in details
+        assert worker["next_run_utc"] is not None
 
     assert data["summary"]["error_count"] == 0
     assert data["summary"]["overall"] == "ok"

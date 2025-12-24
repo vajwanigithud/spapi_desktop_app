@@ -109,8 +109,11 @@ def _classify_worker_state(
         normalized_error = (last_error or "").strip() or None
         cooldown_msg = f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
         if normalized_error:
+            status = "waiting"
             cooldown_msg = f"{cooldown_msg} (last error: {normalized_error})"
-        return "waiting", cooldown_msg, 0
+        else:
+            status = "waiting"
+        return status, cooldown_msg, 0
 
     normalized_error = (last_error or "").strip() or None
     if normalized_error:
@@ -185,6 +188,14 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
         if not details:
             details = base_details
 
+    if cooldown_until_dt and cooldown_until_dt > now_utc:
+        normalized_error = (error_reason or "").strip() or None
+        status = "waiting"
+        details = f"Cooldown until {_fmt_uae(cooldown_until_dt)}"
+        if normalized_error:
+            details = f"{details} (last error: {normalized_error})"
+        overdue_by_minutes = 0
+
     next_display_dt = cooldown_until_dt or next_eligible_dt
 
     workers.append(
@@ -215,8 +226,8 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "status": materializer_status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
-            "next_eligible_at_uae": None,
-            "next_run_utc": None,
+            "next_eligible_at_uae": _fmt_uae(next_display_dt),
+            "next_run_utc": _fmt_iso_utc(next_display_dt),
             "details": materializer_details,
             "message": materializer_details,
             "expected_interval_minutes": None,
@@ -226,6 +237,22 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "mode": "auto",
         }
     )
+
+    # Normalize cooldown signaling for inventory workers
+    for worker in workers:
+        raw_message = worker.get("message")
+        raw_details = worker.get("details")
+        msg = (raw_message or "").strip().lower()
+        details_lower = (raw_details or "").strip().lower()
+
+        if "cooldown" in msg or "cooldown" in details_lower:
+            worker["status"] = "waiting"
+            worker["overdue_by_minutes"] = 0
+
+            if not raw_details or details_lower == "cooldown":
+                worker["details"] = raw_message or "cooldown"
+
+            worker["message"] = "cooldown"
 
     return {"title": "Inventory", "workers": workers}
 
