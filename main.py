@@ -80,7 +80,6 @@ import importlib.util
 import json
 import logging
 import os
-import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -379,62 +378,6 @@ def ping() -> JSONResponse:
     ts = datetime.now(timezone.utc).isoformat()
     logger.info("[PING] ping called")
     return JSONResponse({"ok": True, "ts": ts})
-
-
-# -------------------------------
-# Dev restart (local only)
-# -------------------------------
-DEV_RESTART_DELAY_SECONDS = 0.3
-_DEV_RESTART_EXIT = os._exit
-
-
-def _is_dev_restart_enabled() -> bool:
-    return os.getenv("DEV_ALLOW_RESTART") == "1"
-
-
-def _get_client_host(request: Request) -> str:
-    client = request.client
-    return client.host if client else ""
-
-
-def _is_localhost_request(request: Request) -> bool:
-    host = _get_client_host(request)
-    return host in {"127.0.0.1", "::1", "localhost"}
-
-
-def _schedule_dev_restart(exit_code: int = 3, delay_seconds: Optional[float] = None) -> None:
-    delay = DEV_RESTART_DELAY_SECONDS if delay_seconds is None else delay_seconds
-
-    def _exit_later() -> None:
-        time.sleep(delay)
-        try:
-            _DEV_RESTART_EXIT(exit_code)
-        except SystemExit:
-            pass
-
-    threading.Thread(target=_exit_later, daemon=True).start()
-
-
-@app.get("/api/dev/restart-enabled")
-def api_dev_restart_enabled(request: Request) -> JSONResponse:
-    if not _is_dev_restart_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
-    if not _is_localhost_request(request):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    return JSONResponse({"enabled": True})
-
-
-@app.post("/api/dev/restart")
-def api_dev_restart(request: Request) -> JSONResponse:
-    if not _is_dev_restart_enabled():
-        raise HTTPException(status_code=404, detail="Not found")
-    if not _is_localhost_request(request):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    host = _get_client_host(request) or "unknown"
-    logger.warning("[DEV] Restart requested from %s", host)
-    _schedule_dev_restart()
-    return JSONResponse({"ok": True, "message": "Restart scheduled; exiting shortly.", "restarting": True})
 
 # -------------------------------
 # ====================================================================

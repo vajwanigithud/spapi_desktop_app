@@ -664,10 +664,6 @@
       <button class="btn btn-outline-secondary" id="workers-status-btn" type="button" style="height:36px;">
         🛠 Workers: OK
       </button>
-      <div id="dev-restart-controls" style="display:none; align-items:center; gap:6px; font-size:12px; color:#6b7280;">
-        <button class="btn btn-outline-secondary" id="dev-restart-btn" type="button" style="height:36px; background:#111827; color:#fff;">Restart (Dev)</button>
-        <span id="dev-restart-status" style="min-width:120px;"></span>
-      </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
@@ -5909,61 +5905,6 @@
       }
     }
 
-    async function refreshDevRestartAvailability() {
-      const controls = document.getElementById("dev-restart-controls");
-      const btn = document.getElementById("dev-restart-btn");
-      const status = document.getElementById("dev-restart-status");
-      if (!controls || !btn || !status) return;
-      controls.style.display = "none";
-      status.textContent = "";
-      status.style.color = "#6b7280";
-      btn.disabled = false;
-      try {
-        const resp = await fetch("/api/dev/restart-enabled");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data && data.enabled) {
-          controls.style.display = "flex";
-          status.textContent = "";
-        }
-      } catch (err) {
-        // dev-only helper; suppress failures silently
-      }
-    }
-
-    async function triggerDevRestart() {
-      const controls = document.getElementById("dev-restart-controls");
-      const btn = document.getElementById("dev-restart-btn");
-      const status = document.getElementById("dev-restart-status");
-      if (!controls || !btn || !status) return;
-      if (!confirm("Restart server now?")) return;
-      btn.disabled = true;
-      status.style.display = "inline";
-      status.style.color = "#6b7280";
-      status.textContent = "Restarting…";
-      try {
-        const resp = await fetch("/api/dev/restart", { method: "POST" });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || !data.ok) {
-          const detail = data.detail || data.message || `HTTP ${resp.status}`;
-          throw new Error(detail);
-        }
-        status.textContent = data.message || "Restarting…";
-      } catch (err) {
-        status.style.color = "#b91c1c";
-        status.textContent = `Restart failed: ${err.message}`;
-        btn.disabled = false;
-      }
-    }
-
-    function initDevRestartControls() {
-      const btn = document.getElementById("dev-restart-btn");
-      if (btn) {
-        btn.addEventListener("click", triggerDevRestart);
-      }
-      refreshDevRestartAvailability();
-    }
-
     function showTab(tabName) {
       closeCatalogContextMenu();
       activeTab = tabName;
@@ -6040,8 +5981,6 @@
     updateInventoryModeButtons();
     updateInventoryRefreshButtonState();
     updateInventoryFreshnessLabel();
-
-    initDevRestartControls();
 
     showTab("pos");
     loadPOs(false);
