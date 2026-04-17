@@ -708,7 +708,6 @@
             <option value="Appointment Scheduled">Appointment Scheduled</option>
           </select>
           <button class="btn" id="picklist-btn" onclick="openPicklistPreview()" disabled style="background:#16a34a;">Export Pick List (PDF)</button>
-          <button class="btn" id="picklist-xlsx-btn" onclick="openPicklistXlsx()" disabled style="background:#2563eb;">Export Pick List (XLSX)</button>
         </div>
         <div id="inhouse-summary" style="font-size:12px; color:var(--muted); font-weight:600;"></div>
       </div>
@@ -2692,10 +2691,8 @@
 
     function updatePicklistButtonState() {
       const btn = document.getElementById("picklist-btn");
-      const xlsxBtn = document.getElementById("picklist-xlsx-btn");
-      const disabled = !selectedPoNumbers.length;
-      if (btn) btn.disabled = disabled;
-      if (xlsxBtn) xlsxBtn.disabled = disabled;
+      if (!btn) return;
+      btn.disabled = !selectedPoNumbers.length;
     }
 
     function aggregate(items) {
@@ -3830,16 +3827,6 @@
       const poParam = encodeURIComponent(selectedPoNumbers.join(","));
       const url = `/api/picklist/pdf?poNumbers=${poParam}`;
       window.open(url, "_blank");
-    }
-
-    function openPicklistXlsx() {
-      if (!selectedPoNumbers.length) {
-        alert("Please select at least one PO to export a pick list.");
-        return;
-      }
-      const poParam = encodeURIComponent(selectedPoNumbers.join(","));
-      const url = `/api/picklist/xlsx?poNumbers=${poParam}`;
-      window.location = url;
     }
 
     async function markItemOos(event, poNumber, asin, vendorSku, poDate, shipTo, qty, encodedImage) {

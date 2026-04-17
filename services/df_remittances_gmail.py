@@ -364,6 +364,7 @@ def import_df_remittances_from_gmail(
         msg_nums = data[0].split() if data and data[0] else []
         LOGGER.info("[DF Remittances] Search ok | messages_found=%s", len(msg_nums))
         if not msg_nums:
+            LOGGER.warning("[DF Remittances] No messages found with label '%s' in mailbox '%s'", gmail_label, mailbox_name)
             return {
                 "status": "ok",
                 "messages_found": 0,
@@ -403,6 +404,7 @@ def import_df_remittances_from_gmail(
             if not rows:
                 rows = parse_remittance_email_body(body)
             if not rows:
+                LOGGER.warning("[DF Remittances] Failed to parse remittance data from email | gmail_id=%s | has_html=%s | body_preview=%s", gmail_id, bool(html_body), (body or "")[:200])
                 continue
 
             sample_pos = [r.get("purchase_order_number") for r in rows if r.get("purchase_order_number")]

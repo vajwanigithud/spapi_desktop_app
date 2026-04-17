@@ -750,6 +750,11 @@ def reconcile_df_payments_from_remittances(
         if inv_key:
             rem_by_invoice.setdefault(inv_key, []).append(rem)
 
+    if not remittances:
+        LOGGER.warning("[DF Payments] No remittances found in database for reconciliation")
+    if not rem_by_po and not rem_by_invoice:
+        LOGGER.warning("[DF Payments] No valid remittance keys (PO or invoice numbers) found")
+
     updates: List[tuple] = []
     tol = Decimal("0.01")
     orders_with_paid = 0

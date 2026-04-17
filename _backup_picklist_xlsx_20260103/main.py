@@ -101,7 +101,6 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import services.oos_service as oos_service
 import services.picklist_service as picklist_service
-import services.picklist_xlsx_service as picklist_xlsx_service
 import services.vendor_realtime_sales as vendor_realtime_sales_service
 from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
@@ -4152,31 +4151,6 @@ def picklist_pdf_get(poNumbers: str = Query("", description="Comma-separated PO 
     pdf_bytes = generate_picklist_pdf(po_numbers, items, summary)
     headers = {"Content-Disposition": 'attachment; filename="picklist.pdf"'}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
-
-
-@app.get("/api/picklist/xlsx")
-def picklist_xlsx_get(poNumbers: str = Query("", description="Comma-separated PO numbers")):
-    """
-    GET variant to generate pick list XLSX via query string (e.g., ?poNumbers=PO1,PO2).
-    """
-    po_numbers = [p.strip() for p in (poNumbers or "").split(",") if p.strip()]
-    if not po_numbers:
-        raise HTTPException(status_code=400, detail="poNumbers query parameter is required")
-
-    xlsx_bytes, items, summary = picklist_xlsx_service.generate_picklist_xlsx(po_numbers, consolidate_picklist)
-    line_count = summary.get("totalLines")
-    if line_count is None:
-        line_count = len(items)
-    logger.info("[PicklistXLSX] (GET) %d PO(s) requested -> %d line(s)", len(po_numbers), line_count)
-
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M")
-    filename = f"PickList_{len(po_numbers)}PO_{ts}.xlsx"
-    headers = {"Content-Disposition": f'attachment; filename=\"{filename}\"'}
-    return Response(
-        content=xlsx_bytes,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers,
-    )
 
 
 @app.get("/api/debug/sample-po")

@@ -3,5 +3,7 @@ uvicorn
 python-dotenv
 requests
 boto3
-Pillow
 python-barcode
+reportlab==4.4.7
+pillow==12.1.0
+openpyxl
