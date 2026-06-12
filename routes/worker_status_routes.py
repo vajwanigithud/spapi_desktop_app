@@ -4,9 +4,10 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Query
 
 from config import MARKETPLACE_IDS
+from services.activity_log import add_activity
 from services import vendor_inventory_realtime as rt_inventory
 from services import vendor_realtime_sales as rt_sales
 from services.db import ensure_app_kv_table, get_app_kv, get_db_connection
@@ -14,6 +15,7 @@ from services.df_payments import get_df_payments_worker_metadata
 from services.vendor_po_status_store import get_vendor_po_status_payload
 from services.vendor_rt_inventory_state import get_refresh_metadata
 from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
+from services.worker_runtime_state import get_worker_runtime_state
 
 router = APIRouter()
 UAE_TZ = timezone(timedelta(hours=4))
@@ -124,6 +126,85 @@ def _classify_worker_state(
         return overdue_status, details, overdue_delta
 
     return "ok", None, 0
+
+
+def _rt_sales_explanation(
+    *,
+    status: str,
+    runtime_state: Dict[str, Any],
+    cooldown_active: bool,
+    cooldown_until_dt: Optional[datetime],
+    lock_row: Optional[Dict[str, Any]],
+    lock_stale: bool,
+    overdue_reason: Optional[str],
+    last_run_dt: Optional[datetime],
+    queue_count: int = 0,
+    actionable_queue_count: int = 0,
+) -> str:
+    runtime_status = (runtime_state.get("runtime_status") or "").strip().lower()
+    runtime_message = (runtime_state.get("last_message") or "").strip()
+
+    if runtime_status == "active":
+        task = (runtime_state.get("current_task") or "work").strip()
+        if task == "backfill":
+            return "Active: processing RT sales backfill."
+        return f"Active: {runtime_message or task}."
+
+    if runtime_status == "cooldown" or cooldown_active:
+        if cooldown_until_dt:
+            return f"Waiting because quota cooldown is active until {_fmt_uae(cooldown_until_dt)}."
+        return "Waiting because quota cooldown is active."
+
+    if runtime_status == "locked" or (lock_row and not lock_stale):
+        return "Worker lock is busy; another repair may be running."
+
+    if runtime_status == "sleeping":
+        next_wake = _fmt_uae(runtime_state.get("next_wake_utc"))
+        if actionable_queue_count > 0:
+            if next_wake:
+                return f"Queue has {actionable_queue_count} claimable item(s). Worker is sleeping until next retry at {next_wake}."
+            return f"Queue has {actionable_queue_count} claimable item(s). Worker is sleeping until next retry."
+        if queue_count > 0:
+            return f"Queue has {queue_count} item(s), but 0 are currently claimable."
+        if (status or "").lower() == "overdue":
+            return "Ledger freshness is overdue, but worker runtime is SLEEPING. This does not confirm a stuck process."
+        if next_wake:
+            return f"Sleeping until next scheduled run at {next_wake}."
+        return "Sleeping until next scheduled run."
+
+    if runtime_status == "idle":
+        return runtime_message or "Idle; no RT sales work is currently running."
+
+    if runtime_status == "error":
+        return runtime_message or "The last worker loop reported an error."
+
+    normalized_status = (status or "").lower()
+    if normalized_status == "overdue" and runtime_status:
+        return (
+            f"Ledger freshness is overdue, but worker runtime is {runtime_status.upper()}. "
+            "This does not confirm a stuck process."
+        )
+
+    if normalized_status == "overdue":
+        if not last_run_dt:
+            return "No heartbeat recorded yet after app restart."
+        if overdue_reason:
+            return (
+                "Overdue because latest applied ledger hour is older than expected. "
+                "This is inferred from ledger freshness, not a confirmed stuck process."
+            )
+        return (
+            "Overdue because ledger freshness is behind the expected cadence. "
+            "This is inferred from ledger freshness, not a confirmed stuck process."
+        )
+
+    if not runtime_state.get("updated_at_utc"):
+        return "No heartbeat recorded yet after app restart."
+
+    if runtime_message:
+        return runtime_message
+
+    return "Worker status is available."
 
 
 def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
@@ -241,6 +322,10 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "downloaded": 0,
             "applied": 0,
             "failed": 0,
+            "claimable": 0,
+            "waiting": 0,
+            "stale_requested": 0,
+            "stale_downloaded": 0,
             "next_claimable_hour_utc": None,
             "last_applied_hour_utc": None,
         }
@@ -334,6 +419,32 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
                 overdue_reason = "stale; investigate scheduler/lock"
 
     last_run_display = _fmt_uae(last_run_dt or last_run_iso)
+    missing_count = int(ledger_summary.get("missing", 0) or 0)
+    failed_count = int(ledger_summary.get("failed", 0) or 0)
+    requested_count = int(ledger_summary.get("requested", 0) or 0)
+    downloaded_count = int(ledger_summary.get("downloaded", 0) or 0)
+    actionable_queue_count = int(ledger_summary.get("claimable", 0) or 0)
+    waiting_queue_count = int(ledger_summary.get("waiting", 0) or 0)
+    stale_requested_count = int(ledger_summary.get("stale_requested", 0) or 0)
+    stale_downloaded_count = int(ledger_summary.get("stale_downloaded", 0) or 0)
+    queue_count = missing_count + failed_count + requested_count + downloaded_count
+    runtime_state = get_worker_runtime_state("RT Sales Sync")
+    runtime_explanation = _rt_sales_explanation(
+        status=status,
+        runtime_state=runtime_state,
+        cooldown_active=cooldown_active,
+        cooldown_until_dt=cooldown_until_dt,
+        lock_row=lock_row,
+        lock_stale=lock_stale,
+        overdue_reason=overdue_reason,
+        last_run_dt=last_run_dt,
+        queue_count=queue_count,
+        actionable_queue_count=actionable_queue_count,
+    )
+    lock_state = "stale" if lock_stale else ("active" if lock_row else "none")
+    lock_owner = lock_row.get("owner") if lock_row and not lock_stale else None
+    lock_expires_iso = _fmt_iso_utc(lock_expires_dt) if lock_expires_dt else None
+    cooldown_until_iso = _fmt_iso_utc(cooldown_until_dt) if cooldown_until_dt else None
     workers.append(
         {
             "key": "rt_sales_sync",
@@ -351,6 +462,29 @@ def _rt_sales_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "overdue_reason": overdue_reason,
             "what": "Ingests real-time sales and maintains hourly ledger",
             "mode": "auto",
+            "runtime_status": runtime_state.get("runtime_status"),
+            "runtime_last_message": runtime_state.get("last_message"),
+            "runtime_current_task": runtime_state.get("current_task"),
+            "runtime_queue_count": runtime_state.get("queue_count"),
+            "runtime_active_window": runtime_state.get("active_window"),
+            "runtime_last_loop_started_utc": runtime_state.get("last_loop_started_utc"),
+            "runtime_last_loop_finished_utc": runtime_state.get("last_loop_finished_utc"),
+            "runtime_next_wake_utc": runtime_state.get("next_wake_utc"),
+            "runtime_updated_at_utc": runtime_state.get("updated_at_utc"),
+            "queue_count": queue_count,
+            "actionable_queue_count": actionable_queue_count,
+            "waiting_queue_count": waiting_queue_count,
+            "requested_count": requested_count,
+            "downloaded_count": downloaded_count,
+            "failed_count": failed_count,
+            "missing_count": missing_count,
+            "stale_requested_count": stale_requested_count,
+            "stale_downloaded_count": stale_downloaded_count,
+            "lock_owner": lock_owner,
+            "lock_state": lock_state,
+            "lock_expires_at": lock_expires_iso,
+            "cooldown_until": cooldown_until_iso,
+            "explanation": runtime_explanation,
         }
     )
 
@@ -457,9 +591,11 @@ def _collect_workers(domains: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 @router.get("/api/workers/status")
-def get_worker_status() -> Dict[str, Any]:
+def get_worker_status(manual: bool = Query(False)) -> Dict[str, Any]:
     now_utc = _utcnow()
     marketplace_id = DEFAULT_MARKETPLACE_ID
+    if manual:
+        add_activity("INFO", "Workers status refreshed")
 
     domains: Dict[str, Dict[str, Any]] = {}
     try:

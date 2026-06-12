@@ -1,12 +1,16 @@
 (function () {
+  const WORKERS_STATUS_UI_VERSION = "workers-ui-v3";
   const POLL_MS = 4000;
-  const WAITING_STATUSES = new Set(["cooldown", "locked", "waiting"]);
+  const WAITING_STATUSES = new Set(["cooldown", "locked", "waiting", "sleeping", "idle"]);
   const STATUS_PRIORITY = {
     error: 5,
     overdue: 4,
+    active: 4,
     locked: 3,
     cooldown: 3,
     waiting: 3,
+    sleeping: 2,
+    idle: 2,
     ok: 2,
     unknown: 1,
   };
@@ -74,6 +78,27 @@
       mode: (raw.mode || (raw.expected_interval_minutes ? "auto" : "manual")).toLowerCase(),
       what: raw.what || "",
       overdueByMinutes: Number(raw.overdue_by_minutes || 0),
+      runtimeStatus: raw.runtime_status || null,
+      runtimeLastMessage: raw.runtime_last_message || null,
+      runtimeCurrentTask: raw.runtime_current_task || null,
+      runtimeQueueCount: raw.queue_count ?? raw.runtime_queue_count,
+      actionableQueueCount: raw.actionable_queue_count,
+      waitingQueueCount: raw.waiting_queue_count,
+      requestedCount: raw.requested_count,
+      downloadedCount: raw.downloaded_count,
+      failedCount: raw.failed_count,
+      missingCount: raw.missing_count,
+      staleRequestedCount: raw.stale_requested_count,
+      staleDownloadedCount: raw.stale_downloaded_count,
+      runtimeActiveWindow: raw.runtime_active_window || null,
+      runtimeNextWakeUtc: raw.runtime_next_wake_utc || null,
+      runtimeLastStartedUtc: raw.runtime_last_loop_started_utc || null,
+      runtimeLastFinishedUtc: raw.runtime_last_loop_finished_utc || null,
+      lockOwner: raw.lock_owner || null,
+      lockState: raw.lock_state || null,
+      lockExpiresAt: raw.lock_expires_at || null,
+      cooldownUntil: raw.cooldown_until || null,
+      explanation: raw.explanation || null,
     };
   };
 
@@ -136,6 +161,19 @@
     const overdueReason = workers.find((w) => w.overdueReason && w.status === "overdue")?.overdueReason || null;
     const message = (overdueReason || workers.find((w) => w.message)?.message || "").trim();
     const overdueMinutes = workers.reduce((max, w) => Math.max(max, w.overdueByMinutes || 0), 0);
+    const runtimeWorker = workers.find((w) =>
+      w.runtimeStatus ||
+      w.runtimeLastMessage ||
+      w.runtimeCurrentTask ||
+      w.runtimeQueueCount !== undefined ||
+      w.actionableQueueCount !== undefined ||
+      w.runtimeNextWakeUtc ||
+      w.explanation
+    );
+    const runtimeStatus = String(runtimeWorker?.runtimeStatus || "").toLowerCase();
+    const displayStatus = ["active", "sleeping", "idle", "locked", "cooldown", "error"].includes(runtimeStatus)
+      ? runtimeStatus
+      : status;
 
     return {
       id: group.id,
@@ -143,13 +181,44 @@
       label: group.label,
       description: group.description,
       status,
+      displayStatus,
       lastRun,
       nextRun: nextRun || "—",
       mode,
       message,
       overdueReason,
       overdueMinutes,
+      runtime: runtimeWorker ? {
+        status: runtimeWorker.runtimeStatus,
+        lastMessage: runtimeWorker.runtimeLastMessage,
+        currentTask: runtimeWorker.runtimeCurrentTask,
+        queueCount: runtimeWorker.runtimeQueueCount,
+        actionableQueueCount: runtimeWorker.actionableQueueCount,
+        waitingQueueCount: runtimeWorker.waitingQueueCount,
+        requestedCount: runtimeWorker.requestedCount,
+        downloadedCount: runtimeWorker.downloadedCount,
+        failedCount: runtimeWorker.failedCount,
+        missingCount: runtimeWorker.missingCount,
+        staleRequestedCount: runtimeWorker.staleRequestedCount,
+        staleDownloadedCount: runtimeWorker.staleDownloadedCount,
+        activeWindow: runtimeWorker.runtimeActiveWindow,
+        nextWakeUtc: runtimeWorker.runtimeNextWakeUtc,
+        lastStartedUtc: runtimeWorker.runtimeLastStartedUtc,
+        lastFinishedUtc: runtimeWorker.runtimeLastFinishedUtc,
+        lockOwner: runtimeWorker.lockOwner,
+        lockState: runtimeWorker.lockState,
+        lockExpiresAt: runtimeWorker.lockExpiresAt,
+        cooldownUntil: runtimeWorker.cooldownUntil,
+        explanation: runtimeWorker.explanation,
+      } : null,
     };
+  };
+
+  const formatRuntimeTime = (value) => {
+    if (!value) return "";
+    const ts = Date.parse(value);
+    if (!Number.isFinite(ts)) return value;
+    return new Date(ts).toLocaleString();
   };
 
   const overallStatusFromGroups = (groups) => {
@@ -181,13 +250,26 @@
           <div class="worker-card-title" data-role="title"></div>
           <div class="worker-card-mode" data-role="mode"></div>
         </div>
-        <div class="worker-card-status-line" data-role="status"></div>
-        <div class="worker-meta-compact">
-          <div data-role="last"></div>
-          <div data-role="next"></div>
+        <div class="worker-card-group">
+          <div class="worker-group-label">Main status</div>
+          <div class="worker-card-status-line" data-role="status"></div>
+          <div class="worker-card-desc" data-role="desc"></div>
         </div>
-        <div class="worker-card-desc" data-role="desc"></div>
-        <div class="worker-card-message" data-role="message"></div>
+        <div class="worker-card-group">
+          <div class="worker-group-label">Timing</div>
+          <div class="worker-meta-compact">
+            <div data-role="last"></div>
+            <div data-role="next"></div>
+          </div>
+        </div>
+        <div class="worker-card-group" data-role="runtime-wrap">
+          <div class="worker-group-label">Runtime</div>
+          <div class="worker-card-message" data-role="runtime"></div>
+        </div>
+        <div class="worker-card-group" data-role="message-wrap">
+          <div class="worker-group-label">Reason / message</div>
+          <div class="worker-card-message" data-role="message"></div>
+        </div>
       `;
       card.dataset.wired = "1";
     }
@@ -198,6 +280,9 @@
       last: card.querySelector("[data-role='last']"),
       next: card.querySelector("[data-role='next']"),
       desc: card.querySelector("[data-role='desc']"),
+      runtimeWrap: card.querySelector("[data-role='runtime-wrap']"),
+      runtime: card.querySelector("[data-role='runtime']"),
+      messageWrap: card.querySelector("[data-role='message-wrap']"),
       message: card.querySelector("[data-role='message']"),
     };
   };
@@ -208,37 +293,90 @@
     if (!refs) return;
 
     const statusValue = (state.status || "unknown").toLowerCase();
-    card.dataset.status = statusValue;
+    const displayStatus = (state.displayStatus || statusValue || "unknown").toLowerCase();
+    card.dataset.status = displayStatus;
 
-    if (refs.title) refs.title.textContent = `${statusIcon(statusValue)} ${state.label}`;
+    if (refs.title) refs.title.textContent = `${statusIcon(displayStatus)} ${state.label}`;
     if (refs.mode) refs.mode.textContent = state.mode === "auto" ? "Automatic" : "Manual";
     if (refs.status) {
-      const overdueText = state.overdueMinutes > 0 ? ` • Overdue by ${state.overdueMinutes}m` : "";
-      refs.status.textContent = `Status: ${statusValue.toUpperCase()}${overdueText}`;
+      const ledgerText = state.overdueMinutes > 0
+        ? ` • Ledger overdue by ${state.overdueMinutes}m`
+        : (displayStatus !== statusValue ? ` • Ledger: ${statusValue.toUpperCase()}` : "");
+      refs.status.textContent = `Status: ${displayStatus.toUpperCase()}${ledgerText}`;
     }
     if (refs.last) refs.last.textContent = `Last run: ${state.lastRun || "—"}`;
     if (refs.next) {
-      const nextLabel = statusValue === "cooldown" ? "Cooldown until" : "Next run";
-      const nextValue = state.mode === "manual" ? "—" : state.nextRun || "—";
+      const runtime = state.runtime;
+      const nextLabel = runtime && runtime.cooldownUntil ? "Cooldown until" : (runtime && runtime.nextWakeUtc ? "Next wake" : "Next run");
+      const nextValue = runtime && runtime.cooldownUntil
+        ? formatRuntimeTime(runtime.cooldownUntil)
+        : runtime && runtime.nextWakeUtc
+          ? formatRuntimeTime(runtime.nextWakeUtc)
+          : (state.mode === "manual" ? "—" : state.nextRun || "—");
       refs.next.textContent = `${nextLabel}: ${nextValue}`;
     }
     if (refs.desc) refs.desc.textContent = state.description;
+    if (refs.runtime) {
+      const runtime = state.runtime;
+      if (runtime) {
+        const parts = [];
+        if (runtime.lastStartedUtc) parts.push(`Loop started: ${formatRuntimeTime(runtime.lastStartedUtc)}`);
+        if (runtime.lastFinishedUtc) parts.push(`Loop finished: ${formatRuntimeTime(runtime.lastFinishedUtc)}`);
+        if (runtime.queueCount !== undefined && runtime.queueCount !== null) parts.push(`Queue: ${runtime.queueCount}`);
+        if (runtime.actionableQueueCount !== undefined && runtime.actionableQueueCount !== null) parts.push(`Claimable: ${runtime.actionableQueueCount}`);
+        if (runtime.waitingQueueCount !== undefined && runtime.waitingQueueCount !== null) parts.push(`Waiting: ${runtime.waitingQueueCount}`);
+        if (runtime.missingCount !== undefined && runtime.missingCount !== null) parts.push(`Missing: ${runtime.missingCount}`);
+        if (runtime.failedCount !== undefined && runtime.failedCount !== null) parts.push(`Failed: ${runtime.failedCount}`);
+        if (runtime.requestedCount !== undefined && runtime.requestedCount !== null) parts.push(`Requested: ${runtime.requestedCount}`);
+        if (runtime.downloadedCount !== undefined && runtime.downloadedCount !== null) parts.push(`Downloaded: ${runtime.downloadedCount}`);
+        if (runtime.staleRequestedCount !== undefined && runtime.staleRequestedCount !== null) parts.push(`Stale requested: ${runtime.staleRequestedCount}`);
+        if (runtime.staleDownloadedCount !== undefined && runtime.staleDownloadedCount !== null) parts.push(`Stale downloaded: ${runtime.staleDownloadedCount}`);
+        if (runtime.currentTask) parts.push(`Task: ${runtime.currentTask}`);
+        if (runtime.activeWindow) parts.push(`Window: ${runtime.activeWindow}`);
+        if (runtime.lockState && runtime.lockState !== "none") {
+          const ownerText = runtime.lockOwner ? ` (${runtime.lockOwner})` : "";
+          const expiryText = runtime.lockExpiresAt ? ` until ${formatRuntimeTime(runtime.lockExpiresAt)}` : "";
+          parts.push(`Lock: ${runtime.lockState}${ownerText}${expiryText}`);
+        }
+        if (refs.runtimeWrap) refs.runtimeWrap.style.display = parts.length ? "flex" : "none";
+        refs.runtime.style.display = parts.length ? "block" : "none";
+        refs.runtime.textContent = parts.join(" | ");
+      } else {
+        if (refs.runtimeWrap) refs.runtimeWrap.style.display = "none";
+        refs.runtime.style.display = "none";
+        refs.runtime.textContent = "";
+      }
+    }
     if (refs.message) {
       const trimmed = (state.message || "").trim();
       const overdueReason = (state.overdueReason || "").trim();
+      const runtime = state.runtime || {};
+      const explanation = (runtime.explanation || "").trim();
       const showReason = statusValue === "error" && trimmed;
       const showOverdueReason = statusValue === "overdue" && overdueReason;
-      const showWaitingMessage = statusValue === "waiting" && trimmed;
-      if (showReason) {
+      const showWaitingMessage = (statusValue === "waiting" || displayStatus === "sleeping" || displayStatus === "idle") && trimmed;
+      if (explanation) {
+        if (refs.messageWrap) refs.messageWrap.style.display = "flex";
+        refs.message.style.display = "block";
+        refs.message.textContent = explanation;
+      } else if (showReason) {
+        if (refs.messageWrap) refs.messageWrap.style.display = "flex";
         refs.message.style.display = "block";
         refs.message.textContent = `Reason: ${trimmed}`;
       } else if (showOverdueReason) {
+        if (refs.messageWrap) refs.messageWrap.style.display = "flex";
         refs.message.style.display = "block";
         refs.message.textContent = `Reason: ${overdueReason}`;
       } else if (showWaitingMessage) {
+        if (refs.messageWrap) refs.messageWrap.style.display = "flex";
         refs.message.style.display = "block";
         refs.message.textContent = trimmed;
+      } else if (runtime.lastMessage) {
+        if (refs.messageWrap) refs.messageWrap.style.display = "flex";
+        refs.message.style.display = "block";
+        refs.message.textContent = runtime.lastMessage;
       } else {
+        if (refs.messageWrap) refs.messageWrap.style.display = "none";
         refs.message.style.display = "none";
         refs.message.textContent = "";
       }
@@ -252,9 +390,12 @@
     const refreshBtn = document.getElementById("workers-refresh-btn");
     const heartbeatEl = document.getElementById("workers-heartbeat");
     const lastCheckedEl = document.getElementById("workers-last-checked");
+    const versionEl = document.getElementById("workers-ui-version");
+    const refreshNoteEl = document.getElementById("workers-refresh-note");
     const errorEl = document.getElementById("workers-error");
 
     if (!button || !backdrop || !heartbeatEl || !lastCheckedEl) return;
+    if (versionEl) versionEl.textContent = `UI: ${WORKERS_STATUS_UI_VERSION}`;
 
     const sectionMap = new Map();
     GROUPS.forEach((g) => {
@@ -296,7 +437,7 @@
       button.textContent = overallLabel(overall, data.summary);
     };
 
-    const fetchStatus = async () => {
+    const fetchStatus = async (manual = false) => {
       if (errorEl) {
         errorEl.style.display = "none";
         errorEl.textContent = "";
@@ -308,10 +449,13 @@
       const controller = new AbortController();
       inFlight = controller;
       try {
-        const resp = await fetch("/api/workers/status", { signal: controller.signal });
+        const resp = await fetch(`/api/workers/status${manual ? "?manual=true" : ""}`, { signal: controller.signal });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         applyData(data);
+        if (manual && refreshNoteEl) {
+          refreshNoteEl.textContent = `Status refreshed at ${new Date().toLocaleTimeString()}.`;
+        }
       } catch (err) {
         if (err && err.name === "AbortError") return;
         showError(err);
@@ -344,6 +488,7 @@
 
     const openModal = () => {
       backdrop.style.display = "flex";
+      if (versionEl) versionEl.textContent = `UI: ${WORKERS_STATUS_UI_VERSION}`;
       startPolling();
     };
 
@@ -356,7 +501,7 @@
     if (closeBtn) closeBtn.addEventListener("click", closeModal);
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
-        startPolling();
+        fetchStatus(true);
       });
     }
 

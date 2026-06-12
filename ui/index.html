@@ -122,7 +122,7 @@
     .tab-reset-btn { margin-top:auto; width:100%; padding:6px 8px; border-radius:8px; border:1px solid #e2e8f0; background:#fff; color:#64748b; cursor:pointer; font-weight:600; font-size:12px; text-align:left; }
     .tab-reset-btn:hover { background:#f1f5f9; color:#334155; }
     .workers-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:8px; }
-    .worker-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+    .worker-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; box-shadow:0 1px 2px rgba(15,23,42,0.04); }
     .worker-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
     .worker-row:first-of-type { border-top:none; padding-top:0; margin-top:0; }
     .worker-title { font-weight:700; display:flex; align-items:center; gap:6px; }
@@ -138,12 +138,19 @@
     .worker-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px; }
     .worker-card-title { display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; }
     .worker-card-mode { font-size:12px; color:#334155; font-weight:700; padding:2px 8px; border-radius:999px; background:#e2e8f0; white-space:nowrap; }
-    .worker-card-status-line { font-weight:700; margin-bottom:4px; }
-    .worker-card-desc { font-size:12px; color:var(--muted); margin-bottom:6px; }
-    .worker-card-message { font-size:12px; color:#b45309; }
-    .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px; margin-bottom:4px; }
-    .worker-card[data-status="ok"] .worker-card-status-line { color:#15803d; }
+    .worker-card-status-line { font-weight:800; margin-bottom:8px; }
+    .worker-card-desc { font-size:12px; color:var(--muted); margin-bottom:8px; line-height:1.35; }
+    .worker-card-message { font-size:12px; color:#475569; line-height:1.4; }
+    .worker-card-group { border-top:1px solid #e5e7eb; padding-top:8px; margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+    .worker-card-group:first-of-type { border-top:none; padding-top:0; margin-top:0; }
+    .worker-group-label { font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.04em; }
+    .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px 10px; }
+    .worker-refresh-note { font-size:12px; color:#475569; min-height:16px; }
+    .worker-card[data-status="ok"] .worker-card-status-line,
+    .worker-card[data-status="active"] .worker-card-status-line { color:#15803d; }
     .worker-card[data-status="waiting"] .worker-card-status-line,
+    .worker-card[data-status="sleeping"] .worker-card-status-line,
+    .worker-card[data-status="idle"] .worker-card-status-line { color:#2563eb; }
     .worker-card[data-status="cooldown"] .worker-card-status-line,
     .worker-card[data-status="locked"] .worker-card-status-line { color:#b45309; }
     .worker-card[data-status="overdue"] .worker-card-status-line { color:#c2410c; }
@@ -5928,7 +5935,10 @@
           throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
         }
         if (statusEl) {
-          let message = `Scheduled ${data.scheduled_tasks?.length || 0} hour(s).`;
+          const acceptedCount = data.scheduled_tasks?.length || 0;
+          let message = acceptedCount
+            ? `Accepted ${acceptedCount} hour(s); background repair starting.`
+            : "No missing hours were accepted for repair.";
           if (data.cooldown_active) {
             message += ` Quota cooldown until ${data.cooldown_until || "unknown"}.`;
             statusEl.style.color = "#b91c1c";
@@ -6369,6 +6379,8 @@
           <div style="font-weight:700;">Background Workers</div>
           <div class="muted-text" style="font-size:12px;">Auto-refreshes every 4s while open</div>
           <div id="workers-last-checked" class="muted-text" style="font-size:12px;">Last checked: -</div>
+          <div id="workers-ui-version" class="muted-text" style="font-size:12px;">UI: loading</div>
+          <div id="workers-refresh-note" class="worker-refresh-note"></div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline-secondary" id="workers-refresh-btn" type="button">Refresh Status</button>
@@ -6388,7 +6400,7 @@
     </div>
   </div>
   <script src="/ui/js/df_payments.js"></script>
-  <script src="/ui/js/workers_status.js"></script>
+  <script src="/ui/js/workers_status.js?v=3"></script>
   <div class="backdrop" id="credentials-modal" style="display:none;">
     <div class="modal" style="max-width:980px;">
       <header>

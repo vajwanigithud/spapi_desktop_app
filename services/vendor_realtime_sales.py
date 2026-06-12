@@ -46,6 +46,7 @@ from services.db import (
     execute_write,
     get_db_connection,
 )
+from services.activity_log import add_activity
 from services.perf import time_block
 from services.spapi_reports import (
     SpApiQuotaError,
@@ -1166,72 +1167,93 @@ def _execute_vendor_rt_sales_report(
     elif ledger_hour_iso:
         ledger_hours.append(ledger_hour_iso)
 
-    _ensure_spapi_call_allowed(f"ledger_hour {hour_label}")
-    logger.info(
-        "%s Requesting RT report for [%s, %s) (%s)",
-        LOG_PREFIX_API,
-        normalized_start.isoformat(),
-        normalized_end.isoformat(),
-        marketplace_id,
+    add_activity(
+        "API",
+        f"RT Sales report requested for [{normalized_start.isoformat()}, {normalized_end.isoformat()})",
     )
-    report_id = request_vendor_report(
-        report_type="GET_VENDOR_REAL_TIME_SALES_REPORT",
-        data_start=normalized_start,
-        data_end=normalized_end,
-        extra_options={"currencyCode": currency_code},
-    )
-    logger.info(
-        "%s waiting for RT sales report reportId=%s window=[%s, %s) marketplace=%s",
-        LOG_PREFIX_ADMIN,
-        report_id,
-        normalized_start.isoformat(),
-        normalized_end.isoformat(),
-        marketplace_id,
-    )
-    for hour_iso in ledger_hours:
-        ledger_set_report_id(marketplace_id, hour_iso, report_id)
-    report_data = poll_vendor_report(report_id)
-    document_id = report_data.get("reportDocumentId")
-    if not document_id:
-        raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
-    content, _ = download_vendor_report_document(document_id)
-    for hour_iso in ledger_hours:
-        ledger_mark_downloaded(marketplace_id, hour_iso, report_id)
-    if isinstance(content, bytes):
-        payload = json.loads(content.decode("utf-8"))
-    elif isinstance(content, str):
-        payload = json.loads(content)
-    else:
-        payload = content
-
-    summary = ingest_realtime_sales_report(
-        payload,
-        marketplace_id=marketplace_id,
-        currency_code=currency_code,
-    )
-    _record_audit_hours_for_window(
-        normalized_start,
-        normalized_end,
-        marketplace_id,
-        summary.get("hour_starts", []),
-    )
-    result = {
-        "report_id": report_id,
-        "start_utc": _utc_iso(normalized_start),
-        "end_utc": _utc_iso(normalized_end),
-        "marketplace_id": marketplace_id,
-        "summary": summary,
-    }
-
-    if ledger_hours:
-        for hour_iso in ledger_hours:
-            ledger_mark_applied(marketplace_id, hour_iso)
+    try:
+        _ensure_spapi_call_allowed(f"ledger_hour {hour_label}")
         logger.info(
-            "[RtSalesLedger] apply window hours=%d rows=%s",
-            len(ledger_hours),
-            summary.get("rows", 0),
+            "%s Requesting RT report for [%s, %s) (%s)",
+            LOG_PREFIX_API,
+            normalized_start.isoformat(),
+            normalized_end.isoformat(),
+            marketplace_id,
         )
-    return result
+        report_id = request_vendor_report(
+            report_type="GET_VENDOR_REAL_TIME_SALES_REPORT",
+            data_start=normalized_start,
+            data_end=normalized_end,
+            extra_options={"currencyCode": currency_code},
+        )
+        add_activity("API", f"RT Sales report id received: {report_id}")
+        logger.info(
+            "%s waiting for RT sales report reportId=%s window=[%s, %s) marketplace=%s",
+            LOG_PREFIX_ADMIN,
+            report_id,
+            normalized_start.isoformat(),
+            normalized_end.isoformat(),
+            marketplace_id,
+        )
+        for hour_iso in ledger_hours:
+            ledger_set_report_id(marketplace_id, hour_iso, report_id)
+        report_data = poll_vendor_report(report_id)
+        document_id = report_data.get("reportDocumentId")
+        if not document_id:
+            raise RuntimeError(f"No reportDocumentId returned for RT report {report_id}")
+        content, _ = download_vendor_report_document(document_id)
+        add_activity("API", f"RT Sales report downloaded: {report_id}")
+        for hour_iso in ledger_hours:
+            ledger_mark_downloaded(marketplace_id, hour_iso, report_id)
+        if isinstance(content, bytes):
+            payload = json.loads(content.decode("utf-8"))
+        elif isinstance(content, str):
+            payload = json.loads(content)
+        else:
+            payload = content
+
+        summary = ingest_realtime_sales_report(
+            payload,
+            marketplace_id=marketplace_id,
+            currency_code=currency_code,
+        )
+        _record_audit_hours_for_window(
+            normalized_start,
+            normalized_end,
+            marketplace_id,
+            summary.get("hour_starts", []),
+        )
+        result = {
+            "report_id": report_id,
+            "start_utc": _utc_iso(normalized_start),
+            "end_utc": _utc_iso(normalized_end),
+            "marketplace_id": marketplace_id,
+            "summary": summary,
+        }
+
+        if ledger_hours:
+            for hour_iso in ledger_hours:
+                ledger_mark_applied(marketplace_id, hour_iso)
+            logger.info(
+                "[RtSalesLedger] apply window hours=%d rows=%s",
+                len(ledger_hours),
+                summary.get("rows", 0),
+            )
+        add_activity(
+            "OK",
+            "RT Sales report ingested: "
+            f"rows={summary.get('rows', 0)} asins={summary.get('asins', 0)} hours={summary.get('hours', 0)}",
+        )
+        return result
+    except VendorRtCooldownBlock as exc:
+        add_activity("WARN", f"RT Sales report blocked by cooldown: {exc}")
+        raise
+    except SpApiQuotaError as exc:
+        add_activity("WARN", f"RT Sales report throttled by quota: {exc}")
+        raise
+    except Exception as exc:
+        add_activity("ERROR", f"RT Sales report failed: {exc}")
+        raise
 
 
 def process_rt_sales_hour_ledger(
@@ -1671,12 +1693,15 @@ def run_fill_day_repair_cycle(
     """
     if not hours_to_request:
         logger.info(f"{LOG_PREFIX_FILL_DAY} No hours to repair for %s", date_str)
+        add_activity("INFO", f"Fill Day repair cycle skipped for {date_str}: no hours to repair")
         return
 
+    add_activity("BG", f"Fill Day repair cycle started for {date_str} ({len(hours_to_request)} hour(s))")
     lock_owner = f"fill-day:{date_str}:{os.getpid()}:{datetime.now(timezone.utc).isoformat()}"
     lock_ttl = 1800
     if not ledger_acquire_worker_lock(marketplace_id, lock_owner, ttl_seconds=lock_ttl):
         logger.info(f"{LOG_PREFIX_FILL_DAY} Worker lock busy for %s; skipping Fill Day run", marketplace_id)
+        add_activity("WARN", f"Fill Day repair cycle skipped for {date_str}: worker lock busy")
         return
     try:
         per_batch_cap = burst_hours if burst_enabled else MAX_HOURLY_REPORTS_PER_FILL_DAY
@@ -1712,9 +1737,11 @@ def run_fill_day_repair_cycle(
             hour_starts = _parse_hour_starts(next_hours)
             if not hour_starts:
                 logger.info(f"{LOG_PREFIX_FILL_DAY} No valid hours to enqueue for %s", date_str)
+                add_activity("WARN", f"Fill Day repair cycle stopped for {date_str}: no valid hours to enqueue")
                 break
 
             enqueue_vendor_rt_sales_specific_hours(marketplace_id, hour_starts)
+            add_activity("BG", f"Fill Day repair batch started for {date_str}: {len(hour_starts)} hour(s)")
             requested_count = 0
             applied_count = 0
             batch_ok = True
@@ -1729,6 +1756,12 @@ def run_fill_day_repair_cycle(
             )
             for window_hours in windows:
                 try:
+                    window_start = window_hours[0].get("start_utc") if window_hours else "unknown"
+                    window_end = window_hours[-1].get("end_utc") if window_hours else "unknown"
+                    add_activity(
+                        "API",
+                        f"Fill Day processing window [{window_start}, {window_end}) ({len(window_hours)} hour(s))",
+                    )
                     summary = _process_hour_window(marketplace_id, window_hours)
                 except VendorRtCooldownBlock as exc:
                     batch_ok = False
@@ -1737,6 +1770,7 @@ def run_fill_day_repair_cycle(
                         date_str,
                         exc,
                     )
+                    add_activity("WARN", f"Fill Day repair cycle cooldown for {date_str}: {exc}")
                     next_hours = []
                     break
                 except SpApiQuotaError as exc:
@@ -1746,6 +1780,7 @@ def run_fill_day_repair_cycle(
                         date_str,
                         exc,
                     )
+                    add_activity("WARN", f"Fill Day repair cycle quota limit for {date_str}: {exc}")
                     next_hours = []
                     break
                 except Exception as exc:
@@ -1756,6 +1791,7 @@ def run_fill_day_repair_cycle(
                         exc,
                         exc_info=True,
                     )
+                    add_activity("ERROR", f"Fill Day repair cycle failed for {date_str}: {exc}")
                     next_hours = []
                     break
                 requested_count += int(summary.get("requested", 0) or 0)
@@ -1815,6 +1851,10 @@ def run_fill_day_repair_cycle(
             burst_enabled,
             per_batch_cap,
             hours_per_report,
+        )
+        add_activity(
+            "OK",
+            f"Fill Day repair cycle completed for {date_str}: batches={batches_run} applied={total_applied} reports={total_reports}",
         )
     finally:
         ledger_release_worker_lock(marketplace_id, lock_owner)

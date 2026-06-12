@@ -17,6 +17,8 @@ STATUS_DOWNLOADED = "DOWNLOADED"
 STATUS_APPLIED = "APPLIED"
 STATUS_FAILED = "FAILED"
 CLAIMABLE_STATUSES: Tuple[str, str] = (STATUS_MISSING, STATUS_FAILED)
+STALE_REQUESTED_MINUTES = 60
+STALE_DOWNLOADED_MINUTES = 60
 LEDGER_NORMALIZATION_FLAG = "rt_sales_ledger_hour_normalized_v1"
 
 STATUS_PRIORITY = {
@@ -373,6 +375,118 @@ def mark_failed(
         conn.commit()
 
 
+def recover_stale_inflight_hours(marketplace_id: str, now_utc: Optional[datetime] = None) -> Dict[str, int]:
+    if not marketplace_id:
+        return {
+            "requested": 0,
+            "downloaded": 0,
+            "total": 0,
+            "stale_requested": 0,
+            "stale_downloaded": 0,
+        }
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now_iso = now.replace(microsecond=0).isoformat()
+    requested_cutoff = (now - timedelta(minutes=STALE_REQUESTED_MINUTES)).replace(microsecond=0).isoformat()
+    downloaded_cutoff = (now - timedelta(minutes=STALE_DOWNLOADED_MINUTES)).replace(microsecond=0).isoformat()
+    result = {
+        "requested": 0,
+        "downloaded": 0,
+        "total": 0,
+        "stale_requested": 0,
+        "stale_downloaded": 0,
+    }
+    with get_db_connection() as conn:
+        ensure_vendor_rt_sales_ledger_table(conn)
+        requested_rows = conn.execute(
+            f"""
+            SELECT hour_utc
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status = ?
+              AND updated_at_utc <= ?
+            """,
+            (marketplace_id, STATUS_REQUESTED, requested_cutoff),
+        ).fetchall()
+        downloaded_rows = conn.execute(
+            f"""
+            SELECT hour_utc
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status = ?
+              AND updated_at_utc <= ?
+            """,
+            (marketplace_id, STATUS_DOWNLOADED, downloaded_cutoff),
+        ).fetchall()
+
+        result["stale_requested"] = len(requested_rows)
+        result["stale_downloaded"] = len(downloaded_rows)
+
+        requested_hours = [row["hour_utc"] for row in requested_rows]
+        downloaded_hours = [row["hour_utc"] for row in downloaded_rows]
+
+        if requested_hours:
+            placeholders = ",".join("?" for _ in requested_hours)
+            cur = conn.execute(
+                f"""
+                UPDATE {LEDGER_TABLE}
+                SET status = ?,
+                    last_error = ?,
+                    next_retry_utc = ?,
+                    updated_at_utc = ?
+                WHERE marketplace_id = ?
+                  AND status = ?
+                  AND hour_utc IN ({placeholders})
+                """,
+                (
+                    STATUS_FAILED,
+                    f"Recovered stale REQUESTED row after {STALE_REQUESTED_MINUTES} minutes",
+                    now_iso,
+                    now_iso,
+                    marketplace_id,
+                    STATUS_REQUESTED,
+                    *requested_hours,
+                ),
+            )
+            result["requested"] = cur.rowcount
+
+        if downloaded_hours:
+            placeholders = ",".join("?" for _ in downloaded_hours)
+            cur = conn.execute(
+                f"""
+                UPDATE {LEDGER_TABLE}
+                SET status = ?,
+                    last_error = ?,
+                    next_retry_utc = ?,
+                    updated_at_utc = ?
+                WHERE marketplace_id = ?
+                  AND status = ?
+                  AND hour_utc IN ({placeholders})
+                """,
+                (
+                    STATUS_FAILED,
+                    f"Recovered stale DOWNLOADED row after {STALE_DOWNLOADED_MINUTES} minutes",
+                    now_iso,
+                    now_iso,
+                    marketplace_id,
+                    STATUS_DOWNLOADED,
+                    *downloaded_hours,
+                ),
+            )
+            result["downloaded"] = cur.rowcount
+
+        conn.commit()
+
+    result["total"] = result["requested"] + result["downloaded"]
+    if result["total"]:
+        logger.warning(
+            "[RtSalesLedger] recovered stale inflight rows marketplace=%s requested=%s downloaded=%s",
+            marketplace_id,
+            result["requested"],
+            result["downloaded"],
+        )
+    return result
+
+
 def set_report_id(marketplace_id: str, hour_utc: str, report_id: str) -> None:
     if not marketplace_id or not hour_utc or not report_id:
         return
@@ -417,6 +531,10 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
             "downloaded": 0,
             "applied": 0,
             "failed": 0,
+            "claimable": 0,
+            "waiting": 0,
+            "stale_requested": 0,
+            "stale_downloaded": 0,
             "next_claimable_hour_utc": None,
             "last_applied_hour_utc": None,
         }
@@ -431,6 +549,9 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
     }
     next_claimable = None
     last_applied = None
+    claimable_count = 0
+    stale_requested_count = 0
+    stale_downloaded_count = 0
     with get_db_connection() as conn:
         ensure_vendor_rt_sales_ledger_table(conn)
         rows = conn.execute(
@@ -462,6 +583,44 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
             """,
             (marketplace_id, *CLAIMABLE_STATUSES, now_iso),
         ).fetchone()
+        claimable_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status IN (?, ?)
+              AND (next_retry_utc IS NULL OR next_retry_utc <= ?)
+            """,
+            (marketplace_id, *CLAIMABLE_STATUSES, now_iso),
+        ).fetchone()
+        stale_requested_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status = ?
+              AND updated_at_utc <= ?
+            """,
+            (
+                marketplace_id,
+                STATUS_REQUESTED,
+                (now - timedelta(minutes=STALE_REQUESTED_MINUTES)).replace(microsecond=0).isoformat(),
+            ),
+        ).fetchone()
+        stale_downloaded_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {LEDGER_TABLE}
+            WHERE marketplace_id = ?
+              AND status = ?
+              AND updated_at_utc <= ?
+            """,
+            (
+                marketplace_id,
+                STATUS_DOWNLOADED,
+                (now - timedelta(minutes=STALE_DOWNLOADED_MINUTES)).replace(microsecond=0).isoformat(),
+            ),
+        ).fetchone()
 
     for row in rows:
         status = row["status"]
@@ -473,6 +632,15 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
 
     if next_row and next_row["hour_utc"]:
         next_claimable = next_row["hour_utc"]
+    if claimable_row:
+        claimable_count = int(claimable_row["count"] or 0)
+    if stale_requested_row:
+        stale_requested_count = int(stale_requested_row["count"] or 0)
+    if stale_downloaded_row:
+        stale_downloaded_count = int(stale_downloaded_row["count"] or 0)
+
+    queued_total = counts[STATUS_MISSING] + counts[STATUS_FAILED] + counts[STATUS_REQUESTED] + counts[STATUS_DOWNLOADED]
+    waiting_count = max(0, queued_total - claimable_count)
 
     return {
         "missing": counts[STATUS_MISSING],
@@ -480,6 +648,10 @@ def get_ledger_summary(marketplace_id: str, now_utc: Optional[datetime] = None) 
         "downloaded": counts[STATUS_DOWNLOADED],
         "applied": counts[STATUS_APPLIED],
         "failed": counts[STATUS_FAILED],
+        "claimable": claimable_count,
+        "waiting": waiting_count,
+        "stale_requested": stale_requested_count,
+        "stale_downloaded": stale_downloaded_count,
         "next_claimable_hour_utc": next_claimable,
         "last_applied_hour_utc": last_applied,
     }

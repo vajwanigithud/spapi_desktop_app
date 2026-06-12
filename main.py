@@ -206,6 +206,7 @@ from services.vendor_po_view import (
 from services.vendor_rt_sales_ledger import (
     LEDGER_NORMALIZATION_FLAG,
     normalize_existing_ledger_rows,
+    recover_stale_inflight_hours,
 )
 from services.vendor_rt_sales_ledger import (
     acquire_worker_lock as acquire_rt_sales_worker_lock,
@@ -216,6 +217,8 @@ from services.vendor_rt_sales_ledger import (
 from services.vendor_rt_sales_ledger import (
     release_worker_lock as release_rt_sales_worker_lock,
 )
+from services.vendor_rt_sales_ledger import get_ledger_summary
+from services.worker_runtime_state import record_worker_runtime_state, update_worker_runtime_state
 
 BODY_NONE = Body(default=None)
 REPORTLAB_AVAILABLE = importlib.util.find_spec("reportlab") is not None
@@ -292,6 +295,9 @@ async def log_static_requests(request: Request, call_next):
     if path.startswith("/ui/"):
         content_type = response.headers.get("content-type", "")
         logger.info("[STATIC] %s %s -> %s (%s)", request.method, path, response.status_code, content_type)
+        if path.endswith(".js"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
     return response
 register_printer_routes(app)
 register_activity_log_routes(app)
@@ -651,6 +657,7 @@ except Exception as e:
 # Vendor Real Time Sales Auto-Sync
 # ========================================
 VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES = 15  # Now 15 minutes instead of 60
+VENDOR_RT_SALES_QUEUED_RETRY_SECONDS = 60
 _rt_sales_auto_sync_thread = None
 _rt_sales_auto_sync_stop = False
 
@@ -762,6 +769,56 @@ def vendor_rt_sales_auto_sync_loop():
     marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
     marketplace_id = marketplace_ids[0]
     worker_owner = _rt_sales_lock_owner("auto-sync")
+    worker_name = "RT Sales Sync"
+
+    def _runtime_now_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    def _next_wake_iso(sleep_seconds: int) -> str:
+        return (datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)).replace(microsecond=0).isoformat()
+
+    def _queue_summary() -> Dict[str, Optional[int]]:
+        try:
+            summary = get_ledger_summary(marketplace_id, now_utc=datetime.now(timezone.utc))
+            missing = int(summary.get("missing", 0) or 0)
+            failed = int(summary.get("failed", 0) or 0)
+            requested = int(summary.get("requested", 0) or 0)
+            downloaded = int(summary.get("downloaded", 0) or 0)
+            claimable = int(summary.get("claimable", 0) or 0)
+            waiting = int(summary.get("waiting", 0) or 0)
+            total = missing + failed + requested + downloaded
+            return {
+                "missing": missing,
+                "failed": failed,
+                "requested": requested,
+                "downloaded": downloaded,
+                "claimable": claimable,
+                "waiting": waiting,
+                "stale_requested": int(summary.get("stale_requested", 0) or 0),
+                "stale_downloaded": int(summary.get("stale_downloaded", 0) or 0),
+                "total": total,
+            }
+        except Exception:
+            return {
+                "missing": None,
+                "failed": None,
+                "requested": None,
+                "downloaded": None,
+                "claimable": None,
+                "waiting": None,
+                "stale_requested": None,
+                "stale_downloaded": None,
+                "total": None,
+            }
+
+    def _queue_count() -> Optional[int]:
+        return _queue_summary().get("total")
+
+    def _actionable_queue_count() -> Optional[int]:
+        return _queue_summary().get("claimable")
+
+    def _has_queue(queue_count: Optional[int]) -> bool:
+        return queue_count is not None and queue_count > 0
 
     while not _rt_sales_auto_sync_stop:
         from services.db import get_db_connection
@@ -786,6 +843,20 @@ def vendor_rt_sales_auto_sync_loop():
         )
 
         now_utc = get_safe_now_utc()
+        loop_started_iso = _runtime_now_iso()
+        update_worker_runtime_state(
+            worker_name,
+            last_loop_started_utc=loop_started_iso,
+            next_wake_utc=None,
+            queue_count=_queue_count(),
+        )
+        record_worker_runtime_state(
+            worker_name,
+            runtime_status="active",
+            last_message="Loop awake; checking RT sales work",
+            current_task="checking",
+            activity_level="BG",
+        )
         pause_state = vendor_realtime_sales_service.rt_sales_get_autosync_pause(now_utc=now_utc)
         if pause_state.get("paused"):
             logger.warning(
@@ -793,26 +864,79 @@ def vendor_rt_sales_auto_sync_loop():
                 pause_state.get("reason") or "manual",
                 pause_state.get("until_utc") or "manual",
             )
-            time.sleep(interval_seconds)
+            sleep_seconds = interval_seconds
+            next_wake = _next_wake_iso(sleep_seconds)
+            record_worker_runtime_state(
+                worker_name,
+                runtime_status="sleeping",
+                last_message=f"Skipped because paused ({pause_state.get('reason') or 'manual'})",
+                current_task=None,
+                active_window=None,
+                next_wake_utc=next_wake,
+                last_loop_finished_utc=_runtime_now_iso(),
+                queue_count=_queue_count(),
+                activity_level="WARN",
+            )
+            time.sleep(sleep_seconds)
             continue
 
         if is_in_quota_cooldown(now_utc):
             logger.warning("[RTSalesAutoSync] In quota cooldown; skipping all SP-API calls this cycle")
-            time.sleep(interval_seconds)
+            sleep_seconds = interval_seconds
+            next_wake = _next_wake_iso(sleep_seconds)
+            record_worker_runtime_state(
+                worker_name,
+                runtime_status="cooldown",
+                last_message="Quota cooldown active; sleeping safely",
+                current_task=None,
+                active_window=None,
+                next_wake_utc=next_wake,
+                last_loop_finished_utc=_runtime_now_iso(),
+                queue_count=_queue_count(),
+                activity_level="WARN",
+            )
+            time.sleep(sleep_seconds)
             continue
 
         if is_backfill_in_progress():
             logger.warning("[RTSalesAutoSync] Previous cycle still in progress; skipping this cycle")
-            time.sleep(interval_seconds)
+            sleep_seconds = VENDOR_RT_SALES_QUEUED_RETRY_SECONDS
+            next_wake = _next_wake_iso(sleep_seconds)
+            record_worker_runtime_state(
+                worker_name,
+                runtime_status="locked",
+                last_message=f"Lock busy; retrying in {sleep_seconds}s",
+                current_task=None,
+                active_window=None,
+                next_wake_utc=next_wake,
+                last_loop_finished_utc=_runtime_now_iso(),
+                queue_count=_queue_count(),
+                activity_level="WARN",
+            )
+            time.sleep(sleep_seconds)
             continue
 
         backfill_acquired = False
         worker_lock_acquired = False
+        cycle_had_error = False
 
         try:
             if not start_backfill():
                 logger.warning("[RTSalesAutoSync] Failed to acquire backfill lock; another cycle is active")
-                time.sleep(interval_seconds)
+                sleep_seconds = VENDOR_RT_SALES_QUEUED_RETRY_SECONDS
+                next_wake = _next_wake_iso(sleep_seconds)
+                record_worker_runtime_state(
+                    worker_name,
+                    runtime_status="locked",
+                    last_message=f"Lock busy; retrying in {sleep_seconds}s",
+                    current_task=None,
+                    active_window=None,
+                    next_wake_utc=next_wake,
+                    last_loop_finished_utc=_runtime_now_iso(),
+                    queue_count=_queue_count(),
+                    activity_level="WARN",
+                )
+                time.sleep(sleep_seconds)
                 continue
 
             backfill_acquired = True
@@ -821,7 +945,20 @@ def vendor_rt_sales_auto_sync_loop():
                 logger.info("[RTSalesAutoSync] Worker lock busy for %s; skipping this cycle", marketplace_id)
                 end_backfill()
                 backfill_acquired = False
-                time.sleep(interval_seconds)
+                sleep_seconds = VENDOR_RT_SALES_QUEUED_RETRY_SECONDS
+                next_wake = _next_wake_iso(sleep_seconds)
+                record_worker_runtime_state(
+                    worker_name,
+                    runtime_status="locked",
+                    last_message=f"Lock busy; retrying in {sleep_seconds}s",
+                    current_task=None,
+                    active_window=None,
+                    next_wake_utc=next_wake,
+                    last_loop_finished_utc=_runtime_now_iso(),
+                    queue_count=_queue_count(),
+                    activity_level="WARN",
+                )
+                time.sleep(sleep_seconds)
                 continue
 
             worker_lock_acquired = True
@@ -850,6 +987,17 @@ def vendor_rt_sales_auto_sync_loop():
                     f"[RTSalesAutoSync] Normal sync, refreshing last 3h [{start_window.isoformat()}, {now_utc.isoformat()})"
                 )
 
+            active_window = f"{start_window.isoformat()} -> {now_utc.isoformat()}"
+            record_worker_runtime_state(
+                worker_name,
+                runtime_status="active",
+                last_message="Cycle started",
+                current_task="backfill",
+                active_window=active_window,
+                queue_count=_queue_count(),
+                activity_level="BG",
+            )
+
             try:
                 _refresh_worker_lock()
                 rows, asins, hours = backfill_realtime_sales_for_gap(
@@ -861,12 +1009,47 @@ def vendor_rt_sales_auto_sync_loop():
                 logger.info(
                     f"[RTSalesAutoSync] Cycle complete: {rows} rows, {asins} unique ASINs, {hours} hours processed"
                 )
+                if rows == 0 and asins == 0 and hours == 0:
+                    record_worker_runtime_state(
+                        worker_name,
+                        runtime_status="idle",
+                        last_message="No RT sales work found this cycle",
+                        current_task=None,
+                        queue_count=_queue_count(),
+                        activity_level="INFO",
+                    )
+                else:
+                    record_worker_runtime_state(
+                        worker_name,
+                        runtime_status="idle",
+                        last_message=f"Cycle completed: {rows} rows, {asins} ASINs, {hours} hours processed",
+                        current_task=None,
+                        queue_count=_queue_count(),
+                        activity_level="OK",
+                    )
             except SpApiQuotaError as e:
                 logger.error(f"[RTSalesAutoSync] QuotaExceeded; aborting remaining backfills/audits this cycle: {e}")
                 start_quota_cooldown(datetime.now(timezone.utc))
+                record_worker_runtime_state(
+                    worker_name,
+                    runtime_status="cooldown",
+                    last_message=f"Quota exceeded; cooldown started: {e}",
+                    current_task=None,
+                    queue_count=_queue_count(),
+                    activity_level="WARN",
+                )
                 skip_cycle = True
             except Exception as e:
+                cycle_had_error = True
                 logger.error(f"[RTSalesAutoSync] Backfill failed: {e}", exc_info=True)
+                record_worker_runtime_state(
+                    worker_name,
+                    runtime_status="error",
+                    last_message=f"Backfill failed: {e}",
+                    current_task=None,
+                    queue_count=_queue_count(),
+                    activity_level="ERROR",
+                )
                 skip_cycle = True
             finally:
                 _refresh_worker_lock()
@@ -963,15 +1146,75 @@ def vendor_rt_sales_auto_sync_loop():
                     logger.error(f"[RTSalesAutoSync] Weekly audit error: {e}", exc_info=True)
 
         except Exception as e:
+            cycle_had_error = True
             logger.error(f"[RTSalesAutoSync] Cycle failed: {e}", exc_info=True)
+            record_worker_runtime_state(
+                worker_name,
+                runtime_status="error",
+                last_message=f"Cycle failed: {e}",
+                current_task=None,
+                queue_count=_queue_count(),
+                activity_level="ERROR",
+            )
         finally:
             if worker_lock_acquired:
                 release_rt_sales_worker_lock(marketplace_id, worker_owner)
             if backfill_acquired:
                 end_backfill()
 
-        logger.debug(f"[RTSalesAutoSync] Next sync in {VENDOR_RT_SALES_AUTO_SYNC_INTERVAL_MINUTES} minutes")
-        time.sleep(interval_seconds)
+        recovery = recover_stale_inflight_hours(marketplace_id, now_utc=datetime.now(timezone.utc))
+        if recovery.get("total"):
+            add_activity(
+                "WARN",
+                "RT Sales Sync: recovered stale ledger rows "
+                f"requested={recovery.get('requested', 0)} downloaded={recovery.get('downloaded', 0)}",
+            )
+
+        final_queue_summary = _queue_summary()
+        final_queue_count = final_queue_summary.get("total")
+        final_claimable_count = final_queue_summary.get("claimable")
+        add_activity(
+            "BG",
+            "RT Sales Sync: Queue summary: "
+            f"missing={final_queue_summary.get('missing')} "
+            f"failed={final_queue_summary.get('failed')} "
+            f"requested={final_queue_summary.get('requested')} "
+            f"downloaded={final_queue_summary.get('downloaded')} "
+            f"claimable={final_claimable_count}",
+        )
+        cooldown_now = False
+        try:
+            cooldown_now = is_in_quota_cooldown(datetime.now(timezone.utc))
+        except Exception:
+            cooldown_now = False
+        if cooldown_now or cycle_had_error:
+            sleep_seconds = interval_seconds
+            sleep_message = "Quota cooldown active; sleeping safely" if cooldown_now else "Error occurred; sleeping until next safe run"
+        elif _has_queue(final_claimable_count):
+            sleep_seconds = VENDOR_RT_SALES_QUEUED_RETRY_SECONDS
+            sleep_message = f"Queue has {final_claimable_count} claimable item(s); retrying in {sleep_seconds}s"
+        elif _has_queue(final_queue_count):
+            sleep_seconds = interval_seconds
+            sleep_message = f"Queue has {final_queue_count} item(s), but 0 are currently claimable"
+            add_activity("INFO", "RT Sales Sync: No claimable ledger work found; sleeping normal interval")
+        else:
+            sleep_seconds = interval_seconds
+            sleep_message = "No queue; sleeping until next scheduled run"
+
+        logger.debug("[RTSalesAutoSync] Next sync in %s seconds", sleep_seconds)
+        next_wake = _next_wake_iso(sleep_seconds)
+        record_worker_runtime_state(
+            worker_name,
+            runtime_status="sleeping",
+            last_message=sleep_message,
+            current_task=None,
+            active_window=None,
+            next_wake_utc=next_wake,
+            last_loop_finished_utc=_runtime_now_iso(),
+            queue_count=final_queue_count,
+            activity_level="BG",
+        )
+        time.sleep(sleep_seconds)
 
 
 def start_vendor_rt_sales_auto_sync():
@@ -3071,6 +3314,8 @@ async def api_vendor_rt_sales_fill_day(
 
     date_str = payload.date
     cleaned_hours = payload.missing_hours
+    add_activity("BG", f"Fill Day requested for {date_str}")
+    add_activity("INFO", f"Fill Day missing hours count: {len(cleaned_hours)}")
     burst_enabled = bool(payload.burst)
     per_batch_cap = (
         payload.burst_hours if burst_enabled else vendor_realtime_sales_service.MAX_HOURLY_REPORTS_PER_FILL_DAY
@@ -3102,6 +3347,7 @@ async def api_vendor_rt_sales_fill_day(
         }
         for hour_info in plan["hours_to_request"]
     ]
+    add_activity("INFO", f"Fill Day planned/accepted hours count: {len(scheduled)}")
 
     if plan["hours_to_request"]:
         background_tasks.add_task(
@@ -3116,6 +3362,15 @@ async def api_vendor_rt_sales_fill_day(
             max_batches=max_batches,
             report_window_hours=report_window_hours,
         )
+        add_activity("BG", f"Fill Day background repair task accepted for {date_str} ({len(scheduled)} hour(s))")
+    else:
+        if plan["cooldown_active"]:
+            reason = f"quota cooldown until {plan['cooldown_until'] or 'unknown'}"
+        elif plan["total_missing"] <= 0:
+            reason = "no missing hours remain"
+        else:
+            reason = "no eligible missing hours in requested set"
+        add_activity("WARN", f"Fill Day no hours planned for {date_str}: {reason}")
 
     logger.info(
         "[VendorRtSales] Fill-day run %s: scheduled %d task(s) (remaining %d, pending %d, cooldown=%s, burst=%s batches=%d cap=%d window=%d)",
