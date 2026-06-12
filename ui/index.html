@@ -12,6 +12,28 @@
     h1 { margin:0; font-size:18px; }
     .btn { border:none; background:var(--accent); color:#fff; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
     .layout { padding:16px 20px; }
+    .app-main-shell {
+      display:flex;
+      min-height:calc(100vh - 70px);
+      width:100%;
+    }
+    .left-tabs {
+      flex:0 0 clamp(180px, 14vw, 230px);
+      min-width:180px;
+      max-width:230px;
+      background:#f8fafc;
+      border-right:1px solid var(--border);
+      padding:12px;
+      overflow-y:auto;
+      display:flex;
+      flex-direction:column;
+    }
+    .main-content {
+      flex:1;
+      min-width:0;
+      padding:16px 20px;
+      overflow:auto;
+    }
     .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
     .panel h2 { margin:0; padding:14px 16px; border-bottom:1px solid var(--border); font-size:16px; }
     table { width:100%; border-collapse: collapse; font-size:13px; }
@@ -87,9 +109,18 @@
     .tester-log { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; max-height:320px; overflow:auto; font-family: "SFMono-Regular", Consolas, monospace; font-size:13px; white-space:pre-wrap; }
     .tester-run-btn { background:#111827; color:#fff; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:700; }
     .tester-run-btn:disabled { background:#4b5563; cursor:not-allowed; }
-    .tabs { display:flex; gap:8px; margin:6px 0 0; }
-    .tab-btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:600; }
-    .tab-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .sidebar-title { font-size:12px; font-weight:800; color:#0f172a; text-transform:uppercase; letter-spacing:0.04em; margin:2px 8px 2px; }
+    .sidebar-hint { font-size:11px; color:#64748b; margin:0 8px 12px; }
+    .tabs { display:flex; flex-direction:column; gap:5px; margin:0; }
+    .tab-btn { width:100%; padding:8px 9px; border-radius:8px; border:1px solid transparent; background:transparent; color:#334155; cursor:pointer; font-weight:600; text-align:left; line-height:1.25; display:flex; align-items:center; gap:8px; position:relative; }
+    .tab-btn:hover { background:#fff; border-color:#e2e8f0; color:#0f172a; }
+    .tab-btn.active { background:#fff; color:#0f172a; border-color:#dbeafe; box-shadow:0 1px 2px rgba(15, 23, 42, 0.06); font-weight:800; }
+    .tab-btn.active::before { content:""; position:absolute; left:0; top:7px; bottom:7px; width:3px; border-radius:999px; background:#2563eb; }
+    .tab-drag-handle { color:#94a3b8; font-size:12px; line-height:1; letter-spacing:-0.08em; flex:0 0 auto; }
+    .tab-label { min-width:0; }
+    .tab-btn.dragging { opacity:0.45; }
+    .tab-reset-btn { margin-top:auto; width:100%; padding:6px 8px; border-radius:8px; border:1px solid #e2e8f0; background:#fff; color:#64748b; cursor:pointer; font-weight:600; font-size:12px; text-align:left; }
+    .tab-reset-btn:hover { background:#f1f5f9; color:#334155; }
     .workers-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:8px; }
     .worker-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
     .worker-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
@@ -687,22 +718,24 @@
     </div>
   </header>
 
-  <div class="layout" style="padding-bottom:0;">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="pos" onclick="showTab('pos')">Vendor POs</button>
-        <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog Fetcher</button>
-        <button class="tab-btn" data-tab="oos" onclick="showTab('oos')">Out-of-Stock Items</button>
-        <button id="tab-btn-vrt-summary" class="tab-btn" data-tab="vrt-summary" onclick="showTab('vrt-summary')">Vendor Real Time Summary</button>
-        <button id="tab-btn-vrt-trends" class="tab-btn" data-tab="vrt-trends" onclick="showTab('vrt-trends')">Vendor Real Time Trends</button>
-        <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" onclick="showTab('vrt-audit')">Vendor Real Time Audit</button>
-        <button class="tab-btn" data-tab="inventory" onclick="showTab('inventory')">Inventory</button>
-        <button class="tab-btn" data-tab="df-payments" onclick="showTab('df-payments')">DF Payments</button>
-        <!-- <button class="tab-btn" data-tab="tester" onclick="showTab('tester')">Endpoint Tester</button> -->
-        <!-- <button class="tab-btn" data-tab="notifications" onclick="showTab('notifications')">Notifications</button> -->
+  <div class="app-main-shell">
+    <aside class="left-tabs" aria-label="Main navigation">
+      <div class="sidebar-title">Modules</div>
+      <div class="sidebar-hint">Drag to reorder</div>
+      <div class="tabs" id="left-tab-list">
+        <button class="tab-btn active" data-tab="pos" draggable="true" onclick="showTab('pos')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor POs</span></button>
+        <button class="tab-btn" data-tab="catalog" draggable="true" onclick="showTab('catalog')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Catalog Fetcher</span></button>
+        <button class="tab-btn" data-tab="oos" draggable="true" onclick="showTab('oos')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Out-of-Stock Items</span></button>
+        <button id="tab-btn-vrt-summary" class="tab-btn" data-tab="vrt-summary" draggable="true" onclick="showTab('vrt-summary')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor Real Time Summary</span></button>
+        <button id="tab-btn-vrt-trends" class="tab-btn" data-tab="vrt-trends" draggable="true" onclick="showTab('vrt-trends')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor Real Time Trends</span></button>
+        <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" draggable="true" onclick="showTab('vrt-audit')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor Real Time Audit</span></button>
+        <button class="tab-btn" data-tab="inventory" draggable="true" onclick="showTab('inventory')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Inventory</span></button>
+        <button class="tab-btn" data-tab="df-payments" draggable="true" onclick="showTab('df-payments')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">DF Payments</span></button>
       </div>
-  </div>
+      <button class="tab-reset-btn" id="tab-reset-order-btn" type="button">Reset tab order</button>
+    </aside>
 
-  <div class="layout">
+  <main class="main-content">
     <div class="panel" id="pos-tab">
       <h2>Vendor POs (raw Amazon fields)</h2>
       <div style="padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
@@ -1251,6 +1284,7 @@
       </div>
     </div>
   </div>
+  </main>
   </div>
 
   <div class="backdrop" id="modal">
@@ -5933,6 +5967,123 @@
       }
     }
 
+    const DEFAULT_TAB_ORDER = [
+      "pos",
+      "catalog",
+      "oos",
+      "vrt-summary",
+      "vrt-trends",
+      "vrt-audit",
+      "inventory",
+      "df-payments",
+    ];
+    const TAB_ORDER_STORAGE_KEY = "spapi_desktop_tab_order_v1";
+
+    function getLeftTabList() {
+      return document.getElementById("left-tab-list");
+    }
+
+    function getLeftTabButtons() {
+      const list = getLeftTabList();
+      return list ? Array.from(list.querySelectorAll(".tab-btn[data-tab]")) : [];
+    }
+
+    function getCurrentTabOrder() {
+      return getLeftTabButtons().map(btn => btn.dataset.tab).filter(Boolean);
+    }
+
+    function normalizeTabOrder(order) {
+      const seen = new Set();
+      const normalized = [];
+      (order || []).forEach(tab => {
+        if (DEFAULT_TAB_ORDER.includes(tab) && !seen.has(tab)) {
+          seen.add(tab);
+          normalized.push(tab);
+        }
+      });
+      DEFAULT_TAB_ORDER.forEach(tab => {
+        if (!seen.has(tab)) normalized.push(tab);
+      });
+      return normalized;
+    }
+
+    function applyTabOrder(order) {
+      const list = getLeftTabList();
+      if (!list) return;
+      const buttonsByTab = new Map(getLeftTabButtons().map(btn => [btn.dataset.tab, btn]));
+      normalizeTabOrder(order).forEach(tab => {
+        const btn = buttonsByTab.get(tab);
+        if (btn) list.appendChild(btn);
+      });
+    }
+
+    function saveTabOrder() {
+      try {
+        localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(getCurrentTabOrder()));
+      } catch (err) {
+        console.warn("Failed to save tab order", err);
+      }
+    }
+
+    function loadSavedTabOrder() {
+      try {
+        return JSON.parse(localStorage.getItem(TAB_ORDER_STORAGE_KEY) || "[]");
+      } catch (err) {
+        console.warn("Failed to load tab order", err);
+        return [];
+      }
+    }
+
+    function initLeftTabOrdering() {
+      const list = getLeftTabList();
+      if (!list) return;
+      applyTabOrder(loadSavedTabOrder());
+      let draggedTab = null;
+
+      list.addEventListener("dragstart", (event) => {
+        const btn = event.target.closest(".tab-btn[data-tab]");
+        if (!btn) return;
+        draggedTab = btn;
+        btn.classList.add("dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", btn.dataset.tab);
+      });
+
+      list.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        const target = event.target.closest(".tab-btn[data-tab]");
+        if (!target || !draggedTab || target === draggedTab) return;
+        const rect = target.getBoundingClientRect();
+        const placeAfter = event.clientY > rect.top + rect.height / 2;
+        list.insertBefore(draggedTab, placeAfter ? target.nextSibling : target);
+      });
+
+      list.addEventListener("drop", (event) => {
+        event.preventDefault();
+        saveTabOrder();
+      });
+
+      list.addEventListener("dragend", () => {
+        if (draggedTab) draggedTab.classList.remove("dragging");
+        draggedTab = null;
+        saveTabOrder();
+      });
+
+      const resetBtn = document.getElementById("tab-reset-order-btn");
+      if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+          try {
+            localStorage.removeItem(TAB_ORDER_STORAGE_KEY);
+          } catch (err) {
+            console.warn("Failed to reset tab order", err);
+          }
+          applyTabOrder(DEFAULT_TAB_ORDER);
+          const currentActive = document.querySelector(".tab-btn.active")?.dataset?.tab || "pos";
+          showTab(currentActive);
+        });
+      }
+    }
+
     function showTab(tabName) {
       closeCatalogContextMenu();
       activeTab = tabName;
@@ -6010,6 +6161,7 @@
     updateInventoryRefreshButtonState();
     updateInventoryFreshnessLabel();
 
+    initLeftTabOrdering();
     showTab("pos");
     loadPOs(false);
     refreshVendorPoStatus();
