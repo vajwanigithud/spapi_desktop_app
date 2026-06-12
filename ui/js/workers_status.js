@@ -221,6 +221,33 @@
     return new Date(ts).toLocaleString();
   };
 
+  const escapeHtml = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
+  const formatStatusLabel = (value) => String(value || "unknown")
+    .replace(/[_-]+/g, " ")
+    .toUpperCase();
+
+  const isPositiveNumber = (value) => Number(value || 0) > 0;
+
+  const renderKvRows = (rows) => {
+    if (!rows.length) return "";
+    return `
+      <div class="worker-kv-grid">
+        ${rows.map((row) => `
+          <div class="worker-kv-item">
+            <div class="worker-kv-key">${escapeHtml(row.label)}</div>
+            <div class="worker-kv-value">${escapeHtml(row.value)}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  };
+
   const overallStatusFromGroups = (groups) => {
     const statuses = groups.map((g) => g.status);
     if (statuses.some((s) => s === "error")) return "error";
@@ -300,9 +327,12 @@
     if (refs.mode) refs.mode.textContent = state.mode === "auto" ? "Automatic" : "Manual";
     if (refs.status) {
       const ledgerText = state.overdueMinutes > 0
-        ? ` • Ledger overdue by ${state.overdueMinutes}m`
-        : (displayStatus !== statusValue ? ` • Ledger: ${statusValue.toUpperCase()}` : "");
-      refs.status.textContent = `Status: ${displayStatus.toUpperCase()}${ledgerText}`;
+        ? `Ledger overdue by ${state.overdueMinutes}m`
+        : (displayStatus !== statusValue ? `Ledger: ${formatStatusLabel(statusValue)}` : "");
+      refs.status.innerHTML = `
+        <span class="worker-status-badge" data-status="${escapeHtml(displayStatus)}">${escapeHtml(formatStatusLabel(displayStatus))}</span>
+        ${ledgerText ? `<span class="worker-ledger-note">${escapeHtml(ledgerText)}</span>` : ""}
+      `;
     }
     if (refs.last) refs.last.textContent = `Last run: ${state.lastRun || "—"}`;
     if (refs.next) {
@@ -319,32 +349,46 @@
     if (refs.runtime) {
       const runtime = state.runtime;
       if (runtime) {
-        const parts = [];
-        if (runtime.lastStartedUtc) parts.push(`Loop started: ${formatRuntimeTime(runtime.lastStartedUtc)}`);
-        if (runtime.lastFinishedUtc) parts.push(`Loop finished: ${formatRuntimeTime(runtime.lastFinishedUtc)}`);
-        if (runtime.queueCount !== undefined && runtime.queueCount !== null) parts.push(`Queue: ${runtime.queueCount}`);
-        if (runtime.actionableQueueCount !== undefined && runtime.actionableQueueCount !== null) parts.push(`Claimable: ${runtime.actionableQueueCount}`);
-        if (runtime.waitingQueueCount !== undefined && runtime.waitingQueueCount !== null) parts.push(`Waiting: ${runtime.waitingQueueCount}`);
-        if (runtime.missingCount !== undefined && runtime.missingCount !== null) parts.push(`Missing: ${runtime.missingCount}`);
-        if (runtime.failedCount !== undefined && runtime.failedCount !== null) parts.push(`Failed: ${runtime.failedCount}`);
-        if (runtime.requestedCount !== undefined && runtime.requestedCount !== null) parts.push(`Requested: ${runtime.requestedCount}`);
-        if (runtime.downloadedCount !== undefined && runtime.downloadedCount !== null) parts.push(`Downloaded: ${runtime.downloadedCount}`);
-        if (runtime.staleRequestedCount !== undefined && runtime.staleRequestedCount !== null) parts.push(`Stale requested: ${runtime.staleRequestedCount}`);
-        if (runtime.staleDownloadedCount !== undefined && runtime.staleDownloadedCount !== null) parts.push(`Stale downloaded: ${runtime.staleDownloadedCount}`);
-        if (runtime.currentTask) parts.push(`Task: ${runtime.currentTask}`);
-        if (runtime.activeWindow) parts.push(`Window: ${runtime.activeWindow}`);
+        const rows = [];
+        const isRtSales = state.id === "rt";
+        const queueCount = Number(runtime.queueCount || 0);
+        const addRow = (label, value, options = {}) => {
+          if (value === undefined || value === null || value === "") return;
+          if (options.hideZero && Number(value || 0) === 0) return;
+          rows.push({ label, value });
+        };
+
+        addRow("Status", formatStatusLabel(runtime.status || displayStatus));
+        if (runtime.nextWakeUtc) addRow("Next wake", formatRuntimeTime(runtime.nextWakeUtc));
+        if (runtime.currentTask) addRow("Task", runtime.currentTask);
+        if (runtime.activeWindow) addRow("Window", runtime.activeWindow);
+        if (runtime.queueCount !== undefined && runtime.queueCount !== null) addRow("Queue", runtime.queueCount);
+        if (runtime.actionableQueueCount !== undefined && runtime.actionableQueueCount !== null) {
+          addRow("Claimable", runtime.actionableQueueCount, { hideZero: !isRtSales && !queueCount });
+        }
+        if (runtime.waitingQueueCount !== undefined && runtime.waitingQueueCount !== null) {
+          addRow("Waiting", runtime.waitingQueueCount, { hideZero: !isRtSales && !queueCount });
+        }
+        if (runtime.failedCount !== undefined && runtime.failedCount !== null) addRow("Failed", runtime.failedCount, { hideZero: true });
+        if (runtime.requestedCount !== undefined && runtime.requestedCount !== null) addRow("Requested", runtime.requestedCount, { hideZero: true });
+        if (runtime.downloadedCount !== undefined && runtime.downloadedCount !== null) addRow("Downloaded", runtime.downloadedCount, { hideZero: true });
+        if (runtime.staleRequestedCount !== undefined && runtime.staleRequestedCount !== null) addRow("Stale requested", runtime.staleRequestedCount, { hideZero: true });
+        if (runtime.staleDownloadedCount !== undefined && runtime.staleDownloadedCount !== null) addRow("Stale downloaded", runtime.staleDownloadedCount, { hideZero: true });
+        if (isPositiveNumber(runtime.missingCount)) addRow("Missing", runtime.missingCount);
+        if (runtime.lastStartedUtc) addRow("Loop started", formatRuntimeTime(runtime.lastStartedUtc));
+        if (runtime.lastFinishedUtc) addRow("Loop finished", formatRuntimeTime(runtime.lastFinishedUtc));
         if (runtime.lockState && runtime.lockState !== "none") {
           const ownerText = runtime.lockOwner ? ` (${runtime.lockOwner})` : "";
           const expiryText = runtime.lockExpiresAt ? ` until ${formatRuntimeTime(runtime.lockExpiresAt)}` : "";
-          parts.push(`Lock: ${runtime.lockState}${ownerText}${expiryText}`);
+          addRow("Lock", `${runtime.lockState}${ownerText}${expiryText}`);
         }
-        if (refs.runtimeWrap) refs.runtimeWrap.style.display = parts.length ? "flex" : "none";
-        refs.runtime.style.display = parts.length ? "block" : "none";
-        refs.runtime.textContent = parts.join(" | ");
+        if (refs.runtimeWrap) refs.runtimeWrap.style.display = rows.length ? "flex" : "none";
+        refs.runtime.style.display = rows.length ? "block" : "none";
+        refs.runtime.innerHTML = renderKvRows(rows);
       } else {
         if (refs.runtimeWrap) refs.runtimeWrap.style.display = "none";
         refs.runtime.style.display = "none";
-        refs.runtime.textContent = "";
+        refs.runtime.innerHTML = "";
       }
     }
     if (refs.message) {

@@ -140,8 +140,8 @@
     .tab-btn.dragging { opacity:0.45; }
     .tab-reset-btn { margin-top:auto; width:100%; padding:6px 8px; border-radius:8px; border:1px solid #e2e8f0; background:#fff; color:#64748b; cursor:pointer; font-weight:600; font-size:12px; text-align:left; }
     .tab-reset-btn:hover { background:#f1f5f9; color:#334155; }
-    .workers-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:8px; }
-    .worker-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; box-shadow:0 1px 2px rgba(15,23,42,0.04); }
+    .workers-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap:16px; margin-top:10px; }
+    .worker-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(15,23,42,0.06); line-height:1.45; }
     .worker-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
     .worker-row:first-of-type { border-top:none; padding-top:0; margin-top:0; }
     .worker-title { font-weight:700; display:flex; align-items:center; gap:6px; }
@@ -154,26 +154,34 @@
     .worker-status-locked, .worker-status-cooldown { background:#e0f2fe; color:#0369a1; }
     .worker-status-overdue { background:#fef3c7; color:#b45309; }
     .worker-status-error { background:#fee2e2; color:#b91c1c; }
-    .worker-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px; }
-    .worker-card-title { display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; }
+    .worker-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }
+    .worker-card-title { display:flex; align-items:center; gap:8px; font-weight:800; font-size:16px; color:#0f172a; }
     .worker-card-mode { font-size:12px; color:#334155; font-weight:700; padding:2px 8px; border-radius:999px; background:#e2e8f0; white-space:nowrap; }
-    .worker-card-status-line { font-weight:800; margin-bottom:8px; }
-    .worker-card-desc { font-size:12px; color:var(--muted); margin-bottom:8px; line-height:1.35; }
-    .worker-card-message { font-size:12px; color:#475569; line-height:1.4; }
-    .worker-card-group { border-top:1px solid #e5e7eb; padding-top:8px; margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+    .worker-card-status-line { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-weight:800; }
+    .worker-status-badge { display:inline-flex; align-items:center; padding:4px 9px; border-radius:999px; font-size:12px; font-weight:800; letter-spacing:0.02em; text-transform:uppercase; border:1px solid transparent; }
+    .worker-status-badge[data-status="ok"],
+    .worker-status-badge[data-status="active"] { background:#dcfce7; color:#166534; border-color:#bbf7d0; }
+    .worker-status-badge[data-status="waiting"],
+    .worker-status-badge[data-status="sleeping"],
+    .worker-status-badge[data-status="idle"] { background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe; }
+    .worker-status-badge[data-status="cooldown"],
+    .worker-status-badge[data-status="locked"] { background:#fef3c7; color:#92400e; border-color:#fde68a; }
+    .worker-status-badge[data-status="overdue"] { background:#ffedd5; color:#c2410c; border-color:#fed7aa; }
+    .worker-status-badge[data-status="error"] { background:#fee2e2; color:#b91c1c; border-color:#fecaca; }
+    .worker-ledger-note { font-size:12px; color:#64748b; font-weight:700; }
+    .worker-card-desc { font-size:12px; color:var(--muted); line-height:1.45; }
+    .worker-card-message { font-size:12px; color:#334155; line-height:1.5; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:9px 10px; }
+    .worker-card-group { border-top:1px solid #e5e7eb; padding-top:12px; margin-top:12px; display:flex; flex-direction:column; gap:8px; }
     .worker-card-group:first-of-type { border-top:none; padding-top:0; margin-top:0; }
     .worker-group-label { font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.04em; }
-    .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px 10px; }
+    .worker-meta-compact { font-size:12px; color:var(--muted); display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:6px 12px; }
+    .worker-kv-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; }
+    .worker-kv-item { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:7px 9px; min-width:0; }
+    .worker-kv-key { font-size:10px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px; }
+    .worker-kv-value { font-size:12px; font-weight:700; color:#0f172a; overflow-wrap:anywhere; }
     .worker-refresh-note { font-size:12px; color:#475569; min-height:16px; }
-    .worker-card[data-status="ok"] .worker-card-status-line,
-    .worker-card[data-status="active"] .worker-card-status-line { color:#15803d; }
-    .worker-card[data-status="waiting"] .worker-card-status-line,
-    .worker-card[data-status="sleeping"] .worker-card-status-line,
-    .worker-card[data-status="idle"] .worker-card-status-line { color:#2563eb; }
-    .worker-card[data-status="cooldown"] .worker-card-status-line,
-    .worker-card[data-status="locked"] .worker-card-status-line { color:#b45309; }
-    .worker-card[data-status="overdue"] .worker-card-status-line { color:#c2410c; }
-    .worker-card[data-status="error"] .worker-card-status-line { color:#b91c1c; }
+    .worker-card[data-status="overdue"],
+    .worker-card[data-status="error"] { border-color:#fecaca; }
     /* DF Payments */
     #df-payments-tab table { font-size:13px; }
     .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
@@ -6394,7 +6402,7 @@
     setInterval(autoSyncIfDue, 5 * 60 * 1000);
   </script>
   <div class="backdrop" id="workers-modal" style="display:none;">
-    <div class="modal" style="max-width:960px;">
+    <div class="modal" style="max-width:1120px;">
       <header>
         <div style="display:flex; flex-direction:column; gap:4px;">
           <div style="font-weight:700;">Background Workers</div>
