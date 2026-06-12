@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 import requests
 
+from services.activity_log import add_activity
 from services.env_manager import SECRET_KEYS, read_managed_values
 
 LOGGER = logging.getLogger(__name__)
@@ -26,25 +27,30 @@ def get_token_health() -> Dict[str, object]:
 
 def test_lwa_token(values: Dict[str, str]) -> Dict[str, object]:
     tested_at = _now_iso()
+    add_activity("API", "Credentials: LWA token test started")
     try:
         token_payload = request_lwa_access_token(values)
         expires_in = int(token_payload.get("expires_in") or 0)
         _update_health(status="OK", token_time=tested_at, error="")
         LOGGER.info("[Credentials] LWA token test succeeded")
+        add_activity("OK", "Credentials: LWA token test completed")
         return {"ok": True, "status": "OK", "tested_at": tested_at, "expires_in": expires_in}
     except Exception as exc:
         error = redact_text(str(exc), values)
         _update_health(status="Error", token_time=tested_at, error=error)
         LOGGER.warning("[Credentials] LWA token test failed: %s", error)
+        add_activity("ERROR", f"Credentials: LWA token test failed: {error}")
         return {"ok": False, "status": "Error", "tested_at": tested_at, "error": error}
 
 
 def test_vendor_po_access(fetcher: Callable[[], object]) -> Dict[str, object]:
     tested_at = _now_iso()
+    add_activity("API", "Credentials: Vendor PO access test started")
     try:
         fetcher()
         _update_health(status="OK", vendor_time=tested_at, error="")
         LOGGER.info("[Credentials] Vendor PO access test succeeded")
+        add_activity("OK", "Credentials: Vendor PO access test completed")
         return {
             "ok": True,
             "status": "OK",
@@ -54,6 +60,7 @@ def test_vendor_po_access(fetcher: Callable[[], object]) -> Dict[str, object]:
         error = redact_text(str(exc))
         _update_health(status="Error", vendor_time=tested_at, error=error)
         LOGGER.warning("[Credentials] Vendor PO access test failed: %s", error)
+        add_activity("ERROR", f"Credentials: Vendor PO access test failed: {error}")
         return {"ok": False, "status": "Error", "tested_at": tested_at, "error": error}
 
 

@@ -106,6 +106,7 @@ import services.vendor_realtime_sales as vendor_realtime_sales_service
 import config
 from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
+from routes.activity_log_routes import register_activity_log_routes
 from routes.barcode_print_routes import register_barcode_print_routes
 from routes.credentials_routes import register_credentials_routes
 from routes.df_payments_routes import register_df_payments_routes
@@ -117,6 +118,7 @@ from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_route
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
 from routes.worker_status_routes import register_worker_status_routes
 from services import spapi_reports
+from services.activity_log import add_activity
 from services.async_utils import run_single_arg
 from services.catalog_images import attach_image_urls
 from services.catalog_service import (
@@ -292,6 +294,7 @@ async def log_static_requests(request: Request, call_next):
         logger.info("[STATIC] %s %s -> %s (%s)", request.method, path, response.status_code, content_type)
     return response
 register_printer_routes(app)
+register_activity_log_routes(app)
 register_barcode_print_routes(app)
 register_printer_health_routes(app)
 register_print_log_routes(app)
@@ -322,8 +325,10 @@ def startup_event():
         start_vendor_rt_inventory_auto_refresh()
         start_df_payments_incremental_scheduler()
         logger.info("[Startup] Background tasks initialized successfully")
+        add_activity("BG", "Background workers initialized")
     except Exception as e:
         logger.warning(f"[Startup] Failed to initialize background tasks: {e}")
+        add_activity("WARN", f"Background worker startup failed: {e}")
 
 
 @app.on_event("shutdown")
@@ -1386,6 +1391,7 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
     all_pos = []
     next_token = None
     page = 0
+    add_activity("API", f"Vendor PO API request started for marketplace {marketplace} (limit {limit}, max pages {max_pages})")
     while page < max_pages:
         params = {
             "createdAfter": created_after,
@@ -1406,14 +1412,17 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             resp = requests.get(url, headers=headers, params=params, timeout=20)
         except requests.exceptions.Timeout:
             logger.error(f"[VendorPO] Timeout fetching POs after 20s on page {page}")
+            add_activity("ERROR", f"Vendor PO API request timed out on page {page}")
             raise HTTPException(status_code=504, detail=f"Vendor PO fetch timeout on page {page}") from None
         except requests.exceptions.RequestException as e:
             logger.error(f"[VendorPO] Network error fetching POs: {e}")
+            add_activity("ERROR", f"Vendor PO API network error: {e}")
             raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}") from e
         
         if resp.status_code >= 400:
             safe_text = safe_response_text(resp)
             logger.error("Vendor PO fetch failed %s: %s", resp.status_code, safe_text)
+            add_activity("ERROR", f"Vendor PO API request failed http_{resp.status_code}: {safe_text}")
             raise HTTPException(status_code=resp.status_code, detail=f"Vendor PO fetch failed: {safe_text}")
         data = resp.json()
         items = extract_purchase_orders(data) or []
@@ -1437,6 +1446,7 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             break
         page += 1
     logger.info("Fetched %d POs from %s to %s", len(all_pos), created_after, created_before)
+    add_activity("OK", f"Vendor PO API request succeeded: fetched {len(all_pos)} POs")
     return all_pos
 
 
@@ -2178,8 +2188,10 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     created_after = _isoformat_utc(requested_created_after) if requested_created_after else default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     owner = f"sync-{uuid.uuid4()}"
+    add_activity("BG", "Manual Vendor PO sync started")
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
+        add_activity("WARN", "Manual Vendor PO sync skipped because another sync is running")
         return JSONResponse(
             {"ok": False, "error": "Vendor PO sync already running", "sync_state": state},
             status_code=409,
@@ -2198,11 +2210,13 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        add_activity("ERROR", f"Manual Vendor PO sync failed: {error_msg}")
         raise
     except Exception as exc:
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        add_activity("ERROR", f"Manual Vendor PO sync failed: {error_msg}")
         raise HTTPException(status_code=500, detail=f"Sync failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
@@ -2212,6 +2226,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
             window_start=created_after,
             window_end=created_before,
         )
+        add_activity("OK", f"Manual Vendor PO sync completed: fetched {stats.get('fetched', 0)} POs")
 
     stats.update(
         {
@@ -2235,8 +2250,10 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
     created_after = default_created_after()
     created_before = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     owner = f"rebuild-{uuid.uuid4()}"
+    add_activity("BG", "Full Vendor PO rebuild started")
     acquired, state = acquire_vendor_po_lock(owner)
     if not acquired:
+        add_activity("WARN", "Full Vendor PO rebuild skipped because another sync is running")
         return JSONResponse(
             {"ok": False, "error": "Vendor PO rebuild already running", "sync_state": state},
             status_code=409,
@@ -2255,11 +2272,13 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        add_activity("ERROR", f"Full Vendor PO rebuild failed: {error_msg}")
         raise
     except Exception as exc:
         error_msg = _summarize_vendor_po_error(exc)
         record_vendor_po_run_failure(error_msg)
         release_vendor_po_lock(owner, status="FAILED", error=error_msg, window_start=created_after, window_end=created_before)
+        add_activity("ERROR", f"Full Vendor PO rebuild failed: {error_msg}")
         raise HTTPException(status_code=500, detail=f"Rebuild failed: {exc}") from exc
     else:
         record_vendor_po_run_success()
@@ -2269,6 +2288,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
             window_start=created_after,
             window_end=created_before,
         )
+        add_activity("OK", f"Full Vendor PO rebuild completed: fetched {stats.get('fetched', 0)} POs")
 
     stats.update(
         {
@@ -2311,6 +2331,7 @@ def _fetch_and_persist_vendor_pos(
         logger.warning(f"[VendorPO] Barcode harvest failed: {exc}")
 
     if not pos:
+        add_activity("DB", "Vendor PO persistence completed: no POs returned")
         return {"fetched": 0}
 
     try:
@@ -2332,6 +2353,7 @@ def _fetch_and_persist_vendor_pos(
         except Exception as exc:
             logger.error(f"[VendorPO] Error syncing vendor_po_lines: {exc}")
 
+    add_activity("DB", f"Vendor PO persistence completed: saved {len(pos)} POs")
     return {"fetched": len(pos)}
 
 

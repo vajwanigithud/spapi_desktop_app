@@ -214,6 +214,21 @@
     .credentials-status-error { color:#b91c1c; font-weight:700; }
     .credentials-status-not-tested { color:#6b7280; font-weight:700; }
     .credentials-message { font-size:12px; min-height:18px; margin-top:8px; color:#475569; }
+    .activity-log-toolbar { padding:12px; display:flex; flex-wrap:wrap; align-items:center; gap:10px; border-bottom:1px solid var(--border); background:#f8fafc; }
+    .activity-log-toggle { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#334155; }
+    .activity-log-status { font-size:12px; color:#64748b; margin-left:auto; }
+    .activity-log-console { margin:12px; padding:10px; height:calc(100vh - 210px); min-height:360px; overflow:auto; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:#dbeafe; font-family:Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size:12px; line-height:1.45; }
+    .activity-log-row { display:grid; grid-template-columns:150px 54px minmax(0, 1fr); gap:8px; padding:2px 0; border-bottom:1px solid rgba(148, 163, 184, 0.08); }
+    .activity-log-ts { color:#94a3b8; white-space:nowrap; }
+    .activity-log-badge { display:inline-flex; align-items:center; justify-content:center; height:18px; border-radius:5px; font-size:10px; font-weight:800; letter-spacing:0.04em; color:#e2e8f0; background:#334155; }
+    .activity-log-badge-ok { background:#166534; }
+    .activity-log-badge-warn { background:#92400e; }
+    .activity-log-badge-error { background:#991b1b; }
+    .activity-log-badge-api { background:#1d4ed8; }
+    .activity-log-badge-db { background:#0f766e; }
+    .activity-log-badge-bg { background:#475569; }
+    .activity-log-message { color:#e5e7eb; word-break:break-word; }
+    .activity-log-empty { color:#94a3b8; padding:8px 2px; }
   </style>
   <style>
       .btn-fetch {
@@ -731,6 +746,7 @@
         <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" draggable="true" onclick="showTab('vrt-audit')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor Real Time Audit</span></button>
         <button class="tab-btn" data-tab="inventory" draggable="true" onclick="showTab('inventory')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Inventory</span></button>
         <button class="tab-btn" data-tab="df-payments" draggable="true" onclick="showTab('df-payments')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">DF Payments</span></button>
+        <button class="tab-btn" data-tab="activity-logs" draggable="true" onclick="showTab('activity-logs')"><span class="tab-drag-handle">&#8942;&#8942;</span><span class="tab-label">Activity Logs</span></button>
       </div>
       <button class="tab-reset-btn" id="tab-reset-order-btn" type="button">Reset tab order</button>
     </aside>
@@ -784,6 +800,19 @@
           </table>
         </div>
       </div>
+    <div class="panel" id="activity-logs-tab" style="display:none; margin-top:14px;">
+      <h2>Activity Logs</h2>
+      <div class="activity-log-toolbar">
+        <label class="activity-log-toggle">
+          <input type="checkbox" id="activity-log-autoscroll" checked />
+          Auto-scroll
+        </label>
+        <button class="btn btn-outline-secondary" type="button" onclick="refreshActivityLogs()">Refresh</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="clearActivityLogs()">Clear display</button>
+        <span class="activity-log-status" id="activity-log-status">Ready</span>
+      </div>
+      <div class="activity-log-console" id="activity-log-console"></div>
+    </div>
     <div class="panel" id="catalog-tab" style="display:none; margin-top:14px;">
       <h2>ASIN Catalog Fetcher</h2>
       <div style="margin:10px 0; display:flex; gap:8px; align-items:center;">
@@ -5969,6 +5998,7 @@
 
     const DEFAULT_TAB_ORDER = [
       "pos",
+      "activity-logs",
       "catalog",
       "oos",
       "vrt-summary",
@@ -5978,6 +6008,160 @@
       "df-payments",
     ];
     const TAB_ORDER_STORAGE_KEY = "spapi_desktop_tab_order_v1";
+    const ACTIVITY_LOG_STORAGE_KEY = "spapi_desktop_activity_logs_v1";
+    const ACTIVITY_LOG_CLEAR_TS_KEY = "spapi_desktop_activity_logs_clear_ts_v1";
+    const ACTIVITY_LOG_MAX = 500;
+    let activityLogs = [];
+    let activityLogPollTimer = null;
+    let activityLogClearedAt = 0;
+
+    function activityLogNow() {
+      return new Date().toISOString();
+    }
+
+    function normalizeActivityEvent(event) {
+      return {
+        ts: event?.ts || activityLogNow(),
+        level: String(event?.level || "INFO").toUpperCase(),
+        message: String(event?.message || ""),
+      };
+    }
+
+    function activityLogKey(event) {
+      return `${event.ts}|${event.level}|${event.message}`;
+    }
+
+    function saveActivityLogs() {
+      try {
+        localStorage.setItem(ACTIVITY_LOG_STORAGE_KEY, JSON.stringify(activityLogs.slice(-ACTIVITY_LOG_MAX)));
+      } catch (err) {
+        console.warn("Failed to save activity logs", err);
+      }
+    }
+
+    function loadStoredActivityLogs() {
+      try {
+        activityLogClearedAt = Number(localStorage.getItem(ACTIVITY_LOG_CLEAR_TS_KEY) || "0") || 0;
+        const parsed = JSON.parse(localStorage.getItem(ACTIVITY_LOG_STORAGE_KEY) || "[]");
+        activityLogs = Array.isArray(parsed) ? parsed.map(normalizeActivityEvent).slice(-ACTIVITY_LOG_MAX) : [];
+      } catch (err) {
+        console.warn("Failed to load activity logs", err);
+        activityLogs = [];
+      }
+    }
+
+    function activityLevelClass(level) {
+      const normalized = String(level || "INFO").toLowerCase();
+      return `activity-log-badge activity-log-badge-${normalized}`;
+    }
+
+    function formatActivityTs(ts) {
+      const date = new Date(ts);
+      if (Number.isNaN(date.getTime())) return ts || "";
+      return date.toLocaleString();
+    }
+
+    function renderActivityLogs(events = activityLogs) {
+      const consoleEl = document.getElementById("activity-log-console");
+      if (!consoleEl) return;
+      const rows = (events || []).slice(-ACTIVITY_LOG_MAX);
+      if (!rows.length) {
+        consoleEl.innerHTML = '<div class="activity-log-empty">No activity logged yet.</div>';
+        return;
+      }
+      consoleEl.innerHTML = rows.map(event => {
+        const clean = normalizeActivityEvent(event);
+        return `
+          <div class="activity-log-row">
+            <span class="activity-log-ts">${escapeHtml(formatActivityTs(clean.ts))}</span>
+            <span class="${activityLevelClass(clean.level)}">${escapeHtml(clean.level)}</span>
+            <span class="activity-log-message">${escapeHtml(clean.message)}</span>
+          </div>
+        `;
+      }).join("");
+      const autoScroll = document.getElementById("activity-log-autoscroll");
+      if (!autoScroll || autoScroll.checked) {
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+      }
+    }
+
+    function setActivityLogStatus(message) {
+      const statusEl = document.getElementById("activity-log-status");
+      if (statusEl) statusEl.textContent = message;
+    }
+
+    function appendActivityLog(event) {
+      const clean = normalizeActivityEvent(event);
+      const seen = new Set(activityLogs.map(activityLogKey));
+      if (!seen.has(activityLogKey(clean))) {
+        activityLogs.push(clean);
+        activityLogs = activityLogs.slice(-ACTIVITY_LOG_MAX);
+        saveActivityLogs();
+      }
+      renderActivityLogs();
+    }
+
+    function mergeActivityLogs(events) {
+      const seen = new Set(activityLogs.map(activityLogKey));
+      (events || []).forEach(event => {
+        const clean = normalizeActivityEvent(event);
+        const eventTs = Date.parse(clean.ts) || 0;
+        if (activityLogClearedAt && eventTs <= activityLogClearedAt) return;
+        if (!seen.has(activityLogKey(clean))) {
+          activityLogs.push(clean);
+          seen.add(activityLogKey(clean));
+        }
+      });
+      activityLogs = activityLogs.slice(-ACTIVITY_LOG_MAX);
+      saveActivityLogs();
+      renderActivityLogs();
+    }
+
+    async function refreshActivityLogs() {
+      try {
+        const resp = await fetch("/api/activity-logs");
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+        mergeActivityLogs(data.items || []);
+        setActivityLogStatus(`Loaded ${activityLogs.length} recent events`);
+      } catch (err) {
+        console.warn("Failed to refresh activity logs", err);
+        setActivityLogStatus(`Refresh failed: ${err.message}`);
+        renderActivityLogs();
+      }
+    }
+
+    function loadActivityLogs() {
+      loadStoredActivityLogs();
+      renderActivityLogs();
+      refreshActivityLogs();
+    }
+
+    function clearActivityLogs() {
+      activityLogs = [];
+      activityLogClearedAt = Date.now();
+      try {
+        localStorage.removeItem(ACTIVITY_LOG_STORAGE_KEY);
+        localStorage.setItem(ACTIVITY_LOG_CLEAR_TS_KEY, String(activityLogClearedAt));
+      } catch (err) {
+        console.warn("Failed to clear activity logs", err);
+      }
+      renderActivityLogs();
+      setActivityLogStatus("Display cleared");
+    }
+
+    function startActivityLogPolling() {
+      if (activityLogPollTimer) return;
+      activityLogPollTimer = setInterval(() => {
+        if (activeTab === "activity-logs") refreshActivityLogs();
+      }, 5000);
+    }
+
+    function stopActivityLogPolling() {
+      if (!activityLogPollTimer) return;
+      clearInterval(activityLogPollTimer);
+      activityLogPollTimer = null;
+    }
 
     function getLeftTabList() {
       return document.getElementById("left-tab-list");
@@ -6093,6 +6277,7 @@
 
       const panels = [
         { id: "pos-tab", tab: "pos" },
+        { id: "activity-logs-tab", tab: "activity-logs" },
         { id: "catalog-tab", tab: "catalog" },
         { id: "oos-tab", tab: "oos" },
         { id: "tab-vrt-summary", tab: "vrt-summary" },
@@ -6142,6 +6327,12 @@
       if (tabName === "pos") {
         refreshVendorPoStatus();
       }
+      if (tabName === "activity-logs") {
+        loadActivityLogs();
+        startActivityLogPolling();
+      } else {
+        stopActivityLogPolling();
+      }
     }
 
     function handleInventoryTabFocus() {
@@ -6162,6 +6353,8 @@
     updateInventoryFreshnessLabel();
 
     initLeftTabOrdering();
+    loadStoredActivityLogs();
+    appendActivityLog({ level: "INFO", message: "UI loaded" });
     showTab("pos");
     loadPOs(false);
     refreshVendorPoStatus();
