@@ -1179,14 +1179,15 @@
               <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
                 <thead>
                   <tr>
-                    <th style="width:26%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
-                    <th style="width:22%; text-align:center; word-break:break-word;">Image</th>
-                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
-                    <th style="width:26%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:22%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:18%; word-break:break-word;">SKU</th>
+                    <th style="width:18%; text-align:center; word-break:break-word;">Image</th>
+                    <th style="width:21%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
+                    <th style="width:21%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
                   </tr>
                 </thead>
                 <tbody id="rt-sales-top-asins-rows">
-                <tr><td colspan="4" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
+                <tr><td colspan="5" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
                 </tbody>
               </table>
               <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
@@ -4454,7 +4455,7 @@
     function renderAsinTable(data) {
       const tbody = document.getElementById("rt-sales-top-asins-rows");
       if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty">No data available</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No data available</td></tr>';
         return;
       }
 
@@ -4465,6 +4466,7 @@
         return `
           <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
             <td><strong>${asin_row.asin}</strong></td>
+            <td style="font-size:12px;">${asin_row.sku ? escapeHtml(asin_row.sku) : '&mdash;'}</td>
             <td style="text-align:center;">${imageHtml}</td>
             <td style="text-align:right;"><strong>${(asin_row.units || 0).toLocaleString()}</strong></td>
             <td style="text-align:right;"><strong>${asin_row.currency_code ? asin_row.currency_code + ' ' : ''}${formatNumberWithCommas(asin_row.revenue || 0)}</strong></td>
@@ -4588,7 +4590,7 @@
           const tbody = rtSalesCurrentViewBy === "asin" 
             ? document.getElementById("rt-sales-top-asins-rows")
             : document.getElementById("rt-sales-time-rows");
-          if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 4 : 3}" class="empty">Error: ${err.message}</td></tr>`;
+          if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 5 : 3}" class="empty">Error: ${err.message}</td></tr>`;
         }
       }
     }

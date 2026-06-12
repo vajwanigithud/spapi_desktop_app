@@ -2334,7 +2334,7 @@ def _get_realtime_sales_by_asin(
     """
     Aggregate real-time sales by ASIN for a time window.
     
-    Returns list of dicts with: asin, units, revenue, imageUrl, first_hour_utc, last_hour_utc
+    Returns list of dicts with: asin, sku, units, revenue, imageUrl, first_hour_utc, last_hour_utc
     """
     query = """
     SELECT
@@ -2343,9 +2343,15 @@ def _get_realtime_sales_by_asin(
         SUM(vrs.ordered_revenue) as revenue,
         MIN(vrs.hour_start_utc) as first_hour_utc,
         MAX(vrs.hour_start_utc) as last_hour_utc,
+        scm.sku AS sku,
         sc.image AS image_url
     FROM vendor_realtime_sales vrs
     LEFT JOIN spapi_catalog sc ON vrs.asin = sc.asin
+    LEFT JOIN (
+        SELECT asin, MAX(sku) AS sku
+        FROM spapi_catalog_meta
+        GROUP BY asin
+    ) scm ON vrs.asin = scm.asin
     WHERE vrs.hour_start_utc >= ? AND vrs.hour_start_utc < ?
     """
     params = [start_utc, end_utc]
@@ -2366,6 +2372,7 @@ def _get_realtime_sales_by_asin(
             "units": row["units"] or 0,
             "revenue": round(float(row["revenue"] or 0.0), 2),
             "imageUrl": row["image_url"],
+            "sku": row["sku"] or "",
             "first_hour_utc": row["first_hour_utc"],
             "last_hour_utc": row["last_hour_utc"]
         }
