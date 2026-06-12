@@ -56,11 +56,12 @@
       display:inline-flex;
       align-items:center;
       gap:4px;
-      padding:2px 8px;
+      padding:1px 7px;
       border-radius:999px;
-      font-size:12px;
+      font-size:10px;
       font-weight:700;
-      letter-spacing:0.03em;
+      line-height:1.45;
+      letter-spacing:0.02em;
       background:#e2e8f0;
       color:#0f172a;
     }
@@ -103,6 +104,24 @@
     #pos-tab table { font-size:14px; }
     #pos-tab th, #pos-tab td { font-size:14px; }
     #pos-tab input, #pos-tab select, #pos-tab button { font-size:14px; }
+    #vendor-po-table { table-layout:fixed; min-width:1640px; }
+    #vendor-po-table th, #vendor-po-table td { vertical-align:middle; }
+    #vendor-po-table th.col-select, #vendor-po-table td.col-select { width:38px; text-align:center; padding-left:6px; padding-right:6px; }
+    #vendor-po-table th.col-po, #vendor-po-table td.col-po { width:170px; }
+    #vendor-po-table th.col-items, #vendor-po-table td.col-items { width:74px; text-align:center; }
+    #vendor-po-table th.col-date, #vendor-po-table td.col-date { width:112px; }
+    #vendor-po-table th.col-qty, #vendor-po-table td.col-qty { width:102px; text-align:right; font-variant-numeric:tabular-nums; }
+    #vendor-po-table th.col-cost, #vendor-po-table td.col-cost { width:138px; text-align:right; font-variant-numeric:tabular-nums; }
+    #vendor-po-table th.col-status, #vendor-po-table td.col-status { width:190px; }
+    #vendor-po-table th.col-status-date, #vendor-po-table td.col-status-date { width:126px; }
+    #vendor-po-table th.col-amazon-status, #vendor-po-table td.col-amazon-status { width:132px; }
+    #vendor-po-table th.col-ship-to, #vendor-po-table td.col-ship-to { width:148px; }
+    #vendor-po-table .po-cell-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
+    #vendor-po-table .po-number-text { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+    #vendor-po-table .po-status-line { display:flex; align-items:center; gap:5px; min-height:18px; }
+    #vendor-po-table .po-notification-badge { padding:1px 6px; border-radius:6px; background:#fef3c7; color:#92400e; font-size:10px; font-weight:700; line-height:1.5; white-space:nowrap; }
+    #vendor-po-table .po-status-select { width:100%; min-width:0; padding:7px 9px; font-size:13px; }
+    #vendor-po-table .po-status-date-input { width:100%; min-width:0; padding:6px 8px; font-size:13px; }
     /* Endpoint tester */
     #tester-tab { font-size:14px; }
     .tester-controls { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-bottom:10px; }
@@ -784,23 +803,23 @@
         <div id="inhouse-summary" style="font-size:12px; color:var(--muted); font-weight:600;"></div>
       </div>
       <div style="overflow:auto; max-height: calc(100vh - 200px);">
-          <table>
+          <table id="vendor-po-table">
             <thead>
               <tr>
-                <th style="width:32px;"><input type="checkbox" id="po-select-all" onchange="toggleSelectAllPos(this)" /></th>
-                <th>PO</th>
-                <th style="text-align:center;">PO Items</th>
-                <th>Order Date</th>
-                <th style="text-align:center;">Requested Qty</th>
-                <th style="text-align:center;">Accepted Qty</th>
-                <th style="text-align:center;">Received Qty</th>
-                <th style="text-align:center;">Remaining Qty</th>
-                <th style="text-align:center;">Cancelled Qty</th>
-                <th style="text-align:right;">Total Accepted Cost</th>
-                <th>Status</th>
-                <th>Status Date</th>
-                <th>Amazon Status</th>
-                <th>Ship To Location</th>
+                <th class="col-select"><input type="checkbox" id="po-select-all" onchange="toggleSelectAllPos(this)" /></th>
+                <th class="col-po">PO</th>
+                <th class="col-items">PO Items</th>
+                <th class="col-date">Order Date</th>
+                <th class="col-qty">Requested Qty</th>
+                <th class="col-qty">Accepted Qty</th>
+                <th class="col-qty">Received Qty</th>
+                <th class="col-qty">Remaining Qty</th>
+                <th class="col-qty">Cancelled Qty</th>
+                <th class="col-cost">Total Accepted Cost</th>
+                <th class="col-status">Status</th>
+                <th class="col-status-date">Status Date</th>
+                <th class="col-amazon-status">Amazon Status</th>
+                <th class="col-ship-to">Ship To Location</th>
               </tr>
             </thead>
             <tbody id="po-rows"></tbody>
@@ -1826,7 +1845,7 @@
         const poNumber = po.purchaseOrderNumber || "";
         const flags = po.notificationFlags || {};
         const notifBadge = flags.has_recent_notifications
-          ? `<span style="margin-left:6px; padding:2px 6px; border-radius:6px; background:#fef3c7; color:#92400e; font-size:11px;" title="Last notification: ${escapeHtml(flags.last_notification_summary || "")} at ${formatTs(flags.last_notification_ts || "")}${flags.needs_refresh ? ' • Needs refresh' : ''}">${flags.needs_refresh ? "Update Ready" : "Updated"}</span>`
+          ? `<span class="po-notification-badge" title="Last notification: ${escapeHtml(flags.last_notification_summary || "")} at ${formatTs(flags.last_notification_ts || "")}${flags.needs_refresh ? ' • Needs refresh' : ''}">${flags.needs_refresh ? "Update Ready" : "Updated"}</span>`
           : "";
         const isChecked = selectedPoNumbers.includes(poNumber);
         const poStatusChip = renderPoStatusChip(po.po_status);
@@ -1874,26 +1893,28 @@
         }
 
         tr.innerHTML = `
-      <td><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
-      <td>
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <span>${poNumber}</span>
-          ${poStatusChip ? `<span>${poStatusChip}</span>` : ""}
-          ${notifBadge}
+      <td class="col-select"><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectPo('${poNumber}', this.checked)" /></td>
+      <td class="col-po">
+        <div class="po-cell-stack">
+          <span class="po-number-text">${poNumber}</span>
+          <div class="po-status-line">
+            ${poStatusChip || ""}
+            ${notifBadge}
+          </div>
         </div>
       </td>
-      <td style="text-align:center;">${poItemsCount}</td>
-      <td>${fmtDate(getPoDate(po))}</td>
-      <td style="text-align:center;">${requestedQty}</td>
-      <td style="text-align:center;">${acceptedQty}</td>
-      <td style="text-align:center;">${receivedQty}</td>
-      <td style="text-align:center;">${remainingQty}</td>
-      <td style="text-align:center;">${cancelledQty}</td>
-      <td style="text-align:right; padding-right:16px;">${totalAcceptedCost}</td>
-      <td>${statusDropdown}</td>
-      <td>${statusDateCellHtml}</td>
-      <td>${amazonStatus}</td>
-      <td>${shipToLocation}</td>
+      <td class="col-items">${poItemsCount}</td>
+      <td class="col-date">${fmtDate(getPoDate(po))}</td>
+      <td class="col-qty">${requestedQty}</td>
+      <td class="col-qty">${acceptedQty}</td>
+      <td class="col-qty">${receivedQty}</td>
+      <td class="col-qty">${remainingQty}</td>
+      <td class="col-qty">${cancelledQty}</td>
+      <td class="col-cost">${totalAcceptedCost}</td>
+      <td class="col-status">${statusDropdown}</td>
+      <td class="col-status-date">${statusDateCellHtml}</td>
+      <td class="col-amazon-status">${amazonStatus}</td>
+      <td class="col-ship-to">${shipToLocation}</td>
     `;
 
         tbody.appendChild(tr);
