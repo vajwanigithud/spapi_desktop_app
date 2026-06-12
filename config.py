@@ -33,33 +33,36 @@ def _csv_list(name: str, default: str = "") -> list[str]:
         return []
     return [x.strip() for x in raw.split(",") if x.strip()]
 
-# ----------------------------
-# Required credentials (env only)
-# ----------------------------
-LWA_CLIENT_ID = _req("LWA_CLIENT_ID")
-LWA_CLIENT_SECRET = _req("LWA_CLIENT_SECRET")
-LWA_REFRESH_TOKEN = _req("LWA_REFRESH_TOKEN")
+def reload_from_env() -> None:
+    global LWA_CLIENT_ID, LWA_CLIENT_SECRET, LWA_REFRESH_TOKEN
+    global MARKETPLACE_IDS, MARKETPLACE_ID, SPAPI_REGION
 
-# ----------------------------
-# Marketplace / region
-# ----------------------------
-# Preferred: MARKETPLACE_IDS="A2VIGQ35RCS4UG" (comma-separated supported)
-MARKETPLACE_IDS = _csv_list("MARKETPLACE_IDS")
+    # Required credentials (env only)
+    LWA_CLIENT_ID = _req("LWA_CLIENT_ID")
+    LWA_CLIENT_SECRET = _req("LWA_CLIENT_SECRET")
+    LWA_REFRESH_TOKEN = _req("LWA_REFRESH_TOKEN")
 
-# Back-compat: MARKETPLACE_ID="A2VIGQ35RCS4UG"
-if not MARKETPLACE_IDS:
-    single = (os.getenv("MARKETPLACE_ID") or "").strip()
-    if single:
-        MARKETPLACE_IDS = [single]
+    # Marketplace / region
+    # Preferred: MARKETPLACE_IDS="A2VIGQ35RCS4UG" (comma-separated supported)
+    MARKETPLACE_IDS = _csv_list("MARKETPLACE_IDS")
 
-# Hard default (UAE) to avoid empty marketplaceIds breaking reports
-if not MARKETPLACE_IDS:
-    MARKETPLACE_IDS = ["A2VIGQ35RCS4UG"]
+    # Back-compat: MARKETPLACE_ID="A2VIGQ35RCS4UG"
+    if not MARKETPLACE_IDS:
+        single = (os.getenv("MARKETPLACE_ID") or "").strip()
+        if single:
+            MARKETPLACE_IDS = [single]
 
-# Convenience single value
-MARKETPLACE_ID = MARKETPLACE_IDS[0]
+    # Hard default (UAE) to avoid empty marketplaceIds breaking reports
+    if not MARKETPLACE_IDS:
+        MARKETPLACE_IDS = ["A2VIGQ35RCS4UG"]
 
-SPAPI_REGION = os.getenv("SPAPI_REGION", "eu-west-1")
+    # Convenience single value
+    MARKETPLACE_ID = MARKETPLACE_IDS[0]
+
+    SPAPI_REGION = os.getenv("SPAPI_REGION", os.getenv("AWS_REGION", "eu-west-1"))
+
+
+reload_from_env()
 
 # ----------------------------
 # Tracking window

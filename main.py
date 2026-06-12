@@ -103,9 +103,11 @@ import services.oos_service as oos_service
 import services.picklist_service as picklist_service
 import services.picklist_xlsx_service as picklist_xlsx_service
 import services.vendor_realtime_sales as vendor_realtime_sales_service
+import config
 from auth.spapi_auth import SpApiAuth
 from endpoint_presets import ENDPOINT_PRESETS
 from routes.barcode_print_routes import register_barcode_print_routes
+from routes.credentials_routes import register_credentials_routes
 from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
@@ -143,6 +145,7 @@ from services.df_payments import (
     start_df_payments_incremental_scheduler,
     stop_df_payments_incremental_scheduler,
 )
+from services.credential_test_service import safe_response_text
 from services.json_cache import (
     load_asin_cache,
     load_oos_state,
@@ -429,6 +432,22 @@ MARKETPLACE_IDS: List[str] = [
 ]
 SHIP_FROM_PARTY_ID = os.getenv("SHIP_FROM_PARTY_ID", "")
 auth_client = SpApiAuth()
+
+
+def reload_runtime_credentials() -> None:
+    global MARKETPLACE_IDS, SHIP_FROM_PARTY_ID
+
+    config.reload_from_env()
+    MARKETPLACE_IDS = list(config.MARKETPLACE_IDS)
+    SHIP_FROM_PARTY_ID = os.getenv("SHIP_FROM_PARTY_ID", "")
+    auth_client._lwa_token = None
+    auth_client._lwa_expiry = None
+    try:
+        spapi_reports.auth_client._lwa_token = None
+        spapi_reports.auth_client._lwa_expiry = None
+    except Exception:
+        logger.debug("[Credentials] Failed to clear spapi_reports token cache", exc_info=True)
+
 
 # Catalog DB
 CATALOG_DB_PATH = Path(__file__).parent / "catalog.db"
@@ -1352,7 +1371,7 @@ def extract_purchase_orders(obj: Any) -> List[Dict[str, Any]] | None:
     return None
 
 
-def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages: int = 5):
+def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages: int = 5, limit: int = 100):
     """
     Fetch Vendor POs from SP-API.
     
@@ -1372,7 +1391,7 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             "createdAfter": created_after,
             "createdBefore": created_before,
             "marketplaceIds": marketplace,
-            "limit": 100,
+            "limit": limit,
         }
         if next_token:
             params["nextToken"] = next_token
@@ -1393,8 +1412,9 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
             raise HTTPException(status_code=503, detail=f"Vendor PO fetch network error: {str(e)}") from e
         
         if resp.status_code >= 400:
-            logger.error(f"Vendor PO fetch failed {resp.status_code}: {resp.text}")
-            raise HTTPException(status_code=resp.status_code, detail=f"Vendor PO fetch failed: {resp.text}")
+            safe_text = safe_response_text(resp)
+            logger.error("Vendor PO fetch failed %s: %s", resp.status_code, safe_text)
+            raise HTTPException(status_code=resp.status_code, detail=f"Vendor PO fetch failed: {safe_text}")
         data = resp.json()
         items = extract_purchase_orders(data) or []
         if not items:
@@ -1418,6 +1438,21 @@ def fetch_vendor_pos_from_api(created_after: str, created_before: str, max_pages
         page += 1
     logger.info("Fetched %d POs from %s to %s", len(all_pos), created_after, created_before)
     return all_pos
+
+
+def credential_vendor_po_access_test() -> List[Dict[str, Any]]:
+    now = datetime.utcnow().replace(microsecond=0)
+    created_before = now.isoformat() + "Z"
+    created_after = (now - timedelta(days=2)).isoformat() + "Z"
+    return fetch_vendor_pos_from_api(
+        created_after,
+        created_before,
+        max_pages=1,
+        limit=1,
+    )
+
+
+register_credentials_routes(app, reload_runtime_credentials, credential_vendor_po_access_test)
 
 
 def _parse_qty(val: Any) -> int:

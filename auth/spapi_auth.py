@@ -12,7 +12,7 @@ import time
 
 import requests
 
-from config import LWA_CLIENT_ID, LWA_CLIENT_SECRET, LWA_REFRESH_TOKEN
+import config
 
 logger = logging.getLogger("spapi_auth")
 
@@ -34,9 +34,9 @@ class SpApiAuth:
         url = "https://api.amazon.com/auth/o2/token"
         data = {
             "grant_type": "refresh_token",
-            "refresh_token": LWA_REFRESH_TOKEN,
-            "client_id": LWA_CLIENT_ID,
-            "client_secret": LWA_CLIENT_SECRET,
+            "refresh_token": config.LWA_REFRESH_TOKEN,
+            "client_id": config.LWA_CLIENT_ID,
+            "client_secret": config.LWA_CLIENT_SECRET,
         }
 
         # Retry logic with exponential backoff

@@ -169,6 +169,20 @@
     .printer-settings-field input { width:100%; padding:6px 8px; border-radius:8px; border:1px solid #d1d5db; font-size:13px; background:#fff; }
     .printer-settings-warning { font-size:12px; color:#b91c1c; min-height:18px; margin-top:4px; }
     .printer-settings-status { font-size:12px; min-height:18px; }
+    .credentials-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; }
+    .credentials-section { border:1px solid var(--border); border-radius:8px; padding:12px; background:#fff; }
+    .credentials-section h3 { margin:0 0 10px 0; font-size:15px; }
+    .credentials-field { margin-bottom:10px; }
+    .credentials-field label { display:block; font-size:12px; font-weight:700; color:#374151; margin-bottom:4px; }
+    .credentials-field input { width:100%; padding:7px 9px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; }
+    .credentials-health { display:grid; grid-template-columns: 150px 1fr; gap:6px 10px; font-size:13px; margin-bottom:12px; }
+    .credentials-health div:nth-child(odd) { color:#6b7280; font-weight:700; }
+    .credentials-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .credentials-status-ok { color:#15803d; font-weight:700; }
+    .credentials-status-warning { color:#b45309; font-weight:700; }
+    .credentials-status-error { color:#b91c1c; font-weight:700; }
+    .credentials-status-not-tested { color:#6b7280; font-weight:700; }
+    .credentials-message { font-size:12px; min-height:18px; margin-top:8px; color:#475569; }
   </style>
   <style>
       .btn-fetch {
@@ -665,6 +679,7 @@
         🛠 Workers: OK
       </button>
       <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn" id="credentials-btn" type="button" style="background:#7c3aed;">Credentials</button>
         <button class="btn" id="sync-btn">Sync Vendor POs</button>
         <button class="btn" id="rebuild-btn" style="background:#111827;">Full Rebuild POs</button>
         <button class="btn" id="printer-settings-btn" style="background:#047857;">Printer Settings</button>
@@ -6029,6 +6044,54 @@
   </div>
   <script src="/ui/js/df_payments.js"></script>
   <script src="/ui/js/workers_status.js"></script>
+  <div class="backdrop" id="credentials-modal" style="display:none;">
+    <div class="modal" style="max-width:980px;">
+      <header>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div style="font-weight:700;">Credentials &amp; Tokens</div>
+          <div class="muted-text" style="font-size:12px;">Secrets are masked by default and are never shown in test output.</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline-secondary" id="credentials-toggle-secrets-btn" type="button">Show Secrets</button>
+          <button class="btn" id="credentials-close-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div class="modal-body">
+        <div class="credentials-grid">
+          <div class="credentials-section">
+            <h3>SP-API Token Health</h3>
+            <div class="credentials-health">
+              <div>Status</div><div id="credentials-health-status">Not Tested</div>
+              <div>Last token test</div><div id="credentials-health-token-time">-</div>
+              <div>Last Vendor PO test</div><div id="credentials-health-vendor-time">-</div>
+              <div>Last redacted error</div><div id="credentials-health-error">-</div>
+            </div>
+            <div class="credentials-actions">
+              <button class="btn" id="credentials-test-lwa-btn" type="button">Test LWA Token</button>
+              <button class="btn" id="credentials-test-vendor-po-btn" type="button">Test Vendor PO Access</button>
+              <button class="btn btn-outline-secondary" id="credentials-reload-btn" type="button">Reload .env</button>
+            </div>
+            <div class="credentials-message" id="credentials-test-message"></div>
+          </div>
+
+          <div class="credentials-section">
+            <h3>SP-API Credentials</h3>
+            <div id="credentials-spapi-fields"></div>
+          </div>
+
+          <div class="credentials-section">
+            <h3>DF Remittance / Email Settings</h3>
+            <div id="credentials-df-fields"></div>
+          </div>
+        </div>
+        <div class="credentials-actions" style="margin-top:12px;">
+          <button class="btn" id="credentials-save-btn" type="button">Save .env</button>
+          <span class="credentials-message" id="credentials-save-message"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/ui/js/credentials_dialog.js"></script>
   <div class="backdrop" id="printer-settings-modal" style="display:none;">
     <div class="modal" style="max-width:720px;">
       <header>
