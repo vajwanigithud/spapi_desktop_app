@@ -807,6 +807,7 @@
           </select>
           <button class="btn" id="picklist-btn" onclick="openPicklistPreview()" disabled style="background:#16a34a;">Export Pick List (PDF)</button>
           <button class="btn" id="picklist-xlsx-btn" onclick="openPicklistXlsx()" disabled style="background:#2563eb;">Export Pick List (XLSX)</button>
+          <button class="btn" id="picklist-print-btn" onclick="printSelectedPicklistA4(this)" disabled style="background:#047857;">Print Pick List (A4)</button>
         </div>
         <div id="inhouse-summary" style="font-size:12px; color:var(--muted); font-weight:600;"></div>
       </div>
@@ -1447,6 +1448,9 @@
     let activeTab = "pos";
     let oosItems = [];
     let selectedPoNumbers = [];
+    let currentPicklistPreviewData = null;
+    let currentPicklistPreviewPoNumbers = [];
+    let picklistPrintInProgress = false;
     let lastSyncTime = null;
     let lastSyncFromSpapi = false;
     let nextAutoSyncAt = null;
@@ -2808,9 +2812,11 @@
     function updatePicklistButtonState() {
       const btn = document.getElementById("picklist-btn");
       const xlsxBtn = document.getElementById("picklist-xlsx-btn");
+      const printBtn = document.getElementById("picklist-print-btn");
       const disabled = !selectedPoNumbers.length;
       if (btn) btn.disabled = disabled;
       if (xlsxBtn) xlsxBtn.disabled = disabled;
+      if (printBtn) printBtn.disabled = disabled || picklistPrintInProgress;
     }
 
     function aggregate(items) {
@@ -3859,30 +3865,52 @@
       }
     }
 
+    function picklistEscapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function picklistEscapeAttr(value) {
+      return picklistEscapeHtml(value);
+    }
+
+    async function fetchPicklistPreviewData(poNumbers) {
+      const resp = await fetch("/api/picklist/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ purchaseOrderNumbers: poNumbers }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      const items = Array.isArray(data.items) ? [...data.items] : [];
+      items.sort((a, b) => (b.totalQty || 0) - (a.totalQty || 0));
+      return { ...data, items };
+    }
+
     async function openPicklistPreview() {
       if (!selectedPoNumbers.length) return;
       try {
-        const resp = await fetch("/api/picklist/preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ purchaseOrderNumbers: selectedPoNumbers }),
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(text || `HTTP ${resp.status}`);
-        }
-        const data = await resp.json();
+        const poNumbers = [...selectedPoNumbers];
+        const data = await fetchPicklistPreviewData(poNumbers);
+        currentPicklistPreviewData = data;
+        currentPicklistPreviewPoNumbers = poNumbers;
         const summary = data.summary || {};
-        const items = (data.items || []);
-        items.sort((a, b) => (b.totalQty || 0) - (a.totalQty || 0));
+        const items = data.items || [];
         const modal = document.getElementById("picklist-modal");
         const body = document.getElementById("picklist-body");
         const summaryHtml = `
           <div style="margin-bottom:10px;">
-            <div><strong>POs:</strong> ${selectedPoNumbers.length}</div>
+            <div><strong>POs:</strong> ${poNumbers.length}</div>
             <div><strong>Lines:</strong> ${summary.totalLines || 0}</div>
             <div><strong>Total Units:</strong> ${summary.totalUnits || 0}</div>
-            ${summary.warning ? `<div style="color:#b91c1c;">Warning: ${summary.warning}</div>` : ""}
+            ${summary.warning ? `<div style="color:#b91c1c;">Warning: ${picklistEscapeHtml(summary.warning)}</div>` : ""}
           </div>
         `;
         const rows = items.map(it => {
@@ -3890,15 +3918,15 @@
           const rowStyle = isOos ? 'style="opacity:0.6; background:#fff5f5;"' : '';
           const qtyStyle = isOos ? 'style="font-weight:700; text-align:center; color:#b91c1c; text-decoration:line-through;"' : 'style="font-weight:700; text-align:center;"';
           const asinStyle = isOos ? 'style="text-decoration:line-through; color:#666;"' : '';
-          const img = it.image ? `<img src="${it.image}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;${isOos ? 'opacity:0.5;' : ''}" />` : "";
+          const img = it.image ? `<img src="${picklistEscapeAttr(it.image)}" alt="" style="max-width:80px;max-height:80px;object-fit:contain;border-radius:6px;${isOos ? 'opacity:0.5;' : ''}" />` : "";
           const sku = it.sku || it.externalId || "";
           const oosLabel = isOos ? ' <span style="color:#b91c1c; font-size:11px; font-weight:700;">[OOS]</span>' : '';
           return `<tr ${rowStyle}>
-            <td ${asinStyle}>${it.asin || ""}${oosLabel}</td>
-            <td>${sku}</td>
+            <td ${asinStyle}>${picklistEscapeHtml(it.asin || "")}${oosLabel}</td>
+            <td>${picklistEscapeHtml(sku)}</td>
             <td>${img}</td>
-            <td style="width:240px;">${it.title || ""}</td>
-            <td ${qtyStyle}>${it.totalQty ?? ""}</td>
+            <td style="width:240px;">${picklistEscapeHtml(it.title || "")}</td>
+            <td ${qtyStyle}>${picklistEscapeHtml(it.totalQty ?? "")}</td>
           </tr>`;
         }).join("");
 
@@ -3922,6 +3950,7 @@
           </div>
           <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
             <button class="btn" style="background:#111827" onclick="downloadPicklistPdf()">Download PDF</button>
+            <button class="btn" style="background:#047857" onclick="printCurrentPicklistA4(this)">Print A4</button>
             <button class="btn" onclick="closePicklistModal()">Close</button>
           </div>
         `;
@@ -3955,6 +3984,226 @@
       const poParam = encodeURIComponent(selectedPoNumbers.join(","));
       const url = `/api/picklist/xlsx?poNumbers=${poParam}`;
       window.location = url;
+    }
+
+    function setPicklistPrintLoading(button, isLoading) {
+      picklistPrintInProgress = isLoading;
+      if (button) {
+        if (isLoading) {
+          button.dataset.originalText = button.textContent || "";
+          button.textContent = "Preparing...";
+        } else if (button.dataset.originalText) {
+          button.textContent = button.dataset.originalText;
+        }
+        button.disabled = isLoading;
+      }
+      updatePicklistButtonState();
+    }
+
+    function writePrintWindowLoading(printWindow) {
+      printWindow.document.open();
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html><head><title>Pick List</title></head>
+        <body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#111827;">
+          <div style="font-weight:700;">Preparing pick list...</div>
+        </body></html>
+      `);
+      printWindow.document.close();
+    }
+
+    function buildPickListHtml(data, poNumbers) {
+      const summary = data?.summary || {};
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const poCount = poNumbers.length;
+      const lineCount = summary.totalLines ?? data?.line_count ?? items.length;
+      const totalUnits = summary.totalUnits ?? items.reduce((sum, it) => sum + (Number(it.totalQty) || 0), 0);
+      const generatedAt = new Date().toLocaleString();
+      const rows = items.map((it) => {
+        const image = it.image
+          ? `<img src="${picklistEscapeAttr(it.image)}" alt="" />`
+          : "";
+        const externalId = it.sku || it.externalId || it.vendorSku || "";
+        return `
+          <tr>
+            <td>${picklistEscapeHtml(it.asin || "")}</td>
+            <td>${picklistEscapeHtml(externalId)}</td>
+            <td class="image-cell">${image}</td>
+            <td>${picklistEscapeHtml(it.title || "")}</td>
+            <td class="qty-cell">${picklistEscapeHtml(it.totalQty ?? "")}</td>
+          </tr>
+        `;
+      }).join("");
+
+      return `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <title>Pick List</title>
+          <style>
+            @page { size: A4 portrait; margin: 12mm; }
+            * { box-sizing: border-box; }
+            html, body { background:#fff; color:#000; margin:0; padding:0; }
+            body { font-family:"Segoe UI", Arial, sans-serif; font-size:10.5pt; line-height:1.35; }
+            .print-shell { width:100%; }
+            .print-header { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; margin-bottom:10mm; }
+            h1 { margin:0 0 4mm 0; font-size:18pt; line-height:1.1; color:#000; }
+            .meta { display:grid; grid-template-columns:auto auto; gap:2mm 6mm; font-size:9.5pt; }
+            .meta div:nth-child(odd) { font-weight:700; }
+            .po-list { font-size:8.5pt; color:#111; text-align:right; max-width:82mm; overflow-wrap:anywhere; }
+            table { width:100%; border-collapse:collapse; table-layout:fixed; }
+            thead { display:table-header-group; }
+            tfoot { display:table-footer-group; }
+            tr { break-inside:avoid; page-break-inside:avoid; }
+            th, td { border:1px solid #999; padding:2.2mm 2mm; vertical-align:middle; color:#000; background:#fff; }
+            th { font-size:9pt; font-weight:700; text-align:left; background:#f1f5f9; }
+            td { font-size:9pt; overflow-wrap:anywhere; }
+            th:nth-child(1), td:nth-child(1) { width:27mm; }
+            th:nth-child(2), td:nth-child(2) { width:31mm; }
+            th:nth-child(3), td:nth-child(3) { width:25mm; text-align:center; }
+            th:nth-child(5), td:nth-child(5) { width:19mm; text-align:center; }
+            .image-cell img { max-width:20mm; max-height:20mm; object-fit:contain; display:block; margin:0 auto; }
+            .qty-cell { font-weight:700; font-size:10pt; }
+            .empty { text-align:center; color:#555; padding:8mm; }
+            @media print {
+              body { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+              .no-print, button, header, nav, aside, .backdrop, .modal-actions { display:none !important; }
+            }
+          </style>
+        </head>
+        <body>
+          <main class="print-shell">
+            <section class="print-header">
+              <div>
+                <h1>Pick List</h1>
+                <div class="meta">
+                  <div>PO count</div><div>${picklistEscapeHtml(poCount)}</div>
+                  <div>Line count</div><div>${picklistEscapeHtml(lineCount)}</div>
+                  <div>Total units</div><div>${picklistEscapeHtml(totalUnits)}</div>
+                  <div>Generated</div><div>${picklistEscapeHtml(generatedAt)}</div>
+                </div>
+              </div>
+              <div class="po-list"><strong>POs:</strong> ${picklistEscapeHtml(poNumbers.join(", "))}</div>
+            </section>
+            <table>
+              <thead>
+                <tr>
+                  <th>ASIN</th>
+                  <th>External ID</th>
+                  <th>Image</th>
+                  <th>Title</th>
+                  <th>Total Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows || '<tr><td class="empty" colspan="5">No items</td></tr>'}
+              </tbody>
+            </table>
+          </main>
+          <script>
+            function waitForImagesThenPrint() {
+              const images = Array.from(document.images || []);
+              const waits = images.map((img) => new Promise((resolve) => {
+                if (img.complete) {
+                  resolve();
+                  return;
+                }
+                const done = () => resolve();
+                img.addEventListener("load", done, { once: true });
+                img.addEventListener("error", done, { once: true });
+              }));
+              Promise.race([
+                Promise.all(waits),
+                new Promise((resolve) => setTimeout(resolve, 8000))
+              ]).then(() => {
+                setTimeout(() => {
+                  window.focus();
+                  window.print();
+                }, 150);
+              });
+            }
+            window.addEventListener("load", waitForImagesThenPrint);
+          <\/script>
+        </body>
+        </html>
+      `;
+    }
+
+    function openPickListPrintWindow(data, poNumbers, printWindow) {
+      if (!printWindow || printWindow.closed) {
+        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
+        return false;
+      }
+      try {
+        printWindow.document.open();
+        printWindow.document.write(buildPickListHtml(data, poNumbers));
+        printWindow.document.close();
+      } catch (err) {
+        console.error("Failed to write picklist print window", err);
+        alert("Unable to prepare the print window. Please try again.");
+        return false;
+      }
+      return true;
+    }
+
+    async function printSelectedPicklistA4(button) {
+      if (!selectedPoNumbers.length) {
+        alert("Please select at least one PO to print a pick list.");
+        return;
+      }
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
+        return;
+      }
+      writePrintWindowLoading(printWindow);
+      const poNumbers = [...selectedPoNumbers];
+      setPicklistPrintLoading(button, true);
+      try {
+        const data = await fetchPicklistPreviewData(poNumbers);
+        currentPicklistPreviewData = data;
+        currentPicklistPreviewPoNumbers = poNumbers;
+        if (!openPickListPrintWindow(data, poNumbers, printWindow)) {
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to prepare picklist print", err);
+        const message = err?.message || String(err);
+        printWindow.document.body.innerHTML = `<p style="font-family:Segoe UI,Arial,sans-serif;color:#b91c1c;">Failed to prepare pick list print: ${picklistEscapeHtml(message)}</p>`;
+        alert(`Failed to prepare picklist print: ${message}`);
+      } finally {
+        setPicklistPrintLoading(button, false);
+      }
+    }
+
+    function printCurrentPicklistA4(button) {
+      const data = currentPicklistPreviewData;
+      const poNumbers = currentPicklistPreviewPoNumbers.length
+        ? [...currentPicklistPreviewPoNumbers]
+        : [...selectedPoNumbers];
+      if (!poNumbers.length) {
+        alert("Please select at least one PO to print a pick list.");
+        return;
+      }
+      if (!data) {
+        printSelectedPicklistA4(button);
+        return;
+      }
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
+        return;
+      }
+      setPicklistPrintLoading(button, true);
+      try {
+        writePrintWindowLoading(printWindow);
+        if (!openPickListPrintWindow(data, poNumbers, printWindow)) {
+          return;
+        }
+      } finally {
+        setPicklistPrintLoading(button, false);
+      }
     }
 
     async function markItemOos(event, poNumber, asin, vendorSku, poDate, shipTo, qty, encodedImage) {
