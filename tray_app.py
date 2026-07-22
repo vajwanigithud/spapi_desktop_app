@@ -41,8 +41,26 @@ def _kill_listeners_on_port(port=PORT):
 
 
 def _open_browser():
+    url = f"http://{HOST}:{PORT}/"
+    edge_paths = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for edge_path in edge_paths:
+        if os.path.exists(edge_path):
+            try:
+                subprocess.Popen(
+                    [edge_path, f"--app={url}", "--new-window"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+                return
+            except Exception:
+                break
+
     import webbrowser
-    webbrowser.open(f"http://{HOST}:{PORT}/")
+    webbrowser.open(url)
 
 
 def _make_icon_image():
