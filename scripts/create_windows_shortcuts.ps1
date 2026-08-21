@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Stop"
 
+# This shortcut intentionally targets the VBS launcher, not Edge directly.
+# The VBS/BAT flow starts the local uvicorn server before opening the UI.
 $appRoot = "C:\spapi_desktop_app"
 $targetPath = Join-Path $appRoot "Start_SPAPI_Desktop_App.vbs"
 $iconPath = Join-Path $appRoot "static\icons\spapi-app.ico"
