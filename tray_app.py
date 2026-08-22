@@ -6,6 +6,7 @@ import threading
 import socket
 import atexit
 import tempfile
+import ctypes
 
 import pystray
 from pystray import MenuItem as Item
@@ -17,6 +18,7 @@ VENV_PYTHONW = os.path.join(APP_ROOT, ".venv", "Scripts", "pythonw.exe")
 VENV_PYTHON  = os.path.join(APP_ROOT, ".venv", "Scripts", "python.exe")  # fallback
 PORT = 8001
 HOST = "127.0.0.1"
+URL = f"http://{HOST}:{PORT}/"
 
 LOCK_PATH = os.path.join(tempfile.gettempdir(), "spapi_desktop_app_tray.lock")
 PID_PATH = os.path.join(tempfile.gettempdir(), "spapi_desktop_app_uvicorn.pid")
@@ -30,6 +32,32 @@ def _port_is_listening(host=HOST, port=PORT, timeout=0.25) -> bool:
         return False
 
 
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
+
+
+def _wait_for_server(timeout_seconds=30) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _port_is_listening():
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def _kill_listeners_on_port(port=PORT):
     # Kills only the process(es) LISTENING on that port.
     # Uses built-in netstat + taskkill (no extra deps).
@@ -41,7 +69,6 @@ def _kill_listeners_on_port(port=PORT):
 
 
 def _open_browser():
-    url = f"http://{HOST}:{PORT}/"
     edge_paths = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -50,7 +77,7 @@ def _open_browser():
         if os.path.exists(edge_path):
             try:
                 subprocess.Popen(
-                    [edge_path, f"--app={url}", "--new-window"],
+                    [edge_path, f"--app={URL}", "--new-window"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -60,7 +87,7 @@ def _open_browser():
                 break
 
     import webbrowser
-    webbrowser.open(url)
+    webbrowser.open(URL)
 
 
 def _make_icon_image():
@@ -80,7 +107,7 @@ class TrayApp:
         self._server_lock = threading.Lock()
 
         self.icon.menu = pystray.Menu(
-            Item("Open UI (http://127.0.0.1:8001)", self.open_ui),
+            Item(f"Open UI ({URL})", self.open_ui),
             Item("Start server", self.start_server, enabled=lambda item: not _port_is_listening()),
             Item("Stop server", self.stop_server, enabled=lambda item: _port_is_listening()),
             pystray.Menu.SEPARATOR,
@@ -94,6 +121,11 @@ class TrayApp:
             pass
 
     def open_ui(self, icon=None, item=None):
+        if not _port_is_listening():
+            self.start_server()
+            if not _wait_for_server():
+                self._notify(f"Server is not responding on {URL}.")
+                return
         _open_browser()
 
     def start_server(self, icon=None, item=None):
@@ -157,6 +189,7 @@ class TrayApp:
         self.icon.stop()
 
     def run(self):
+        self.start_server()
         self.icon.run()
 
 
@@ -168,7 +201,23 @@ def _acquire_single_instance_lock():
         os.close(fd)
         return True
     except FileExistsError:
-        return False
+        try:
+            with open(LOCK_PATH, "r", encoding="utf-8") as f:
+                existing_pid = int((f.read() or "0").strip())
+        except Exception:
+            existing_pid = 0
+
+        if _pid_is_running(existing_pid):
+            return False
+
+        _release_lock()
+        try:
+            fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            os.close(fd)
+            return True
+        except Exception:
+            return False
     except Exception:
         # If lock fails oddly, still try to run (but likely fine)
         return True

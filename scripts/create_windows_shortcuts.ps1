@@ -4,12 +4,22 @@ $ErrorActionPreference = "Stop"
 # The VBS/BAT flow starts the local uvicorn server before opening the UI.
 $appRoot = "C:\spapi_desktop_app"
 $targetPath = Join-Path $appRoot "Start_SPAPI_Desktop_App.vbs"
+$trayTargetPath = Join-Path $appRoot "Run_Tray.vbs"
 $iconPath = Join-Path $appRoot "static\icons\spapi-app.ico"
-$desktopShortcut = "C:\Users\visha\OneDrive\Desktop\Amazon App.lnk"
+$desktopShortcuts = @(
+    "C:\Users\visha\OneDrive\Desktop\Amazon App.lnk",
+    "C:\Users\visha\OneDrive\Desktop\SP-API Desktop App.lnk"
+)
 $startMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\SP-API Desktop App.lnk"
+$startupShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\SP-API Desktop Server.lnk"
+$taskbarShortcut = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\SP-API Desktop App.lnk"
 
 if (-not (Test-Path -LiteralPath $targetPath)) {
     throw "Launcher not found: $targetPath"
+}
+
+if (-not (Test-Path -LiteralPath $trayTargetPath)) {
+    throw "Tray launcher not found: $trayTargetPath"
 }
 
 if (-not (Test-Path -LiteralPath $iconPath)) {
@@ -21,7 +31,10 @@ $shell = New-Object -ComObject WScript.Shell
 function Set-AppShortcut {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$ShortcutPath
+        [string]$ShortcutPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ShortcutTarget
     )
 
     $parent = Split-Path -Parent $ShortcutPath
@@ -30,7 +43,7 @@ function Set-AppShortcut {
     }
 
     $shortcut = $shell.CreateShortcut($ShortcutPath)
-    $shortcut.TargetPath = $targetPath
+    $shortcut.TargetPath = $ShortcutTarget
     $shortcut.Arguments = ""
     $shortcut.WorkingDirectory = $appRoot
     $shortcut.IconLocation = $iconPath
@@ -41,8 +54,15 @@ function Set-AppShortcut {
     Write-Host "Updated shortcut: $ShortcutPath"
 }
 
-Set-AppShortcut -ShortcutPath $desktopShortcut
-Set-AppShortcut -ShortcutPath $startMenuShortcut
+foreach ($desktopShortcut in $desktopShortcuts) {
+    Set-AppShortcut -ShortcutPath $desktopShortcut -ShortcutTarget $targetPath
+}
+
+Set-AppShortcut -ShortcutPath $startMenuShortcut -ShortcutTarget $targetPath
+Set-AppShortcut -ShortcutPath $startupShortcut -ShortcutTarget $trayTargetPath
+if (Test-Path -LiteralPath $taskbarShortcut) {
+    Set-AppShortcut -ShortcutPath $taskbarShortcut -ShortcutTarget $targetPath
+}
 
 Write-Host ""
 Write-Host "Shortcut repair complete."
