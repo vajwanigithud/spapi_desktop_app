@@ -13,6 +13,7 @@ from services.df_payments import (
     incremental_refresh_df_payments,
     reconcile_df_payments_from_remittances,
     refresh_df_payments,
+    run_df_gmail_reconcile,
 )
 from services.df_remittances_gmail import import_df_remittances_from_gmail
 
@@ -91,13 +92,15 @@ def import_remittances() -> dict:
 @router.post("/remittances/reconcile")
 def reconcile(payload: ReconcileRequest = Body(default_factory=ReconcileRequest)) -> dict:
     try:
-        import_result = None
         if payload.import_first:
-            import_result = import_df_remittances_from_gmail()
+            result = run_df_gmail_reconcile(
+                DEFAULT_MARKETPLACE_ID,
+                triggered_by="manual",
+                force=True,
+            )
+            return {"ok": True, **result}
         reconcile_result = reconcile_df_payments_from_remittances()
         response = {"ok": True, **reconcile_result}
-        if import_result is not None:
-            response["import"] = import_result
         return response
     except HTTPException:
         raise

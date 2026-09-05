@@ -36,17 +36,9 @@
       id: "df-orders",
       containerId: "workers-section-df-payments",
       label: "DF Orders Refresh",
-      keys: ["df_payments_incremental"],
+      keys: ["df_payments_incremental", "df_gmail_reconcile"],
       description: "Pulls DF purchase orders and payments incrementally.",
       defaultMode: "auto",
-    },
-    {
-      id: "df-gmail",
-      containerId: "workers-section-vendor-po",
-      label: "DF Gmail Reconcile Refresh",
-      keys: ["vendor_po_sync"],
-      description: "Manual reconcile helper; run when you need a fresh remittance import.",
-      defaultMode: "manual",
     },
   ];
 

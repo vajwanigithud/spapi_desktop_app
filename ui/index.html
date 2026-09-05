@@ -1369,6 +1369,7 @@
       <header>
         <div id="modal-title">PO Items</div>
         <div class="modal-actions">
+          <button class="btn btn-outline-secondary" id="modal-refresh-images-btn" style="display:none; background:#fff; color:#111827; border:1px solid var(--border);" onclick="refreshPoModalImages(this)">Refresh Images</button>
           <button class="btn btn-outline-secondary" id="modal-history-btn" style="display:none; background:#fff; color:#111827; border:1px solid var(--border);" onclick="openModalHistory()">View History</button>
           <button class="btn" style="background:#111827" onclick="closeModal()">Close</button>
         </div>
@@ -1471,6 +1472,7 @@
     let testerPresets = [];
     let testerHost = "";
     let catalogImageCache = {};
+    let activePoModalItems = [];
     let recentNotifications = [];
     let vendorInventorySnapshot = [];
     let vendorInventoryMeta = null;
@@ -1951,8 +1953,10 @@
       if (!items || !items.length) return;
       const rejected = items.filter(it => {
         const ack = it.acknowledgementStatus || {};
-        const conf = (ack.confirmationStatus || it.status || "").toUpperCase();
-        return conf === "REJECTED";
+        const conf = (it.normalized_status || ack.confirmationStatus || it.status || "").toUpperCase();
+        const accepted = Number((ack.acceptedQuantity || {}).amount ?? it.accepted_qty ?? 0);
+        const rejectedQty = Number((ack.rejectedQuantity || {}).amount ?? it.rejected_qty ?? it.cancelled_qty ?? 0);
+        return conf === "REJECTED" || conf === "CANCELLED" || (accepted === 0 && rejectedQty > 0);
       });
       if (!rejected.length) return;
       try {
@@ -2009,6 +2013,7 @@
       const body = document.getElementById("modal-body");
       const titleEl = document.getElementById("modal-title");
       const historyBtn = document.getElementById("modal-history-btn");
+      const refreshImagesBtn = document.getElementById("modal-refresh-images-btn");
 
       const poNumber = po.purchaseOrderNumber || po.poNumber || "";
       if (!poNumber) {
@@ -2021,6 +2026,7 @@
         historyBtn.disabled = false;
         historyBtn.dataset.poNumber = poNumber;
       }
+      if (refreshImagesBtn) refreshImagesBtn.style.display = "inline-flex";
 
       let enrichedPo = po;
       try {
@@ -2042,6 +2048,7 @@
       const statusChip = renderPoStatusChip(poStatus);
       const d = enrichedPo.orderDetails || {};
       const items = d.items || [];
+      activePoModalItems = items;
       const notifFlags = enrichedPo.notificationFlags || {};
       const notifLine = notifFlags.has_recent_notifications
         ? `<div style="font-size:12px; color:#0ea5e9; margin-bottom:8px;">Last Amazon notification: ${escapeHtml(notifFlags.last_notification_summary || "")} at ${formatTs(notifFlags.last_notification_ts || "")}${notifFlags.needs_refresh ? " • refresh applied" : ""}</div>`
@@ -2057,13 +2064,15 @@
         const netNum = netAmount;
         
         // FIX: Use accepted_line_amount if available (computed by backend), else fall back to manual calculation
-        let acceptedLineAmount = 0;
-        if (it.accepted_line_amount !== undefined) {
+        let acceptedLineAmount = null;
+        if (it.accepted_net_total !== undefined) {
+          acceptedLineAmount = it.accepted_net_total;
+        } else if (it.accepted_line_amount !== undefined) {
           acceptedLineAmount = it.accepted_line_amount;
         } else {
           // Fallback calculation if not provided by backend
           const accAmt = toNum((it.acknowledgementStatus?.acceptedQuantity || {}).amount) || 0;
-          acceptedLineAmount = Number.isFinite(accAmt * netNum) ? accAmt * netNum : 0;
+          acceptedLineAmount = Number.isFinite(netNum) ? accAmt * netNum : null;
         }
         
         const rawAsin = it.amazonProductIdentifier || it.buyerProductIdentifier || it.vendorProductIdentifier || "";
@@ -2072,8 +2081,11 @@
         const lineEan = resolveLineEan(it) || "";
         const seq = it.itemSequenceNumber || "";
         const ack = it.acknowledgementStatus || {};
-        const currStatus = (ack.confirmationStatus || "ACCEPTED").toUpperCase();
-        const accAmt = toNum((ack.acceptedQuantity || {}).amount) || (currStatus === "ACCEPTED" ? qtyAmount : 0);
+        const currStatus = (it.normalized_status || ack.confirmationStatus || it.status || "PENDING").toUpperCase();
+        const acceptedRaw = (ack.acceptedQuantity || {}).amount;
+        const accAmt = acceptedRaw !== undefined && acceptedRaw !== null
+          ? toNum(acceptedRaw)
+          : (it.accepted_qty !== undefined && it.accepted_qty !== null ? toNum(it.accepted_qty) : 0);
         const rejAmt = toNum((ack.rejectedQuantity || {}).amount) || (currStatus === "REJECTED" ? qtyAmount : 0);
         
         // Get received quantity (from backend extraction of receivingStatus.receivedQuantity)
@@ -2103,10 +2115,10 @@
           <td>${receivedQty}</td>
           <td>${rejAmt}</td>
           <td>${currStatus}</td>
-          <td>${Number.isFinite(netNum) && netNum ? netNum.toFixed(2) : ""}</td>
+          <td>${Number.isFinite(netNum) && netNum !== null ? netNum.toFixed(2) : ""}</td>
           <td>${netCurrency || ""}</td>
           <td>
-            ${Number.isFinite(acceptedLineAmount) && acceptedLineAmount > 0 ? acceptedLineAmount.toFixed(2) : "0.00"}
+            ${Number.isFinite(acceptedLineAmount) && acceptedLineAmount !== null ? acceptedLineAmount.toFixed(2) : ""}
             <div style="margin-top:4px;">
               <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this line" onclick="barcodePrintFromRow(this)">Print</button>
             </div>
@@ -2210,6 +2222,9 @@
         historyBtn.style.display = "none";
         historyBtn.dataset.poNumber = "";
       }
+      const refreshImagesBtn = document.getElementById("modal-refresh-images-btn");
+      if (refreshImagesBtn) refreshImagesBtn.style.display = "none";
+      activePoModalItems = [];
     }
 
     function openModalHistory() {
@@ -2731,20 +2746,34 @@
     }
 
     function resolveNet(it) {
-      const nets = [it.netCost, it.listPrice, it.price, it.unitPrice];
-      let amount = 0;
-      let currency = "";
+      const scalarFields = [it.unit_net_amount, it.net_amount, it.net_cost_amount];
+      let amount = null;
+      let currency = it.net_currency || it.net_cost_currency || it.currency || it.currencyCode || "";
+      for (const value of scalarFields) {
+        if (value !== undefined && value !== null && value !== "") {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) {
+            amount = parsed;
+            break;
+          }
+        }
+      }
+      // listPrice is intentionally not a net-cost fallback; it can represent a
+      // different commercial price. Structured netCost is the only safe fallback.
+      const nets = [it.netCost, it.net_cost, it.itemNetCost, it.item_net_cost];
       for (const n of nets) {
+        if (amount !== null) break;
         if (n && typeof n === "object") {
-          amount = toNum(n.amount) || toNum(n.value) || toNum(n.price);
+          const rawAmount = n.amount ?? n.value ?? n.price;
+          const parsed = rawAmount !== undefined && rawAmount !== null && rawAmount !== "" ? Number(rawAmount) : NaN;
+          amount = Number.isFinite(parsed) ? parsed : null;
           currency = n.currencyCode || n.currency || n.code || currency;
-          if (amount) break;
         }
       }
       if (!currency) {
         currency = it.currencyCode || it.currency || it.orderedQuantity?.currencyCode || "";
       }
-      if (!currency && amount) {
+      if (!currency && amount !== null) {
         currency = "AED";
       }
       return { netAmount: amount, netCurrency: currency };
@@ -3170,6 +3199,7 @@
         catalogCoverageSummary = data.coverage_summary || null;
         catalogHealthSummary = data.coverage_health_summary || null;
         catalogBucketSummary = data.bucket_summary || null;
+        loadCatalogQueueStatus();
         updateCatalogSummaryStrip();
         filterAsins();
       } catch (err) {
@@ -3528,6 +3558,12 @@
         const resetButton = fetchBlocked || fetchTerminalCode
           ? `<button class="btn btn-sm btn-outline-secondary" style="margin-top:6px;" onclick="resetCatalogFetchAttempts('${asin}')">${resetLabel}</button>`
           : "";
+        const showDelete = Boolean(item.is_terminal || item.dormant || fetchBlocked);
+        const deleteButton = showDelete
+          ? `<button class="btn btn-sm" style="background:#b91c1c; color:#fff;" ${item.fetch_active ? "disabled" : ""}
+               title="${item.fetch_active ? "Catalog fetch is active" : "Delete bad catalog data and history"}"
+               onclick="event.stopPropagation(); handleCatalogDelete('${asin}')">Delete</button>`
+          : "";
 
         const asinSources = Array.isArray(item.asin_sources) ? item.asin_sources : [];
         const sourceBadges = asinSources
@@ -3572,6 +3608,7 @@
             <div style="display:inline-flex; gap:8px; align-items:center; justify-content:center;">
               ${fetchButton}
               <button class="btn btn-sm" style="background:#15803d; color:#fff;" title="Print this catalog row" onclick="barcodePrintFromRow(this)">Print</button>
+              ${deleteButton}
             </div>
             ${statusHtml}
             ${resetButton}
@@ -3612,13 +3649,18 @@
       catalogContextMenuAsin = null;
     }
 
-    async function handleCatalogContextDelete() {
-      const asin = catalogContextMenuAsin || (document.getElementById("catalog-context-menu")?.dataset?.asin || "").trim();
+    async function handleCatalogDelete(requestedAsin = "") {
+      const asin = (requestedAsin || catalogContextMenuAsin || document.getElementById("catalog-context-menu")?.dataset?.asin || "").trim();
       if (!asin) {
         closeCatalogContextMenu();
         return;
       }
-      const ok = confirm(`Delete ${asin} from Catalog Fetcher list?\nThis removes it only from Catalog Fetcher.`);
+      const ok = confirm(
+        `Delete ${asin} catalog data and history?\n\n` +
+        `Catalog payload, barcode, SKU/meta, fetch attempts, terminal state, and source history will be removed.\n` +
+        `PO, picklist, OOS, and payment records will not be touched.\n` +
+        `Manually adding the ASIN later can restore it.`
+      );
       if (!ok) {
         closeCatalogContextMenu();
         return;
@@ -3630,7 +3672,8 @@
           const msg = data.detail || data.error || `HTTP ${resp.status}`;
           throw new Error(msg);
         }
-        showToast(`Removed ${asin} from Catalog list`);
+        const removed = Object.values(data.rows_removed_by_table || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+        showToast(`Deleted ${asin} catalog data/history (${removed} row${removed === 1 ? "" : "s"})`);
         await loadAsinList(true);
       } catch (err) {
         alert(`Failed to delete ${asin}: ${err?.message || err}`);
@@ -3971,6 +4014,25 @@
         console.error("Failed to load picklist preview", err);
         alert(`Failed to load picklist preview: ${err}`);
       }
+    }
+
+    function updateCatalogQueueStatus(status) {
+      if (!status) return;
+      const active = status.active ? `Fetching ${status.active}` : "Idle";
+      setCatalogResetStatus(`Catalog queue: ${active}; ${Number(status.queued || 0)} queued.`);
+    }
+
+    async function loadCatalogQueueStatus() {
+      try {
+        const resp = await fetch("/api/catalog/queue-status");
+        if (resp.ok) updateCatalogQueueStatus(await resp.json());
+      } catch (_) {
+        // Queue status is informational and must not block Catalog Fetcher rendering.
+      }
+    }
+
+    async function handleCatalogContextDelete() {
+      return handleCatalogDelete();
     }
 
     function closePicklistModal() {
@@ -6501,6 +6563,23 @@
         const btn = buttonsByTab.get(tab);
         if (btn) list.appendChild(btn);
       });
+    }
+
+    async function refreshPoModalImages(button) {
+      const placeholders = Array.from(document.querySelectorAll("#modal .img-placeholder[data-asin]"));
+      placeholders.forEach(ph => delete catalogImageCache[ph.dataset.asin]);
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Refreshing...";
+      }
+      try {
+        await populateMissingImages(activePoModalItems);
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = "Refresh Images";
+        }
+      }
     }
 
     function saveTabOrder() {

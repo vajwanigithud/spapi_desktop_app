@@ -76,14 +76,16 @@
 
 import asyncio
 import csv
+import heapq
 import importlib.util
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import StringIO
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -124,6 +126,7 @@ from services.catalog_images import attach_image_urls
 from services.catalog_service import (
     ensure_asin_in_universe,
     get_catalog_asin_sources_map,
+    delete_catalog_asin_data,
     get_catalog_entry,
     get_catalog_fetch_attempts_map,
     init_catalog_db,
@@ -344,6 +347,10 @@ def shutdown_event():
         stop_df_payments_incremental_scheduler()
     except Exception as exc:
         logger.warning(f"[Shutdown] Failed to stop DF Payments scheduler cleanly: {exc}")
+    try:
+        _stop_catalog_fetch_worker()
+    except Exception as exc:
+        logger.warning(f"[Shutdown] Failed to stop catalog fetch worker cleanly: {exc}")
 
 
 # -------------------------------
@@ -473,6 +480,64 @@ FE_MARKETPLACE_IDS = {"A1VC38T7YXB528"}  # JP
 PO_TRACKER_PATH = Path(__file__).parent / "po_tracker.json"
 OOS_STATE_PATH = Path(__file__).parent / "oos_state.json"
 CATALOG_FETCHER_EXCLUSIONS_PATH = Path(__file__).parent / "catalog_fetcher_exclusions.json"
+_catalog_fetch_guard = threading.Lock()
+_catalog_fetch_inflight: Set[str] = set()
+_catalog_delete_inflight: Set[str] = set()
+_catalog_fetch_condition = threading.Condition(_catalog_fetch_guard)
+_catalog_fetch_queue: List[Tuple[float, int, str]] = []
+_catalog_fetch_sequence = 0
+_catalog_fetch_worker: Optional[threading.Thread] = None
+_catalog_fetch_stop = threading.Event()
+_catalog_fetch_active_asin: Optional[str] = None
+_catalog_fetch_last_asin: Optional[str] = None
+_catalog_fetch_last_error: Optional[str] = None
+CATALOG_FETCH_RETRY_BASE_SECONDS = 30
+CATALOG_FETCH_RETRY_MAX_SECONDS = 300
+
+
+def _reserve_catalog_fetch(asin: str) -> bool:
+    asin_norm = (asin or "").strip().upper()
+    with _catalog_fetch_guard:
+        if asin_norm in _catalog_fetch_inflight or asin_norm in _catalog_delete_inflight:
+            return False
+        _catalog_fetch_inflight.add(asin_norm)
+        return True
+
+
+def _release_catalog_fetch(asin: str) -> None:
+    with _catalog_fetch_guard:
+        _catalog_fetch_inflight.discard((asin or "").strip().upper())
+
+
+def _catalog_queue_status() -> Dict[str, Any]:
+    with _catalog_fetch_guard:
+        queued = len(_catalog_fetch_queue)
+        return {
+            "queued": queued,
+            "active": _catalog_fetch_active_asin,
+            "last_asin": _catalog_fetch_last_asin,
+            "last_error": _catalog_fetch_last_error,
+            "worker_running": bool(_catalog_fetch_worker and _catalog_fetch_worker.is_alive()),
+        }
+
+
+def _is_catalog_fetch_active(asin: str) -> bool:
+    with _catalog_fetch_guard:
+        return (asin or "").strip().upper() in _catalog_fetch_inflight
+
+
+def _begin_catalog_delete(asin: str) -> bool:
+    asin_norm = (asin or "").strip().upper()
+    with _catalog_fetch_guard:
+        if asin_norm in _catalog_fetch_inflight or asin_norm in _catalog_delete_inflight:
+            return False
+        _catalog_delete_inflight.add(asin_norm)
+        return True
+
+
+def _end_catalog_delete(asin: str) -> None:
+    with _catalog_fetch_guard:
+        _catalog_delete_inflight.discard((asin or "").strip().upper())
 
 
 def resolve_catalog_host(marketplace_id: str) -> str:
@@ -1329,7 +1394,7 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     if not asin:
         raise HTTPException(status_code=400, detail="Missing ASIN")
     existing = spapi_catalog_status().get(asin)
-    if existing:
+    if existing and existing.get("title") and existing.get("image"):
         return {"asin": asin, "source": "db", "title": existing.get("title"), "image": existing.get("image")}
 
     if not MARKETPLACE_IDS:
@@ -2060,6 +2125,10 @@ def _hydrate_po_with_db_lines(po: Dict[str, Any]) -> Tuple[bool, int]:
                 },
                 "ordered_qty": ordered_qty,
                 "accepted_qty": accepted_qty,
+                # Preserve whether the database actually supplied an acknowledgement.
+                # Modal aggregation may assume accepted=ordered only when this is false
+                # and there is no rejection/cancellation evidence.
+                "_accepted_qty_explicit": accepted_raw is not None,
                 "received_qty": received_qty,
                 "cancelled_qty": cancelled_qty,
                 "pending_qty": pending_qty,
@@ -2104,6 +2173,9 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 "currency": None,
                 "total_amount": Decimal("0"),
                 "has_total": False,
+                "accepted_explicit": False,
+                "amazon_cancelled": False,
+                "amazon_rejected": False,
             }
             order.append(key)
 
@@ -2118,7 +2190,17 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
             bucket["asin"] = asin
 
         ordered_val = _extract_quantity_value(item, "ordered_qty", item.get("orderedQuantity"))
-        accepted_val = _extract_quantity_value(item, "accepted_qty", item.get("acknowledgementStatus", {}).get("acceptedQuantity"), fallback=ordered_val)
+        ack_status = item.get("acknowledgementStatus") or {}
+        accepted_source = ack_status.get("acceptedQuantity") if isinstance(ack_status, dict) else None
+        accepted_explicit = item.get("_accepted_qty_explicit")
+        if accepted_explicit is None:
+            accepted_explicit = item.get("accepted_qty") is not None or _extract_amount_from_dict(accepted_source) is not None
+        accepted_val = _extract_quantity_value(
+            item,
+            "accepted_qty",
+            accepted_source,
+            fallback=None if accepted_explicit else ordered_val,
+        )
         received_val = _extract_quantity_value(item, "received_qty", (item.get("receivingStatus") or {}).get("receivedQuantity"))
         rejected_val = _extract_quantity_value(item, "cancelled_qty", item.get("acknowledgementStatus", {}).get("rejectedQuantity"))
         pending_val = _extract_quantity_value(item, "pending_qty", (item.get("receivingStatus") or {}).get("pendingQuantity"), allow_none=True)
@@ -2131,15 +2213,21 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                 bucket["unit_cost"] = unit_cost
             if not bucket["currency"] and currency:
                 bucket["currency"] = currency
+            # A known unit cost makes the accepted total known even when the
+            # accepted quantity is explicitly zero (a rejected line totals 0.00).
+            bucket["has_total"] = True
             if accepted_val > 0:
                 bucket["total_amount"] += unit_cost * Decimal(accepted_val)
-                bucket["has_total"] = True
 
         bucket["ordered"] += ordered_val
         bucket["accepted"] += accepted_val
         bucket["received"] += received_val
         bucket["rejected"] += rejected_val
         bucket["pending"] += pending_val
+        bucket["accepted_explicit"] = bucket["accepted_explicit"] or bool(accepted_explicit)
+        confirmation_status = (ack_status.get("confirmationStatus") or item.get("status") or "").strip().upper()
+        bucket["amazon_cancelled"] = bucket["amazon_cancelled"] or confirmation_status in {"CANCELLED", "CANCELED"}
+        bucket["amazon_rejected"] = bucket["amazon_rejected"] or confirmation_status == "REJECTED"
 
     aggregated: List[Dict[str, Any]] = []
     for idx, key in enumerate(order, start=1):
@@ -2152,20 +2240,40 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
         rejected = bucket["rejected"]
         pending = max(0, bucket["pending"])
 
-        if accepted <= 0 and ordered > 0:
+        accepted_explicit = bool(bucket["accepted_explicit"])
+        # accepted=ordered is allowed only for legacy/unacknowledged rows where the
+        # accepted value is genuinely absent and no rejection/cancellation exists.
+        if not accepted_explicit and accepted <= 0 and ordered > 0 and rejected <= 0:
             accepted = ordered
 
         if pending <= 0:
             pending = max(0, accepted - received - rejected)
 
-        status = "ACCEPTED"
-        if rejected >= accepted and accepted <= 0:
+        if bucket["amazon_cancelled"] or (rejected >= ordered and ordered > 0 and not bucket["amazon_rejected"]):
+            status = "CANCELLED"
+        elif bucket["amazon_rejected"] or (accepted_explicit and accepted <= 0 and rejected > 0):
             status = "REJECTED"
-        elif received >= accepted and accepted > 0:
+        elif accepted_explicit and accepted > 0 and (rejected > 0 or (ordered > 0 and accepted < ordered)):
+            status = "PARTIALLY_ACCEPTED"
+        elif not accepted_explicit:
+            status = "PENDING"
+        elif accepted > 0 and received >= accepted:
             status = "RECEIVED"
+        elif accepted > 0:
+            status = "ACCEPTED"
+        else:
+            status = "PENDING"
 
-        total_amount = float(bucket["total_amount"]) if bucket["has_total"] else None
-        unit_cost = float(bucket["unit_cost"]) if bucket["unit_cost"] is not None else None
+        total_amount = (
+            float(bucket["total_amount"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if bucket["has_total"]
+            else None
+        )
+        unit_cost = (
+            float(bucket["unit_cost"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if bucket["unit_cost"] is not None
+            else None
+        )
 
         aggregated.append(
             {
@@ -2186,13 +2294,18 @@ def _aggregate_po_items_for_modal(items: List[Dict[str, Any]]) -> List[Dict[str,
                     "rejectedQuantity": {"amount": rejected},
                     "confirmationStatus": status,
                 },
+                "normalized_status": status,
                 "receivingStatus": {
                     "receivedQuantity": {"amount": received},
                     "pendingQuantity": {"amount": pending},
                 },
                 "net_amount": unit_cost,
+                "unit_net_amount": unit_cost,
+                "net_currency": bucket["currency"],
                 "currencyCode": bucket["currency"],
+                "currency": bucket["currency"],
                 "total_amount": total_amount,
+                "accepted_net_total": total_amount,
                 "accepted_line_amount": total_amount,
             }
         )
@@ -2471,6 +2584,9 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
         )
         add_activity("OK", f"Manual Vendor PO sync completed: fetched {stats.get('fetched', 0)} POs")
 
+    catalog_asins = stats.pop("_catalog_asins", [])
+    catalog_queue_result = _activate_new_po_catalog_asins(catalog_asins)
+
     stats.update(
         {
             "status": "ok",
@@ -2479,6 +2595,7 @@ def sync_vendor_pos(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
             "createdBefore": created_before,
             "sync_state": release_state,
             "ok": True,
+            "catalog": catalog_queue_result,
         }
     )
     return stats
@@ -2533,6 +2650,9 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
         )
         add_activity("OK", f"Full Vendor PO rebuild completed: fetched {stats.get('fetched', 0)} POs")
 
+    catalog_asins = stats.pop("_catalog_asins", [])
+    catalog_queue_result = _activate_new_po_catalog_asins(catalog_asins)
+
     stats.update(
         {
             "status": "ok",
@@ -2541,6 +2661,7 @@ def rebuild_vendor_pos_full(payload: Optional[VendorPOSyncRequest] = BODY_NONE):
             "createdBefore": created_before,
             "sync_state": release_state,
             "ok": True,
+            "catalog": catalog_queue_result,
         }
     )
     return stats
@@ -2590,14 +2711,56 @@ def _fetch_and_persist_vendor_pos(
     )
 
     po_numbers = [po.get("purchaseOrderNumber") for po in pos if po.get("purchaseOrderNumber")]
+    persisted_line_po_numbers: List[str] = []
     if po_numbers:
         try:
-            sync_vendor_po_lines_batch(po_numbers)
+            persisted_line_po_numbers = sync_vendor_po_lines_batch(po_numbers) or []
         except Exception as exc:
             logger.error(f"[VendorPO] Error syncing vendor_po_lines: {exc}")
 
+    persisted_asins: Set[str] = set()
+    for po_number in persisted_line_po_numbers:
+        try:
+            for line in store_get_vendor_po_lines(po_number) or []:
+                asin = (line.get("asin") or "").strip().upper()
+                if is_asin(asin):
+                    persisted_asins.add(asin)
+        except Exception as exc:
+            logger.warning("[VendorPO] Could not collect persisted catalog ASINs for %s: %s", po_number, exc)
+
     add_activity("DB", f"Vendor PO persistence completed: saved {len(pos)} POs")
-    return {"fetched": len(pos)}
+    return {"fetched": len(pos), "_catalog_asins": sorted(persisted_asins)}
+
+
+def _activate_new_po_catalog_asins(asins: List[str]) -> Dict[str, int]:
+    """Seed and queue newly persisted PO ASINs after the Vendor PO lock is released."""
+    normalized = sorted({(asin or "").strip().upper() for asin in asins if is_asin((asin or "").strip().upper())})
+    result = {"discovered": len(normalized), "seeded": 0, "reactivated": 0, "queued": 0}
+    if not normalized:
+        return result
+    try:
+        exclusions = load_catalog_fetcher_exclusions()
+        reactivated = set(normalized).intersection(exclusions)
+        if reactivated:
+            exclusions.difference_update(reactivated)
+            save_catalog_fetcher_exclusions(exclusions)
+            for asin in reactivated:
+                reset_catalog_fetch_attempts(asin, db_path=CATALOG_DB_PATH)
+        result["reactivated"] = len(reactivated)
+        result["seeded"] = seed_catalog_universe(normalized, db_path=CATALOG_DB_PATH)
+        record_catalog_asin_sources(normalized, "vendor_po", db_path=CATALOG_DB_PATH)
+        fetched = spapi_catalog_status(db_path=CATALOG_DB_PATH)
+        for asin in normalized:
+            info = fetched.get(asin, {}) or {}
+            has_data = bool(info.get("title") and info.get("image"))
+            if should_fetch_catalog(asin, has_data, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS, db_path=CATALOG_DB_PATH):
+                if _queue_catalog_fetch(None, asin):
+                    result["queued"] += 1
+    except Exception as exc:
+        # Catalog enrichment is deliberately best-effort and cannot fail PO sync.
+        logger.warning("[VendorPO] Catalog activation failed after PO persistence: %s", exc, exc_info=True)
+        result["error"] = 1
+    return result
 
 
 def _summarize_vendor_po_error(exc: Exception) -> str:
@@ -4073,11 +4236,12 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
     """
     try:
         asins, sku_map = extract_asins_from_pos()
-        seeded = seed_catalog_universe(asins)
+        exclusions = load_catalog_fetcher_exclusions()
+        visible_po_asins = [asin for asin in asins if asin not in exclusions]
+        seeded = seed_catalog_universe(visible_po_asins)
         if seeded:
             logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor PO database")
-        record_catalog_asin_sources(asins, "vendor_po")
-        exclusions = load_catalog_fetcher_exclusions()
+        record_catalog_asin_sources(visible_po_asins, "vendor_po")
         universe = [asin for asin in list_universe_asins() if asin not in exclusions]
         fetched = spapi_catalog_status()
         attempts_map = get_catalog_fetch_attempts_map(universe)
@@ -4180,10 +4344,10 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
             coverage_health_summary["operationally_active_count"] += 1
         if dormant:
             coverage_health_summary["dormant_count"] += 1
-        if not is_fetched and auto_queued < CATALOG_AUTO_FETCH_LIMIT:
-            if should_fetch_catalog(asin, is_fetched, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
-                background_tasks.add_task(_fetch_catalog_background, asin)
-                auto_queued += 1
+        if not catalog_ready and auto_queued < CATALOG_AUTO_FETCH_LIMIT:
+            if should_fetch_catalog(asin, catalog_ready, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
+                if _queue_catalog_fetch(background_tasks, asin):
+                    auto_queued += 1
         items.append(
             {
                 "asin": asin,
@@ -4210,6 +4374,7 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
                 "commercial_ready": commercial_ready,
                 "operationally_active": operationally_active,
                 "dormant": dormant,
+                "fetch_active": _is_catalog_fetch_active(asin),
                 "bucket": bucket,
                 "bucket_rank": bucket_rank,
             }
@@ -4222,17 +4387,34 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
     }
 
 
+@app.get("/api/catalog/queue-status")
+def get_catalog_queue_status():
+    return _catalog_queue_status()
+
+
 @app.delete("/api/catalog/asins/{asin}")
 def delete_catalog_fetcher_asin(asin: str):
     """
-    Hide an ASIN from the Catalog Fetcher list while leaving catalog data intact.
+    Delete catalog-owned data, then tombstone the ASIN from historical PO reseeding.
     """
     asin_norm = (asin or "").strip().upper()
     if not asin_norm or not is_asin(asin_norm):
         raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
-    add_catalog_fetcher_exclusion(asin_norm)
-    logger.info("[CatalogFetcher] Excluded ASIN from fetcher list: %s", asin_norm)
-    return {"ok": True, "asin": asin_norm}
+    if not _begin_catalog_delete(asin_norm):
+        raise HTTPException(status_code=409, detail=f"Catalog fetch is active for {asin_norm}; try again when it finishes")
+    try:
+        result = delete_catalog_asin_data(asin_norm, db_path=CATALOG_DB_PATH)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[CatalogFetcher] Failed deleting %s: %s", asin_norm, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Catalog delete failed; no exclusion was added") from exc
+    else:
+        add_catalog_fetcher_exclusion(asin_norm)
+        logger.info("[CatalogFetcher] Deleted and excluded ASIN: %s rows=%s", asin_norm, result["rows_removed_by_table"])
+        return {"ok": True, **result, "excluded": True}
+    finally:
+        _end_catalog_delete(asin_norm)
 
 
 @app.post("/api/catalog/add-asin")
@@ -4248,8 +4430,8 @@ def add_catalog_asin(payload: Dict[str, Any]):
     if not is_asin(asin):
         raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
     remove_catalog_fetcher_exclusion(asin)
-    ensure_asin_in_universe(asin)
-    record_catalog_asin_source(asin, "manual")
+    ensure_asin_in_universe(asin, db_path=CATALOG_DB_PATH)
+    record_catalog_asin_source(asin, "manual", db_path=CATALOG_DB_PATH)
     return {"status": "ok", "asin": asin}
 
 
@@ -4273,12 +4455,17 @@ def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
     """
     Queue catalog fetch in background and return immediately.
     """
+    asin = (asin or "").strip().upper()
+    if not is_asin(asin):
+        raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
+    if asin in load_catalog_fetcher_exclusions():
+        raise HTTPException(status_code=409, detail="ASIN is deleted from Catalog Fetcher; add it manually before fetching")
     has_data = False
     try:
         fetched = spapi_catalog_status().get(asin)
-        if fetched and (fetched.get("title") or fetched.get("image")):
+        if fetched and fetched.get("title") and fetched.get("image"):
             return {"asin": asin, "status": "cached", "title": fetched.get("title"), "image": fetched.get("image")}
-        has_data = bool(fetched and (fetched.get("title") or fetched.get("image")))
+        has_data = bool(fetched and fetched.get("title") and fetched.get("image"))
     except Exception as e:
         logger.warning(f"[Catalog] Error checking cache for {asin}: {e}")
         fetched = None
@@ -4286,18 +4473,51 @@ def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
     if not should_fetch_catalog(asin, has_data, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
         return {"asin": asin, "status": "blocked", "reason": "max_attempts"}
     
-    background_tasks.add_task(_fetch_catalog_background, asin)
+    if not _queue_catalog_fetch(background_tasks, asin):
+        return {"asin": asin, "status": "active"}
     return {"asin": asin, "status": "queued"}
 
 
-def _fetch_catalog_background(asin: str):
-    """Helper function to fetch catalog in background thread."""
+def _ensure_catalog_fetch_worker() -> None:
+    global _catalog_fetch_worker
+    with _catalog_fetch_condition:
+        if _catalog_fetch_worker and _catalog_fetch_worker.is_alive():
+            return
+        _catalog_fetch_stop.clear()
+        _catalog_fetch_worker = threading.Thread(
+            target=_catalog_fetch_worker_loop,
+            name="catalog-fetch-worker",
+            daemon=True,
+        )
+        _catalog_fetch_worker.start()
+
+
+def _queue_catalog_fetch(background_tasks: Optional[BackgroundTasks], asin: str) -> bool:
+    """Put an ASIN on the shared, sequential catalog queue (BackgroundTasks is compatibility-only)."""
+    del background_tasks
+    asin_norm = (asin or "").strip().upper()
+    if not is_asin(asin_norm) or asin_norm in load_catalog_fetcher_exclusions():
+        return False
+    if not _reserve_catalog_fetch(asin_norm):
+        return False
+    global _catalog_fetch_sequence
+    with _catalog_fetch_condition:
+        _catalog_fetch_sequence += 1
+        heapq.heappush(_catalog_fetch_queue, (time.monotonic(), _catalog_fetch_sequence, asin_norm))
+        _catalog_fetch_condition.notify_all()
+    _ensure_catalog_fetch_worker()
+    return True
+
+
+def _perform_catalog_fetch(asin: str) -> Tuple[bool, bool, Optional[str]]:
+    """Fetch once. Return (success, retryable, error) without releasing the queue reservation."""
     try:
         fetch_spapi_catalog_item(asin)
         record_catalog_fetch_attempt(asin, ok=True)
         logger.info(f"[Catalog] Background fetch completed for {asin}")
-    except HTTPException as e:
-        detail_payload = e.detail
+        return True, False, None
+    except HTTPException as exc:
+        detail_payload = exc.detail
         error_detail = detail_payload if isinstance(detail_payload, str) else str(detail_payload)
         detail_code = ""
         detail_message = error_detail
@@ -4307,19 +4527,72 @@ def _fetch_catalog_background(asin: str):
         detail_upper = (detail_code or error_detail or "").upper()
         detail_lower = (detail_message or "").lower()
         if "NOT_FOUND" in detail_upper or "not found in marketplace" in detail_lower:
-            mark_catalog_fetch_terminal(
-                asin,
-                "NOT_FOUND",
-                detail_message,
-                max_attempts=CATALOG_FETCH_MAX_ATTEMPTS,
-            )
+            mark_catalog_fetch_terminal(asin, "NOT_FOUND", detail_message, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS)
             logger.info(f"[Catalog] Marked {asin} as NOT_FOUND terminal")
-        else:
-            record_catalog_fetch_attempt(asin, ok=False, error=error_detail)
-            logger.warning(f"[Catalog] Background fetch failed for {asin}: {e.detail}")
-    except Exception as e:
-        record_catalog_fetch_attempt(asin, ok=False, error=str(e))
-        logger.error(f"[Catalog] Unexpected error fetching {asin}: {e}", exc_info=True)
+            return False, False, detail_message
+        record_catalog_fetch_attempt(asin, ok=False, error=error_detail)
+        retryable = exc.status_code in {408, 425, 429, 500, 502, 503, 504}
+        logger.warning(f"[Catalog] Background fetch failed for {asin}: {exc.detail}")
+        return False, retryable, error_detail
+    except Exception as exc:
+        record_catalog_fetch_attempt(asin, ok=False, error=str(exc))
+        logger.error(f"[Catalog] Unexpected error fetching {asin}: {exc}", exc_info=True)
+        return False, True, str(exc)
+
+
+def _catalog_fetch_worker_loop() -> None:
+    global _catalog_fetch_active_asin, _catalog_fetch_last_asin, _catalog_fetch_last_error, _catalog_fetch_sequence
+    while not _catalog_fetch_stop.is_set():
+        with _catalog_fetch_condition:
+            while not _catalog_fetch_queue and not _catalog_fetch_stop.is_set():
+                _catalog_fetch_condition.wait(timeout=1.0)
+            if _catalog_fetch_stop.is_set():
+                break
+            ready_at, _, asin = _catalog_fetch_queue[0]
+            wait_for = ready_at - time.monotonic()
+            if wait_for > 0:
+                _catalog_fetch_condition.wait(timeout=min(wait_for, 1.0))
+                continue
+            heapq.heappop(_catalog_fetch_queue)
+            _catalog_fetch_active_asin = asin
+
+        success, retryable, error = _perform_catalog_fetch(asin)
+        attempts = int((get_catalog_fetch_attempts_map([asin]).get(asin) or {}).get("attempts") or 0)
+        retry = retryable and attempts < CATALOG_FETCH_MAX_ATTEMPTS and not _catalog_fetch_stop.is_set()
+        with _catalog_fetch_condition:
+            _catalog_fetch_active_asin = None
+            _catalog_fetch_last_asin = asin
+            _catalog_fetch_last_error = error
+            if retry:
+                delay = min(
+                    CATALOG_FETCH_RETRY_MAX_SECONDS,
+                    CATALOG_FETCH_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+                )
+                _catalog_fetch_sequence += 1
+                heapq.heappush(_catalog_fetch_queue, (time.monotonic() + delay, _catalog_fetch_sequence, asin))
+                _catalog_fetch_condition.notify_all()
+            else:
+                _catalog_fetch_inflight.discard(asin)
+        if success:
+            add_activity("OK", f"Catalog fetched: {asin}")
+
+
+def _stop_catalog_fetch_worker() -> None:
+    _catalog_fetch_stop.set()
+    with _catalog_fetch_condition:
+        _catalog_fetch_condition.notify_all()
+    worker = _catalog_fetch_worker
+    if worker and worker.is_alive():
+        worker.join(timeout=2.0)
+
+
+def _fetch_catalog_background(asin: str, reserved: bool = False):
+    """Compatibility entry point; all new callers use the shared queue."""
+    if reserved or _reserve_catalog_fetch(asin):
+        try:
+            _perform_catalog_fetch(asin)
+        finally:
+            _release_catalog_fetch(asin)
 
 
 @app.post("/api/catalog/fetch-all")
@@ -4329,8 +4602,13 @@ def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
     """
     try:
         asins, _ = extract_asins_from_pos()
+        exclusions = load_catalog_fetcher_exclusions()
+        asins = [asin for asin in asins if asin not in exclusions]
         fetched = spapi_catalog_status()
-        missing = [a for a in asins if a not in fetched]
+        missing = [
+            asin for asin in asins
+            if not (fetched.get(asin, {}).get("title") and fetched.get(asin, {}).get("image"))
+        ]
     except Exception as exc:
         logger.error(f"[Catalog] Error listing missing ASINs: {exc}")
         return {"fetched": 0, "queued": 0, "errors": [{"error": str(exc)}]}
@@ -4342,8 +4620,8 @@ def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
     for asin in missing:
         if not should_fetch_catalog(asin, False, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
             continue
-        background_tasks.add_task(_fetch_catalog_background, asin)
-        queued += 1
+        if _queue_catalog_fetch(background_tasks, asin):
+            queued += 1
 
     logger.info(f"[Catalog] Queued {queued} ASINs for background fetch (missing={len(missing)})")
     return {"fetched": 0, "queued": queued, "missingTotal": len(missing)}
@@ -5278,7 +5556,7 @@ def sync_vendor_po_lines_batch(po_numbers: List[str]):
     Called after fetching POs from SP-API.
     """
     if not po_numbers:
-        return
+        return []
 
     init_vendor_po_lines_table()
 
@@ -5299,10 +5577,15 @@ def sync_vendor_po_lines_batch(po_numbers: List[str]):
         errors = [r for _, r in results if r]
         if errors:
             logger.warning(f"[VendorPO] vendor_po_lines sync completed with {len(errors)} errors out of {len(po_numbers)} POs")
+        return [po_num for po_num, error in results if error is None]
     except RuntimeError:
         # Fallback if already in an event loop (should be rare for sync endpoints)
+        successful = []
         for po_num in po_numbers:
-            _sync_safe(po_num)
+            _, error = _sync_safe(po_num)
+            if error is None:
+                successful.append(po_num)
+        return successful
 
 
 def rebuild_all_vendor_po_lines():

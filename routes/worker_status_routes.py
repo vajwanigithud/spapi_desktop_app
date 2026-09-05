@@ -11,7 +11,7 @@ from services.activity_log import add_activity
 from services import vendor_inventory_realtime as rt_inventory
 from services import vendor_realtime_sales as rt_sales
 from services.db import ensure_app_kv_table, get_app_kv, get_db_connection
-from services.df_payments import get_df_payments_worker_metadata
+from services.df_payments import get_df_gmail_reconcile_metadata, get_df_payments_worker_metadata
 from services.vendor_po_status_store import get_vendor_po_status_payload
 from services.vendor_rt_inventory_state import get_refresh_metadata
 from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
@@ -577,6 +577,44 @@ def _df_payments_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any
             "mode": "auto" if auto_enabled else "manual",
         }
     )
+
+    try:
+        gmail_meta = get_df_gmail_reconcile_metadata()
+        gmail_status = gmail_meta.get("worker_status") or "waiting"
+        gmail_reason = gmail_meta.get("reason")
+        if gmail_meta.get("last_status") == "disabled":
+            gmail_status = "waiting"
+            gmail_reason = gmail_reason or "Gmail configuration is disabled or incomplete"
+        elif gmail_meta.get("last_status") == "error" and gmail_status != "locked":
+            gmail_status = "error"
+            gmail_reason = gmail_meta.get("last_error") or gmail_reason
+        workers.append(
+            {
+                "key": "df_gmail_reconcile",
+                "name": "DF Gmail Reconcile",
+                "status": gmail_status,
+                "last_run_at_uae": _fmt_uae(gmail_meta.get("last_success_at_utc") or gmail_meta.get("last_attempt_at_utc")),
+                "last_run_utc": _fmt_iso_utc(gmail_meta.get("last_success_at_utc") or gmail_meta.get("last_attempt_at_utc")),
+                "next_eligible_at_uae": _fmt_uae(gmail_meta.get("next_eligible_at_utc")),
+                "next_run_utc": _fmt_iso_utc(gmail_meta.get("next_eligible_at_utc")),
+                "details": gmail_reason,
+                "message": gmail_reason,
+                "what": "Imports Gmail remittances and reconciles DF payments daily",
+                "mode": "auto",
+            }
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        workers.append(
+            {
+                "key": "df_gmail_reconcile",
+                "name": "DF Gmail Reconcile",
+                "status": "error",
+                "details": str(exc),
+                "message": str(exc),
+                "what": "Imports Gmail remittances and reconciles DF payments daily",
+                "mode": "auto",
+            }
+        )
 
     return {"title": "DF PAYMENTS", "workers": workers}
 

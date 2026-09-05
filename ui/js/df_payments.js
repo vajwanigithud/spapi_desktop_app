@@ -184,8 +184,12 @@
       }
 
       const importBlock = data.import || {};
-      if (importBlock.status === "disabled") {
+      if (data.status === "locked") {
+        setStatus("Gmail reconcile is waiting for the active DF job to finish");
+      } else if (data.status === "disabled" || importBlock.status === "disabled") {
         setStatus("Remittance import disabled: configure Gmail IMAP env vars", true);
+      } else if (data.status === "error") {
+        setStatus(`Gmail reconcile failed: ${data.error || "unknown error"}`, true);
       } else {
         const inserted = importBlock.rows_inserted ?? 0;
         const processed = importBlock.messages_processed ?? importBlock.messages_found ?? 0;
@@ -259,8 +263,12 @@
         const detail = data?.detail || data?.error || resp.statusText;
         throw new Error(detail || `HTTP ${resp.status}`);
       }
-      await loadDfPaymentsState();
-      setStatus("DF Payments refreshed");
+      if (data.status === "locked") {
+        setStatus("DF Payments fetch skipped: another DF scan is running");
+      } else {
+        await loadDfPaymentsState();
+        setStatus("DF Payments refreshed");
+      }
     } catch (err) {
       setStatus(`Error: ${err.message}`, true);
     } finally {

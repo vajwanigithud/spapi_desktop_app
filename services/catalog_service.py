@@ -1,10 +1,10 @@
-import json
+﻿import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from services.db import get_db_connection
+from services.db import get_db_connection, get_db_connection_for_path
 from services.log_once import log_once
 from services.perf import time_block
 
@@ -23,10 +23,46 @@ VALID_ASIN_SOURCES = {
     "other",
 }
 
+CATALOG_OWNED_TABLES = (
+    "spapi_catalog",
+    "spapi_catalog_meta",
+    "catalog_fetch_attempts",
+    "catalog_asin_sources",
+)
+
+
+def delete_catalog_asin_data(
+    asin: str,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+) -> Dict[str, Any]:
+    """Delete only catalog-owned rows for one exact, normalized ASIN."""
+    asin_norm = (asin or "").strip().upper()
+    if not is_asin(asin_norm):
+        raise ValueError("asin must be 10 alphanumeric characters")
+
+    init_catalog_db(db_path)
+    rows_removed: Dict[str, int] = {}
+    with get_db_connection_for_path(db_path) as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for table in CATALOG_OWNED_TABLES:
+                cursor = conn.execute(f"DELETE FROM {table} WHERE asin = ?", (asin_norm,))
+                rows_removed[table] = max(0, cursor.rowcount or 0)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return {
+        "asin": asin_norm,
+        "deleted": True,
+        "rows_removed_by_table": rows_removed,
+    }
+
 
 def init_catalog_db(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with get_db_connection() as conn:
+    with get_db_connection_for_path(db_path) as conn:
         with time_block("catalog_init"):
             conn.execute(
                 """
@@ -128,7 +164,7 @@ def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEF
     vendor_details = payload.get("vendorDetails") or []
     if vendor_details and isinstance(vendor_details, list):
         sku = vendor_details[0].get("vendorSKU") or sku
-    with get_db_connection() as conn:
+    with get_db_connection_for_path(db_path) as conn:
         with time_block("catalog_upsert"):
             conn.execute(
                 """
@@ -149,7 +185,7 @@ def spapi_catalog_status(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> Dict[str, D
         return {}
     updates = []
     results = {}
-    with get_db_connection() as conn:
+    with get_db_connection_for_path(db_path) as conn:
         with time_block("catalog_status_fetch"):
             rows = conn.execute(
                 """
@@ -217,7 +253,7 @@ def update_catalog_barcode(asin: str, barcode: str, db_path: Path = DEFAULT_CATA
     if not asin or not barcode:
         return False
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             cur = conn.execute("SELECT barcode FROM spapi_catalog WHERE asin = ?", (asin,))
             row = cur.fetchone()
             if not row:
@@ -237,7 +273,7 @@ def set_catalog_barcode_if_absent(asin: str, barcode: str, db_path: Path = DEFAU
     if not asin or not barcode:
         return False
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             cur = conn.execute("SELECT barcode FROM spapi_catalog WHERE asin = ?", (asin,))
             row = cur.fetchone()
             if not row:
@@ -266,7 +302,7 @@ def get_catalog_entry(asin: str, db_path: Path = DEFAULT_CATALOG_DB_PATH) -> Opt
         return None
     try:
         with time_block("catalog_entry_lookup"):
-            with get_db_connection() as conn:
+            with get_db_connection_for_path(db_path) as conn:
                 row = conn.execute(
                     "SELECT title, image, payload FROM spapi_catalog WHERE asin = ?",
                     (asin,),
@@ -300,7 +336,7 @@ def list_catalog_indexes(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> list[dict[s
     if not db_path.exists():
         return indexes
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             for table in ("spapi_catalog", "spapi_catalog_meta"):
                 rows = conn.execute(f"PRAGMA index_list({table})").fetchall()
                 for row in rows:
@@ -320,7 +356,7 @@ def ensure_asin_in_universe(asin: str, db_path: Path = DEFAULT_CATALOG_DB_PATH) 
         return
     init_catalog_db(db_path)
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO spapi_catalog_meta (asin, sku) VALUES (?, NULL)",
                 (asin,),
@@ -338,7 +374,7 @@ def list_universe_asins(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> List[str]:
     if not db_path.exists():
         return []
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT asin FROM spapi_catalog WHERE asin IS NOT NULL AND TRIM(asin) <> ''
@@ -369,7 +405,7 @@ def seed_catalog_universe(asins: Iterable[str], db_path: Path = DEFAULT_CATALOG_
     before = 0
     after = 0
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             row = conn.execute("SELECT COUNT(*) FROM spapi_catalog_meta").fetchone()
             before = int(row[0]) if row and row[0] is not None else 0
             rows = [(asin,) for asin in normalized]
@@ -398,7 +434,7 @@ def record_catalog_asin_source(
     init_catalog_db(db_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO catalog_asin_sources (asin, source, first_seen_at)
@@ -430,7 +466,7 @@ def record_catalog_asin_sources(
     timestamp = datetime.now(timezone.utc).isoformat()
     rows = [(asin, source_norm, timestamp) for asin in normalized]
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO catalog_asin_sources (asin, source, first_seen_at)
@@ -447,7 +483,7 @@ def get_catalog_fetch_attempts(asin: str, db_path: Path = DEFAULT_CATALOG_DB_PAT
     if not asin:
         return 0
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             row = conn.execute(
                 "SELECT attempts FROM catalog_fetch_attempts WHERE asin = ?",
                 (asin,),
@@ -470,7 +506,7 @@ def record_catalog_fetch_attempt(
     init_catalog_db(db_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             if ok:
                 conn.execute(
                     """
@@ -512,7 +548,7 @@ def should_fetch_catalog(
         return False
     attempts = 0
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             row = conn.execute(
                 "SELECT attempts, terminal_code FROM catalog_fetch_attempts WHERE asin = ?",
                 (asin_norm,),
@@ -541,7 +577,7 @@ def get_catalog_fetch_attempts_map(
     if not normalized:
         return {}
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             placeholders = ", ".join(["?"] * len(normalized))
             query = (
                 "SELECT asin, attempts, last_error, last_attempt_at, terminal_code, terminal_message "
@@ -578,7 +614,7 @@ def get_catalog_asin_sources_map(
     if not normalized:
         return {}
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             placeholders = ", ".join(["?"] * len(normalized))
             query = (
                 f"SELECT asin, source FROM catalog_asin_sources "
@@ -606,7 +642,7 @@ def reset_catalog_fetch_attempts(asin: str, db_path: Path = DEFAULT_CATALOG_DB_P
         return False
     init_catalog_db(db_path)
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             conn.execute("DELETE FROM catalog_fetch_attempts WHERE asin = ?", (asin_norm,))
             conn.commit()
         return True
@@ -618,7 +654,7 @@ def reset_catalog_fetch_attempts(asin: str, db_path: Path = DEFAULT_CATALOG_DB_P
 def reset_all_catalog_fetch_attempts(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> int:
     init_catalog_db(db_path)
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             cur = conn.execute("DELETE FROM catalog_fetch_attempts")
             conn.commit()
             return cur.rowcount or 0
@@ -640,7 +676,7 @@ def mark_catalog_fetch_terminal(
     init_catalog_db(db_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     try:
-        with get_db_connection() as conn:
+        with get_db_connection_for_path(db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO catalog_fetch_attempts (asin, attempts, last_error, last_attempt_at, terminal_code, terminal_message)

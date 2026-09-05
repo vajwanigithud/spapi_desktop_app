@@ -12,9 +12,12 @@ from services.df_payments import (
     _fetch_purchase_orders_from_api,
     compute_incremental_eligibility,
     get_df_payments_state,
+    get_df_gmail_reconcile_metadata,
     incremental_refresh_df_payments,
+    maybe_run_df_gmail_reconcile_auto,
     reconcile_df_payments_from_remittances,
     refresh_df_payments,
+    run_df_gmail_reconcile,
 )
 from services.df_remittances_gmail import (
     import_df_remittances_from_gmail,
@@ -717,6 +720,88 @@ def test_incremental_lock_prevents_overlap(tmp_path):
 
     release_evt.set()
     thread.join(timeout=2)
+
+
+def test_full_fetch_and_incremental_share_lock(tmp_path):
+    db_path = tmp_path / "df_shared_lock.db"
+    ensure_df_payments_tables(db_path)
+    now = datetime(2025, 7, 2, 9, 0, tzinfo=timezone.utc)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_fetch(**kwargs):
+        started.set()
+        release.wait(timeout=2)
+        return {"purchaseOrders": []}
+
+    thread = threading.Thread(
+        target=refresh_df_payments,
+        kwargs={"marketplace_id": MARKETPLACE_ID, "db_path": db_path, "fetcher": slow_fetch, "now_utc": now},
+        daemon=True,
+    )
+    thread.start()
+    assert started.wait(timeout=1)
+    blocked = incremental_refresh_df_payments(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        fetcher=lambda **kwargs: {"purchaseOrders": []},
+        now_utc=now,
+        force=True,
+    )
+    assert blocked == {"status": "locked", "reason": "lock_held"}
+    release.set()
+    thread.join(timeout=2)
+
+
+def test_gmail_disabled_records_attempt_and_backs_off(monkeypatch, tmp_path):
+    from services import df_payments as service
+
+    db_path = tmp_path / "gmail_disabled.db"
+    now = datetime(2025, 8, 1, 10, 0, tzinfo=timezone.utc)
+    calls = []
+    monkeypatch.setattr(service, "import_df_remittances_from_gmail", lambda **kwargs: calls.append(1) or {
+        "status": "disabled", "reason": "missing_config"
+    })
+
+    first = maybe_run_df_gmail_reconcile_auto(MARKETPLACE_ID, db_path=db_path, now_utc=now)
+    second = maybe_run_df_gmail_reconcile_auto(MARKETPLACE_ID, db_path=db_path, now_utc=now + timedelta(minutes=1))
+    meta = get_df_gmail_reconcile_metadata(db_path=db_path, now_utc=now + timedelta(minutes=1))
+
+    assert first["status"] == "disabled"
+    assert second["status"] == "waiting"
+    assert second["reason"] == "gmail_not_configured"
+    assert len(calls) == 1
+    assert meta["last_attempt_at_utc"] == now.isoformat()
+    assert meta["last_success_at_utc"] is None
+    assert meta["last_status"] == "disabled"
+
+
+def test_gmail_success_runs_once_per_day_and_manual_bypasses(monkeypatch, tmp_path):
+    from services import df_payments as service
+
+    db_path = tmp_path / "gmail_daily.db"
+    now = datetime(2025, 8, 2, 10, 0, tzinfo=timezone.utc)
+    calls = []
+    monkeypatch.setattr(service, "import_df_remittances_from_gmail", lambda **kwargs: calls.append("import") or {
+        "status": "ok", "rows_inserted": 0
+    })
+    monkeypatch.setattr(service, "reconcile_df_payments_from_remittances", lambda *args, **kwargs: calls.append("reconcile") or {
+        "status": "reconciled", "orders_updated": 0
+    })
+
+    first = maybe_run_df_gmail_reconcile_auto(MARKETPLACE_ID, db_path=db_path, now_utc=now)
+    second = maybe_run_df_gmail_reconcile_auto(MARKETPLACE_ID, db_path=db_path, now_utc=now + timedelta(hours=1))
+    manual = run_df_gmail_reconcile(
+        MARKETPLACE_ID, db_path=db_path, now_utc=now + timedelta(hours=2), triggered_by="manual", force=True
+    )
+
+    assert first["status"] == "reconciled"
+    assert second["status"] == "waiting"
+    assert second["reason"] == "daily_cooldown"
+    assert manual["status"] == "reconciled"
+    assert calls == ["import", "reconcile", "import", "reconcile"]
+    meta = get_df_gmail_reconcile_metadata(db_path=db_path, now_utc=now + timedelta(hours=2))
+    assert meta["last_success_at_utc"] == (now + timedelta(hours=2)).isoformat()
 
 
 def test_parse_remittance_email_body_matches_gas():

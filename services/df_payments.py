@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -21,6 +20,7 @@ from services.db import (
     ensure_df_remittances_table,
     get_db_connection_for_path,
 )
+from services.df_remittances_gmail import import_df_remittances_from_gmail
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MARKETPLACE_ID = MARKETPLACE_ID
@@ -36,10 +36,21 @@ DF_PAYMENTS_TERMS_DAYS = 30
 INCREMENTAL_COOLDOWN_SECONDS = 600
 INCREMENTAL_FAILURE_BACKOFF_SECONDS = int(os.getenv("DF_PAYMENTS_FAILURE_BACKOFF_SECONDS", "180"))
 INCREMENTAL_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("DF_PAYMENTS_SCHEDULER_INTERVAL_SECONDS", "45"))
+GMAIL_RECONCILE_INTERVAL_SECONDS = 24 * 60 * 60
+GMAIL_RECONCILE_DISABLED_BACKOFF_SECONDS = int(os.getenv("DF_GMAIL_DISABLED_BACKOFF_SECONDS", str(6 * 60 * 60)))
+GMAIL_RECONCILE_FAILURE_BACKOFF_SECONDS = int(os.getenv("DF_GMAIL_FAILURE_BACKOFF_SECONDS", str(60 * 60)))
 
-_incremental_lock = Lock()
+GMAIL_LAST_ATTEMPT_KEY = "df_gmail_reconcile_last_attempt_utc"
+GMAIL_LAST_SUCCESS_KEY = "df_gmail_reconcile_last_success_utc"
+GMAIL_LAST_STATUS_KEY = "df_gmail_reconcile_last_status"
+GMAIL_LAST_ERROR_KEY = "df_gmail_reconcile_last_error"
+
+_df_scan_lock = Lock()
+# Backwards-compatible alias for tests/diagnostics that know the old name.
+_incremental_lock = _df_scan_lock
+_gmail_reconcile_lock = Lock()
 _dfp_scheduler_thread: Optional[threading.Thread] = None
-_dfp_scheduler_stop = False
+_dfp_scheduler_stop_event = threading.Event()
 
 FetchFunc = Callable[..., Dict[str, Any]]
 
@@ -49,6 +60,30 @@ def _connection(db_path: Path):
     """Provide a SQLite connection, reusing the hardened default path when applicable."""
     with get_db_connection_for_path(db_path) as conn:
         yield conn
+
+
+def _ensure_app_kv_for_path(db_path: Path) -> None:
+    with _connection(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS app_kv_store (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.commit()
+
+
+def _get_app_kv_value(key: str, *, db_path: Path) -> Optional[str]:
+    _ensure_app_kv_for_path(db_path)
+    with _connection(db_path) as conn:
+        row = conn.execute("SELECT value FROM app_kv_store WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+
+def _set_app_kv_values(values: Dict[str, Optional[str]], *, db_path: Path) -> None:
+    _ensure_app_kv_for_path(db_path)
+    with _connection(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO app_kv_store (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(key, value or "") for key, value in values.items()],
+        )
+        conn.commit()
 
 
 def _clamp_lookback(lookback_days: Optional[int]) -> int:
@@ -978,7 +1013,7 @@ def _fetch_purchase_orders_from_api(
     }
 
 
-def refresh_df_payments(
+def _refresh_df_payments_unlocked(
     marketplace_id: str = DEFAULT_MARKETPLACE_ID,
     *,
     lookback_days: Optional[int] = None,
@@ -1095,6 +1130,33 @@ def refresh_df_payments(
         )
         LOGGER.error("[DF Payments] Refresh failed: %s", exc, exc_info=True)
         raise
+
+
+def refresh_df_payments(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    lookback_days: Optional[int] = None,
+    ship_from_party_id: Optional[str] = None,
+    limit: Optional[int] = None,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    fetcher: Optional[FetchFunc] = None,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Run a full DF fetch without overlapping any full/incremental DF scan."""
+    if not _df_scan_lock.acquire(blocking=False):
+        return {"status": "locked", "reason": "df_scan_busy"}
+    try:
+        return _refresh_df_payments_unlocked(
+            marketplace_id,
+            lookback_days=lookback_days,
+            ship_from_party_id=ship_from_party_id,
+            limit=limit,
+            db_path=db_path,
+            fetcher=fetcher,
+            now_utc=now_utc,
+        )
+    finally:
+        _df_scan_lock.release()
 
 
 def incremental_refresh_df_payments(
@@ -1322,19 +1384,156 @@ def maybe_run_df_payments_incremental_auto(
     return {"status": result.get("status") or "ran", **result}
 
 
+def get_df_gmail_reconcile_metadata(
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Return persisted Gmail reconcile state and its next automatic eligibility."""
+    effective_now = now_utc or _now_utc()
+    last_attempt_raw = _get_app_kv_value(GMAIL_LAST_ATTEMPT_KEY, db_path=db_path)
+    last_success_raw = _get_app_kv_value(GMAIL_LAST_SUCCESS_KEY, db_path=db_path)
+    last_status = (_get_app_kv_value(GMAIL_LAST_STATUS_KEY, db_path=db_path) or "").lower()
+    last_error = _get_app_kv_value(GMAIL_LAST_ERROR_KEY, db_path=db_path) or None
+    last_attempt = _parse_iso_dt(last_attempt_raw)
+    last_success = _parse_iso_dt(last_success_raw)
+
+    candidates: List[tuple[datetime, str]] = []
+    if last_success:
+        candidates.append((last_success + timedelta(seconds=GMAIL_RECONCILE_INTERVAL_SECONDS), "daily_cooldown"))
+    if last_attempt and last_status == "disabled":
+        candidates.append((last_attempt + timedelta(seconds=GMAIL_RECONCILE_DISABLED_BACKOFF_SECONDS), "gmail_not_configured"))
+    elif last_attempt and last_status == "error":
+        candidates.append((last_attempt + timedelta(seconds=GMAIL_RECONCILE_FAILURE_BACKOFF_SECONDS), "failure_backoff"))
+    next_eligible, candidate_reason = max(candidates, default=(None, None), key=lambda item: item[0] or effective_now)
+    reason = candidate_reason if next_eligible and next_eligible > effective_now else None
+
+    eligible = next_eligible is None or next_eligible <= effective_now
+    if _gmail_reconcile_lock.locked() or _df_scan_lock.locked():
+        eligible = False
+        reason = "worker_busy"
+
+    return {
+        "last_attempt_at_utc": _iso(last_attempt),
+        "last_success_at_utc": _iso(last_success),
+        "last_status": last_status or None,
+        "last_error": last_error,
+        "next_eligible_at_utc": _iso(next_eligible),
+        "eligible": eligible,
+        "reason": reason,
+        "worker_status": "locked" if reason == "worker_busy" else ("waiting" if not eligible else "ok"),
+    }
+
+
+def run_df_gmail_reconcile(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    triggered_by: str = "manual",
+    force: bool = False,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Import Gmail remittances and reconcile them, with cadence and overlap guards."""
+    effective_now = now_utc or _now_utc()
+    if not force:
+        eligibility = get_df_gmail_reconcile_metadata(db_path=db_path, now_utc=effective_now)
+        if not eligibility["eligible"]:
+            return {
+                "status": "waiting",
+                "reason": eligibility.get("reason"),
+                "next_eligible_at_utc": eligibility.get("next_eligible_at_utc"),
+            }
+
+    if not _gmail_reconcile_lock.acquire(blocking=False):
+        return {"status": "locked", "reason": "gmail_reconcile_busy"}
+    df_lock_acquired = False
+    attempt_iso = _iso(effective_now)
+    try:
+        if not _df_scan_lock.acquire(blocking=False):
+            return {"status": "locked", "reason": "df_scan_busy"}
+        df_lock_acquired = True
+        _set_app_kv_values(
+            {
+                GMAIL_LAST_ATTEMPT_KEY: attempt_iso,
+                GMAIL_LAST_STATUS_KEY: "in_progress",
+                GMAIL_LAST_ERROR_KEY: "",
+            },
+            db_path=db_path,
+        )
+
+        import_result = import_df_remittances_from_gmail(db_path=db_path)
+        import_status = (import_result.get("status") or "").lower()
+        if import_status == "disabled":
+            reason = import_result.get("reason") or "missing_config"
+            _set_app_kv_values(
+                {GMAIL_LAST_STATUS_KEY: "disabled", GMAIL_LAST_ERROR_KEY: str(reason)},
+                db_path=db_path,
+            )
+            return {"status": "disabled", "reason": reason, "import": import_result, "triggered_by": triggered_by}
+        if import_status == "error":
+            error = import_result.get("message") or import_result.get("reason") or "gmail_import_failed"
+            _set_app_kv_values(
+                {GMAIL_LAST_STATUS_KEY: "error", GMAIL_LAST_ERROR_KEY: str(error)},
+                db_path=db_path,
+            )
+            return {"status": "error", "error": str(error), "import": import_result, "triggered_by": triggered_by}
+
+        reconcile_result = reconcile_df_payments_from_remittances(marketplace_id, db_path=db_path)
+        success_iso = _iso(now_utc or _now_utc())
+        _set_app_kv_values(
+            {
+                GMAIL_LAST_SUCCESS_KEY: success_iso,
+                GMAIL_LAST_STATUS_KEY: "success",
+                GMAIL_LAST_ERROR_KEY: "",
+            },
+            db_path=db_path,
+        )
+        return {
+            "status": "reconciled",
+            **reconcile_result,
+            "import": import_result,
+            "triggered_by": triggered_by,
+        }
+    except Exception as exc:
+        _set_app_kv_values(
+            {GMAIL_LAST_STATUS_KEY: "error", GMAIL_LAST_ERROR_KEY: str(exc)},
+            db_path=db_path,
+        )
+        LOGGER.error("[DF Payments] Gmail reconcile failed (%s): %s", triggered_by, exc, exc_info=True)
+        raise
+    finally:
+        if df_lock_acquired:
+            _df_scan_lock.release()
+        _gmail_reconcile_lock.release()
+
+
+def maybe_run_df_gmail_reconcile_auto(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    return run_df_gmail_reconcile(
+        marketplace_id,
+        db_path=db_path,
+        triggered_by="auto",
+        force=False,
+        now_utc=now_utc,
+    )
+
+
 def _dfp_scheduler_loop(
     marketplace_id: str,
     *,
     db_path: Path,
     interval_seconds: int,
 ):
-    global _dfp_scheduler_stop
     LOGGER.info(
         "[DF Payments] Incremental scheduler started (interval=%ss, marketplace=%s)",
         interval_seconds,
         marketplace_id,
     )
-    while not _dfp_scheduler_stop:
+    while not _dfp_scheduler_stop_event.is_set():
         try:
             outcome = maybe_run_df_payments_incremental_auto(
                 marketplace_id,
@@ -1354,10 +1553,14 @@ def _dfp_scheduler_loop(
                     status,
                     outcome.get("orders_upserted"),
                 )
+            gmail_outcome = maybe_run_df_gmail_reconcile_auto(marketplace_id, db_path=db_path)
+            gmail_status = (gmail_outcome.get("status") or "waiting").lower()
+            if gmail_status not in {"waiting", "locked", "disabled"}:
+                LOGGER.info("[DF Payments] Gmail reconcile scheduler status=%s", gmail_status)
         except Exception as exc:  # pragma: no cover - scheduler safety
             LOGGER.error("[DF Payments] Auto-scheduler tick failed: %s", exc, exc_info=True)
         finally:
-            time.sleep(interval_seconds)
+            _dfp_scheduler_stop_event.wait(interval_seconds)
     LOGGER.info("[DF Payments] Incremental scheduler stopped")
 
 
@@ -1368,13 +1571,13 @@ def start_df_payments_incremental_scheduler(
     interval_seconds: int = INCREMENTAL_SCHEDULER_INTERVAL_SECONDS,
 ):
     """Start the background scheduler that triggers incremental scans when eligible."""
-    global _dfp_scheduler_thread, _dfp_scheduler_stop
+    global _dfp_scheduler_thread
 
     if _dfp_scheduler_thread and _dfp_scheduler_thread.is_alive():
         LOGGER.debug("[DF Payments] Scheduler already running; skipping start")
         return
 
-    _dfp_scheduler_stop = False
+    _dfp_scheduler_stop_event.clear()
     thread = threading.Thread(
         target=_dfp_scheduler_loop,
         name="DfPaymentsIncrementalScheduler",
@@ -1392,8 +1595,8 @@ def start_df_payments_incremental_scheduler(
 
 def stop_df_payments_incremental_scheduler(timeout: float = 2.0) -> None:
     """Signal the scheduler to stop and wait briefly for shutdown."""
-    global _dfp_scheduler_stop, _dfp_scheduler_thread
-    _dfp_scheduler_stop = True
+    global _dfp_scheduler_thread
+    _dfp_scheduler_stop_event.set()
     thread = _dfp_scheduler_thread
     if thread and thread.is_alive():
         thread.join(timeout=timeout)
