@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Regression suite and FastAPI/Starlette TestClient support.
+pytest==9.1.1
+httpx==0.28.1

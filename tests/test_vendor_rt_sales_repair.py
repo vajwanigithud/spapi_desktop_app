@@ -10,7 +10,9 @@ from services import vendor_realtime_sales as rt_sales
 
 
 def _fake_coverage_map(hours: int = 6):
-    base = datetime(2025, 12, 1, tzinfo=timezone.utc)
+    # The repair planner intentionally ignores entries older than 30 days.
+    # Anchor synthetic gaps to yesterday so this fixture never ages out.
+    base = (datetime.now(timezone.utc) - timedelta(days=1)).replace(minute=0, second=0, microsecond=0)
     coverage = {}
     for idx in range(hours):
         start = base + timedelta(hours=idx)

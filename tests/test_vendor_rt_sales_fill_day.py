@@ -13,14 +13,20 @@ import main
 from services import vendor_realtime_sales as rt_sales
 
 
+# Keep fill-day fixtures inside the production 30-day lookback regardless of
+# when the regression suite is run.
+RECENT_TEST_DATE = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+
+
 def _build_fake_hours(missing_hours: list[int]):
     missing_set = set(missing_hours)
 
     def _fake_classify(date_str: str, marketplace_id: str, latest_allowed_end=None):
         hours_detail = []
         missing_list = []
+        fixture_date = datetime.fromisoformat(date_str).date()
         for hour in range(24):
-            start = datetime(2025, 12, 11, hour, tzinfo=timezone.utc)
+            start = datetime.combine(fixture_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=hour)
             end = start + timedelta(hours=1)
             status = "missing" if hour in missing_set else "ok"
             hours_detail.append(
@@ -58,7 +64,7 @@ def test_fill_day_default_caps_three(monkeypatch):
         _build_fake_hours([0, 1, 2, 3, 4]),
     )
     plan = rt_sales.plan_fill_day_run(
-        date_str="2025-12-11",
+        date_str=RECENT_TEST_DATE,
         requested_hours=None,
         marketplace_id="TEST",
     )
@@ -71,7 +77,7 @@ def test_fill_day_default_caps_three(monkeypatch):
 
 
 def test_fill_day_burst_multi_hour_windows(monkeypatch):
-    date_str = "2025-12-11"
+    date_str = RECENT_TEST_DATE
     start_end_pairs = [
         rt_sales.build_local_hour_window(date_str, hour) for hour in range(24)
     ]
