@@ -870,6 +870,8 @@
       <div style="padding:12px; display:flex; gap:10px; align-items:center;">
         <button class="btn" onclick="loadAsinList(true)">Refresh</button>
         <button class="btn" style="background:#16a34a" onclick="fetchAllMissing()">Fetch All Missing</button>
+        <button class="btn" onclick="fetchMissingBarcodes()">Fetch Missing Barcodes</button>
+        <span id="catalog-barcode-fetch-result" role="status"></span>
         <input id="asin-search" type="text" placeholder="Search ASIN / SKU / Title" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--border);" oninput="filterAsins()" />
         <select id="catalog-barcode-filter" style="margin-left:8px;" onchange="filterAsins()">
           <option value="all">All</option>
@@ -3383,6 +3385,20 @@
       return `catalog_audit_${stamp}.csv`;
     }
 
+    async function fetchMissingBarcodes() {
+      const status = document.getElementById("catalog-barcode-fetch-result");
+      status.textContent = "Queueing missing barcodes...";
+      try {
+        const resp = await fetch("/api/catalog/fetch-missing-barcodes", { method: "POST" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        status.textContent = Object.entries(data).map(([key, value]) => `${key}: ${value}`).join(" | ");
+        await loadAsinList(true);
+      } catch (err) {
+        status.textContent = `Barcode fetch failed: ${err}`;
+      }
+    }
+
     async function fetchAllMissing() {
       const tbody = document.getElementById("asin-rows");
       tbody.innerHTML = '<tr><td colspan="6" class="empty">Fetching all missing... this may take time.</td></tr>';
@@ -3528,7 +3544,7 @@
                  onclick="editBarcode('${asin}', '${bc}')">Edit</button>
              </div>`;
 
-        const fetchButton = item.fetched
+        const fetchButton = item.catalog_ready
           ? ""
           : `<button class="btn btn-fetch" data-asin="${asin}" onclick="fetchCatalog(this.dataset.asin, this)">Fetch</button>`;
 
@@ -3556,7 +3572,7 @@
           : "";
         const resetLabel = fetchTerminalCode === "NOT_FOUND" ? "Force Retry" : "Reset";
         const resetButton = fetchBlocked || fetchTerminalCode
-          ? `<button class="btn btn-sm btn-outline-secondary" style="margin-top:6px;" onclick="resetCatalogFetchAttempts('${asin}')">${resetLabel}</button>`
+          ? `<button class="btn btn-sm btn-outline-secondary" style="margin-top:6px;" onclick="resetCatalogFetchAttempts('${asin}', ${fetchTerminalCode === 'NOT_FOUND'})">${resetLabel}</button>`
           : "";
         const showDelete = Boolean(item.is_terminal || item.dormant || fetchBlocked);
         const deleteButton = showDelete
@@ -3707,10 +3723,9 @@
           const text = await resp.text();
           throw new Error(text || `HTTP ${resp.status}`);
         }
-        // Mark as fetched
-        asinList = asinList.map(item => item.asin === asin ? { ...item, fetched: true } : item);
-        filteredAsins = asinList;
-        renderAsinList();
+        const result = await resp.json();
+        setCatalogResetStatus(result.reason ? `${asin}: ${result.reason}` : `${asin}: ${result.status}`);
+        await loadAsinList(true);
       } catch (err) {
         if (btnEl) {
           btnEl.disabled = false;
@@ -3720,11 +3735,15 @@
       }
     }
 
-    async function resetCatalogFetchAttempts(asin) {
+    async function resetCatalogFetchAttempts(asin, forceRetry = false) {
       try {
         const resp = await fetch(`/api/catalog/reset-fetch-attempts/${asin}`, { method: "POST" });
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
+        }
+        if (forceRetry) {
+          const retry = await fetch(`/api/catalog/fetch/${asin}?force=true`, { method: "POST" });
+          if (!retry.ok) throw new Error(`HTTP ${retry.status}`);
         }
         await loadAsinList(true);
         setCatalogResetStatus(`Reset attempts for ${asin}.`);

@@ -143,6 +143,48 @@ def init_catalog_db(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
     )
 
 
+def extract_catalog_barcode(payload, marketplace=None):
+    """Select a nonblank identifier, preserving leading zeros and type priority."""
+    if not isinstance(payload, dict):
+        return None
+    groups = payload.get("identifiers")
+    if not isinstance(groups, list):
+        return None
+    found = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        if marketplace and group.get("marketplaceId") != marketplace:
+            continue
+        identifiers = group.get("identifiers")
+        if not isinstance(identifiers, list):
+            continue
+        for entry in identifiers:
+            if not isinstance(entry, dict):
+                continue
+            kind = str(entry.get("identifierType") or "").upper()
+            value = entry.get("identifier")
+            if isinstance(value, str) and value.strip():
+                found.setdefault(kind, value.strip())
+    return next((found[k] for k in ("EAN", "GTIN", "UPC", "JAN") if k in found), None)
+
+
+def backfill_catalog_barcodes(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> int:
+    """Explicit local-only backfill; never calls SP-API or replaces existing barcodes."""
+    count = 0
+    with get_db_connection_for_path(db_path) as conn:
+        rows = conn.execute("SELECT asin, payload FROM spapi_catalog WHERE barcode IS NULL OR TRIM(barcode) = ''").fetchall()
+        for asin, raw in rows:
+            try:
+                barcode = extract_catalog_barcode(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+            if barcode:
+                count += conn.execute("UPDATE spapi_catalog SET barcode = ? WHERE asin = ? AND (barcode IS NULL OR TRIM(barcode) = '')", (barcode, asin)).rowcount
+        conn.commit()
+    return count
+
+
 def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEFAULT_CATALOG_DB_PATH) -> None:
     if not asin:
         return
@@ -168,10 +210,17 @@ def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEF
         with time_block("catalog_upsert"):
             conn.execute(
                 """
-                INSERT OR REPLACE INTO spapi_catalog (asin, title, image, payload, fetched_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO spapi_catalog (asin, title, image, payload, barcode, fetched_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(asin) DO UPDATE SET
+                    title = COALESCE(excluded.title, spapi_catalog.title),
+                    image = COALESCE(excluded.image, spapi_catalog.image),
+                    payload = excluded.payload,
+                    fetched_at = excluded.fetched_at,
+                    barcode = CASE WHEN TRIM(COALESCE(spapi_catalog.barcode, '')) = ''
+                        THEN excluded.barcode ELSE spapi_catalog.barcode END
                 """,
-                (asin, title, image, json.dumps(payload, ensure_ascii=False)),
+                (asin, title, image, json.dumps(payload, ensure_ascii=False), extract_catalog_barcode(payload)),
             )
             conn.execute(
                 "INSERT OR REPLACE INTO spapi_catalog_meta (asin, sku) VALUES (?, ?)",
@@ -183,18 +232,17 @@ def upsert_spapi_catalog(asin: str, payload: Dict[str, Any], db_path: Path = DEF
 def spapi_catalog_status(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> Dict[str, Dict[str, Any]]:
     if not db_path.exists():
         return {}
-    updates = []
     results = {}
     with get_db_connection_for_path(db_path) as conn:
         with time_block("catalog_status_fetch"):
             rows = conn.execute(
                 """
-                SELECT c.asin, c.title, c.image, c.payload, c.barcode, m.sku
+                SELECT c.asin, c.title, c.image, c.payload, c.barcode, m.sku, c.fetched_at
                 FROM spapi_catalog c
                 LEFT JOIN spapi_catalog_meta m ON c.asin = m.asin
                 """
             ).fetchall()
-        for asin, title, image, payload_raw, barcode, sku in rows:
+        for asin, title, image, payload_raw, barcode, sku, fetched_at in rows:
             parsed: Optional[Dict[str, Any]] = None
             model_number = None
             if (not title or not image) and payload_raw:
@@ -231,21 +279,9 @@ def spapi_catalog_status(db_path: Path = DEFAULT_CATALOG_DB_PATH) -> Dict[str, D
                 "image": image,
                 "payload": parsed or (json.loads(payload_raw) if payload_raw else None),
                 "barcode": barcode,
+                "fetched_at": fetched_at,
                 "sku": sku or model_number,
             }
-            if not image or not title:
-                updates.append((asin, title, image, parsed))
-        for asin, title, image, parsed in updates:
-            if not parsed:
-                continue
-            try:
-                conn.execute(
-                    "UPDATE spapi_catalog SET title = ?, image = ? WHERE asin = ?",
-                    (title, image, asin),
-                )
-                conn.commit()
-            except Exception as exc:
-                logger.warning(f"[Catalog] Failed to backfill title/image for {asin}: {exc}")
     return results
 
 

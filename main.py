@@ -124,6 +124,7 @@ from services.activity_log import add_activity
 from services.async_utils import run_single_arg
 from services.catalog_images import attach_image_urls
 from services.catalog_service import (
+    backfill_catalog_barcodes,
     ensure_asin_in_universe,
     get_catalog_asin_sources_map,
     delete_catalog_asin_data,
@@ -485,12 +486,14 @@ _catalog_fetch_inflight: Set[str] = set()
 _catalog_delete_inflight: Set[str] = set()
 _catalog_fetch_condition = threading.Condition(_catalog_fetch_guard)
 _catalog_fetch_queue: List[Tuple[float, int, str]] = []
+_catalog_fetch_options: Dict[str, Tuple[str, bool]] = {}
 _catalog_fetch_sequence = 0
 _catalog_fetch_worker: Optional[threading.Thread] = None
 _catalog_fetch_stop = threading.Event()
 _catalog_fetch_active_asin: Optional[str] = None
 _catalog_fetch_last_asin: Optional[str] = None
 _catalog_fetch_last_error: Optional[str] = None
+CATALOG_SUCCESS_COOLDOWN_SECONDS = 24 * 60 * 60
 CATALOG_FETCH_RETRY_BASE_SECONDS = 30
 CATALOG_FETCH_RETRY_MAX_SECONDS = 300
 
@@ -1383,7 +1386,7 @@ def start_vendor_rt_inventory_auto_refresh():
 
 
 
-def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
+def fetch_spapi_catalog_item(asin: str, force_refresh: bool = False) -> Dict[str, Any]:
     """
     Single call to SP-API Catalog Items for a given ASIN.
     Stores title/image into local catalog DB.
@@ -1394,7 +1397,7 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     if not asin:
         raise HTTPException(status_code=400, detail="Missing ASIN")
     existing = spapi_catalog_status().get(asin)
-    if existing and existing.get("title") and existing.get("image"):
+    if not force_refresh and existing and _catalog_ready(existing):
         return {"asin": asin, "source": "db", "title": existing.get("title"), "image": existing.get("image")}
 
     if not MARKETPLACE_IDS:
@@ -1408,7 +1411,7 @@ def fetch_spapi_catalog_item(asin: str) -> Dict[str, Any]:
     # This reduces response payload and improves performance.
     params = {
         "marketplaceIds": marketplace,
-        "includedData": "summaries,images",
+        "includedData": "summaries,images,identifiers",
     }
     access_token = auth_client.get_lwa_access_token()
     url = f"{api_host}/catalog/2022-04-01/items/{asin}"
@@ -2752,7 +2755,7 @@ def _activate_new_po_catalog_asins(asins: List[str]) -> Dict[str, int]:
         fetched = spapi_catalog_status(db_path=CATALOG_DB_PATH)
         for asin in normalized:
             info = fetched.get(asin, {}) or {}
-            has_data = bool(info.get("title") and info.get("image"))
+            has_data = _catalog_ready(info)
             if should_fetch_catalog(asin, has_data, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS, db_path=CATALOG_DB_PATH):
                 if _queue_catalog_fetch(None, asin):
                     result["queued"] += 1
@@ -4235,13 +4238,8 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
     Return unique ASINs from the persistent catalog universe.
     """
     try:
-        asins, sku_map = extract_asins_from_pos()
+        sku_map = {}
         exclusions = load_catalog_fetcher_exclusions()
-        visible_po_asins = [asin for asin in asins if asin not in exclusions]
-        seeded = seed_catalog_universe(visible_po_asins)
-        if seeded:
-            logger.info(f"[CatalogUniverse] seeded {seeded} asins from vendor PO database")
-        record_catalog_asin_sources(visible_po_asins, "vendor_po")
         universe = [asin for asin in list_universe_asins() if asin not in exclusions]
         fetched = spapi_catalog_status()
         attempts_map = get_catalog_fetch_attempts_map(universe)
@@ -4252,7 +4250,6 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         return JSONResponse({"error": f"Failed to load ASINs: {exc}"}, status_code=500)
 
     items = []
-    auto_queued = 0
     coverage_summary = {
         "total_asins": len(universe),
         "with_catalog_data": 0,
@@ -4285,7 +4282,7 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         terminal_code = attempt_info.get("terminal_code")
         terminal_message = attempt_info.get("terminal_message")
         barcode_value = info.get("barcode")
-        fetch_blocked = (not is_fetched) and (
+        fetch_blocked = (
             bool(terminal_code) or attempt_count >= CATALOG_FETCH_MAX_ATTEMPTS
         )
         has_catalog_data = is_fetched
@@ -4293,7 +4290,7 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
         has_inventory = asin in inventory_asins
         has_sales = asin in sales_asins
         is_terminal = bool(terminal_code)
-        catalog_ready = bool(info.get("title")) and bool(info.get("image"))
+        catalog_ready = _catalog_ready(info)
         barcode_ready = has_barcode
         commercial_ready = catalog_ready and barcode_ready
         operationally_active = bool(has_inventory or has_sales)
@@ -4344,10 +4341,6 @@ def list_catalog_asins(background_tasks: BackgroundTasks):
             coverage_health_summary["operationally_active_count"] += 1
         if dormant:
             coverage_health_summary["dormant_count"] += 1
-        if not catalog_ready and auto_queued < CATALOG_AUTO_FETCH_LIMIT:
-            if should_fetch_catalog(asin, catalog_ready, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
-                if _queue_catalog_fetch(background_tasks, asin):
-                    auto_queued += 1
         items.append(
             {
                 "asin": asin,
@@ -4451,7 +4444,7 @@ def reset_all_catalog_attempts():
 
 
 @app.post("/api/catalog/fetch/{asin}")
-def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
+def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks, force: bool = False):
     """
     Queue catalog fetch in background and return immediately.
     """
@@ -4460,22 +4453,16 @@ def fetch_catalog_for_asin(asin: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="asin must be 10 alphanumeric characters")
     if asin in load_catalog_fetcher_exclusions():
         raise HTTPException(status_code=409, detail="ASIN is deleted from Catalog Fetcher; add it manually before fetching")
-    has_data = False
-    try:
-        fetched = spapi_catalog_status().get(asin)
-        if fetched and fetched.get("title") and fetched.get("image"):
-            return {"asin": asin, "status": "cached", "title": fetched.get("title"), "image": fetched.get("image")}
-        has_data = bool(fetched and fetched.get("title") and fetched.get("image"))
-    except Exception as e:
-        logger.warning(f"[Catalog] Error checking cache for {asin}: {e}")
-        fetched = None
-
-    if not should_fetch_catalog(asin, has_data, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS):
-        return {"asin": asin, "status": "blocked", "reason": "max_attempts"}
-    
-    if not _queue_catalog_fetch(background_tasks, asin):
+    eligibility = catalog_fetch_eligibility(asin, force=force)
+    if eligibility["reason"] == "complete":
+        fetched = spapi_catalog_status().get(asin) or {}
+        return {"asin": asin, "status": "cached", "title": fetched.get("title"), "image": fetched.get("image")}
+    if not eligibility["eligible"]:
+        return {"asin": asin, "status": "blocked", "reason": eligibility["reason"]}
+    if not _queue_catalog_fetch(background_tasks, asin, force=force):
         return {"asin": asin, "status": "active"}
     return {"asin": asin, "status": "queued"}
+
 
 
 def _ensure_catalog_fetch_worker() -> None:
@@ -4492,17 +4479,72 @@ def _ensure_catalog_fetch_worker() -> None:
         _catalog_fetch_worker.start()
 
 
-def _queue_catalog_fetch(background_tasks: Optional[BackgroundTasks], asin: str) -> bool:
+def _catalog_ready(info: Dict[str, Any]) -> bool:
+    return all(bool(str(info.get(key) or "").strip()) for key in ("title", "image"))
+
+
+def catalog_fetch_eligibility(
+    asin: str, purpose: str = "catalog", force: bool = False, executing: bool = False,
+) -> Dict[str, Any]:
+    """Shared admission and pre-network policy. Force bypasses only success cooldown."""
+    asin = (asin or "").strip().upper()
+    def result(reason, eligible=False):
+        return {"eligible": eligible, "reason": reason}
+    if not is_asin(asin):
+        return result("invalid")
+    if asin in load_catalog_fetcher_exclusions():
+        return result("excluded")
+    with _catalog_fetch_guard:
+        if asin in _catalog_delete_inflight:
+            return result("active")
+        if not executing:
+            if asin == _catalog_fetch_active_asin:
+                return result("active")
+            if asin in _catalog_fetch_inflight:
+                return result("already_queued")
+    info = spapi_catalog_status().get(asin) or {}
+    attempt = get_catalog_fetch_attempts_map([asin]).get(asin) or {}
+    if attempt.get("terminal_code"):
+        return result("terminal")
+    attempts = int(attempt.get("attempts") or 0)
+    if attempts >= CATALOG_FETCH_MAX_ATTEMPTS:
+        return result("retry_exhausted")
+    if (purpose == "barcode" and str(info.get("barcode") or "").strip()) or (purpose == "catalog" and _catalog_ready(info)):
+        return result("complete")
+    def age(value):
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - stamp).total_seconds()
+        except (ValueError, TypeError):
+            return float("inf")
+    if attempts and attempt.get("last_error"):
+        delay = min(CATALOG_FETCH_RETRY_MAX_SECONDS, CATALOG_FETCH_RETRY_BASE_SECONDS * 2 ** (attempts - 1))
+        if age(attempt.get("last_attempt_at")) < delay:
+            return result("retry_backoff")
+    else:
+        success_age = min(age(info.get("fetched_at")), age(attempt.get("last_attempt_at")))
+        if not force and success_age < CATALOG_SUCCESS_COOLDOWN_SECONDS:
+            return result("cooldown")
+    return result("incomplete" if info else "missing", True)
+
+
+def _queue_catalog_fetch(background_tasks: Optional[BackgroundTasks], asin: str, purpose: str = "catalog", force: bool = False) -> bool:
     """Put an ASIN on the shared, sequential catalog queue (BackgroundTasks is compatibility-only)."""
     del background_tasks
     asin_norm = (asin or "").strip().upper()
-    if not is_asin(asin_norm) or asin_norm in load_catalog_fetcher_exclusions():
+    eligibility = catalog_fetch_eligibility(asin_norm, purpose, force)
+    if not eligibility["eligible"]:
+        logger.info("[Catalog] Skip %s: %s", asin_norm, eligibility["reason"])
         return False
     if not _reserve_catalog_fetch(asin_norm):
+        logger.info("[Catalog] Skip %s: already_queued", asin_norm)
         return False
     global _catalog_fetch_sequence
     with _catalog_fetch_condition:
         _catalog_fetch_sequence += 1
+        _catalog_fetch_options[asin_norm] = (purpose, force)
         heapq.heappush(_catalog_fetch_queue, (time.monotonic(), _catalog_fetch_sequence, asin_norm))
         _catalog_fetch_condition.notify_all()
     _ensure_catalog_fetch_worker()
@@ -4512,7 +4554,11 @@ def _queue_catalog_fetch(background_tasks: Optional[BackgroundTasks], asin: str)
 def _perform_catalog_fetch(asin: str) -> Tuple[bool, bool, Optional[str]]:
     """Fetch once. Return (success, retryable, error) without releasing the queue reservation."""
     try:
-        fetch_spapi_catalog_item(asin)
+        purpose, force = _catalog_fetch_options.get(asin, ("catalog", False))
+        if purpose == "barcode" or force:
+            fetch_spapi_catalog_item(asin, force_refresh=True)
+        else:
+            fetch_spapi_catalog_item(asin)
         record_catalog_fetch_attempt(asin, ok=True)
         logger.info(f"[Catalog] Background fetch completed for {asin}")
         return True, False, None
@@ -4533,11 +4579,13 @@ def _perform_catalog_fetch(asin: str) -> Tuple[bool, bool, Optional[str]]:
         record_catalog_fetch_attempt(asin, ok=False, error=error_detail)
         retryable = exc.status_code in {408, 425, 429, 500, 502, 503, 504}
         logger.warning(f"[Catalog] Background fetch failed for {asin}: {exc.detail}")
+        if not retryable:
+            mark_catalog_fetch_terminal(asin, "HTTP_ERROR", error_detail, max_attempts=CATALOG_FETCH_MAX_ATTEMPTS)
         return False, retryable, error_detail
     except Exception as exc:
         record_catalog_fetch_attempt(asin, ok=False, error=str(exc))
         logger.error(f"[Catalog] Unexpected error fetching {asin}: {exc}", exc_info=True)
-        return False, True, str(exc)
+        return False, isinstance(exc, requests.exceptions.RequestException), str(exc)
 
 
 def _catalog_fetch_worker_loop() -> None:
@@ -4556,7 +4604,13 @@ def _catalog_fetch_worker_loop() -> None:
             heapq.heappop(_catalog_fetch_queue)
             _catalog_fetch_active_asin = asin
 
-        success, retryable, error = _perform_catalog_fetch(asin)
+        purpose, force = _catalog_fetch_options.get(asin, ("catalog", False))
+        eligibility = catalog_fetch_eligibility(asin, purpose, force, executing=True)
+        if eligibility["eligible"]:
+            success, retryable, error = _perform_catalog_fetch(asin)
+        else:
+            logger.info("[Catalog] Skip queued %s: %s", asin, eligibility["reason"])
+            success, retryable, error = False, False, None
         attempts = int((get_catalog_fetch_attempts_map([asin]).get(asin) or {}).get("attempts") or 0)
         retry = retryable and attempts < CATALOG_FETCH_MAX_ATTEMPTS and not _catalog_fetch_stop.is_set()
         with _catalog_fetch_condition:
@@ -4573,6 +4627,7 @@ def _catalog_fetch_worker_loop() -> None:
                 _catalog_fetch_condition.notify_all()
             else:
                 _catalog_fetch_inflight.discard(asin)
+                _catalog_fetch_options.pop(asin, None)
         if success:
             add_activity("OK", f"Catalog fetched: {asin}")
 
@@ -4590,7 +4645,8 @@ def _fetch_catalog_background(asin: str, reserved: bool = False):
     """Compatibility entry point; all new callers use the shared queue."""
     if reserved or _reserve_catalog_fetch(asin):
         try:
-            _perform_catalog_fetch(asin)
+            if catalog_fetch_eligibility(asin, executing=True)["eligible"]:
+                _perform_catalog_fetch(asin)
         finally:
             _release_catalog_fetch(asin)
 
@@ -4601,13 +4657,13 @@ def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
     Queue catalog fetch for all missing ASINs in background.
     """
     try:
-        asins, _ = extract_asins_from_pos()
+        asins = list_universe_asins()
         exclusions = load_catalog_fetcher_exclusions()
         asins = [asin for asin in asins if asin not in exclusions]
         fetched = spapi_catalog_status()
         missing = [
             asin for asin in asins
-            if not (fetched.get(asin, {}).get("title") and fetched.get(asin, {}).get("image"))
+            if not _catalog_ready(fetched.get(asin, {}))
         ]
     except Exception as exc:
         logger.error(f"[Catalog] Error listing missing ASINs: {exc}")
@@ -4625,6 +4681,25 @@ def fetch_catalog_for_missing(background_tasks: BackgroundTasks):
 
     logger.info(f"[Catalog] Queued {queued} ASINs for background fetch (missing={len(missing)})")
     return {"fetched": 0, "queued": queued, "missingTotal": len(missing)}
+
+
+@app.post("/api/catalog/backfill-barcodes")
+def backfill_catalog_barcodes_endpoint():
+    return {"updated": backfill_catalog_barcodes()}
+
+
+@app.post("/api/catalog/fetch-missing-barcodes")
+def fetch_missing_catalog_barcodes(background_tasks: BackgroundTasks):
+    counts = {"queued": 0}
+    for asin in list_universe_asins():
+        eligibility = catalog_fetch_eligibility(asin, purpose="barcode")
+        if eligibility["eligible"] and _queue_catalog_fetch(background_tasks, asin, purpose="barcode"):
+            counts["queued"] += 1
+        else:
+            reason = catalog_fetch_eligibility(asin, purpose="barcode")["reason"] if eligibility["eligible"] else eligibility["reason"]
+            key = "skipped_" + reason
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 @app.get("/api/catalog/item/{asin}")
