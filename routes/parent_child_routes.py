@@ -178,6 +178,13 @@ def guided_reconcile_prepared_children(job_id: str, payload: GuidedParentReconci
         return guided_worker.reconcile_prepared_children_get(job_id, payload.family_hash, getattr(router, '_auth_client', None), guided_worker.production_adapters())
     except ValueError as exc: raise HTTPException(409, str(exc))
 
+@router.post('/guided/jobs/{job_id}/reconcile-accepted-di106')
+def guided_reconcile_accepted_di106(job_id: str, payload: GuidedParentReconciliationRequest):
+    """Guarded DI-106 Listings/Catalog reconciliation only; no write transport is reachable."""
+    try:
+        return {'job': guided_worker.reconcile_accepted_di106_get(job_id, payload.family_hash, getattr(router, '_auth_client', None), guided_worker.production_adapters())}
+    except ValueError as exc: raise HTTPException(409, str(exc))
+
 @router.post('/guided/jobs/{job_id}/prepare-child-write-authorization')
 def guided_prepare_child_write_authorization(job_id: str, payload: GuidedParentReconciliationRequest):
     try: return guided_worker.prepare_child_write_authorization(job_id, payload.family_hash, getattr(router, '_auth_client', None), guided_worker.production_adapters())

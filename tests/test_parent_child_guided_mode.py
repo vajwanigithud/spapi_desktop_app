@@ -339,6 +339,68 @@ def _persisted_child_authorization_job():
     return result
 
 
+def _persisted_accepted_di106_ambiguity_job():
+    """Real persisted state matching the narrow production DI-106 reconciliation guard."""
+    context = draft()
+    saved = guided.save_draft(family(parent_sku="Prince_Plate", parent_title="Prince Party Plate Pack of 10", product_type="DISHWARE_PLATE", vendor_context_id=context["family"]["vendor_context_id"], children=[{"asin": "B0CC2HZNFH", "vendor_sku": "DI-106", "variation_value": "7 Inch"}, {"asin": "B0CC2JL6F6", "vendor_sku": "DI-105", "variation_value": "9 Inch"}]), context["id"])
+    job = guided.approve(saved["id"], saved["family_hash"])
+    guided.transition(job["id"], "LOCAL_VALIDATING"); guided.transition(job["id"], "AMAZON_VALIDATING"); guided.transition(job["id"], "CREATING_PARENT")
+    guided.update_operation(job["id"], "parent", "SUBMITTING")
+    guided.update_operation(job["id"], "parent", "ACCEPTED", request_id="parent-put", http_status=200)
+    guided.update_operation(job["id"], "parent", "VERIFIED")
+    guided.transition(job["id"], "WAITING_FOR_PARENT")
+    guided.transition(job["id"], "VALIDATING_CHILDREN", {"parent_get": {"status": 200, "request_id": "parent-get", "api_sku": "Prince_Plate", "api_asins": ["B0HJW82XKN"], "product_type": "DISHWARE_PLATE"}})
+    guided.transition(job["id"], "ATTACHING_CHILDREN")
+    guided.update_operation(job["id"], "child:B0CC2HZNFH", "SUBMITTING")
+    guided.update_operation(job["id"], "child:B0CC2HZNFH", "ACCEPTED", request_id="accepted-di106", http_status=200)
+    return guided.transition(job["id"], "NEEDS_ATTENTION", {"message": "Child Listings/Catalog parent identity is ambiguous"})
+
+
+def test_guarded_accepted_di106_reconciliation_is_get_only_and_preserves_patch_metadata():
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_accepted_di106_ambiguity_job(); calls = []; auth = object()
+    def listing(actual_auth, _market, _vendor, sku):
+        calls.append(("listing", actual_auth, sku))
+        return {"status": 200, "request_id": "listing-di106", "api_sku": "DI-106", "api_asins": ["B0CC2HZNFH"], "product_type": "DISHWARE_PLATE", "attributes": {"child_parent_sku_relationship": [{"parent_sku": "Prince_Plate"}]}, "issues": []}
+    def catalog(actual_auth, _market, asin):
+        calls.append(("catalog", actual_auth, asin))
+        return {"asin": "B0CC2HZNFH", "relationships": [{"relationships": [{"parentAsins": ["B0HJW82XKN"]}]}]}, {"http_status": 200, "request_id": "catalog-di106"}
+    result = worker.reconcile_accepted_di106_get(job["id"], job["family_hash"], auth, {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must never run"), "child_patch": lambda *_: pytest.fail("PATCH must never run")})
+    assert [item[0] for item in calls] == ["listing", "catalog"] and all(item[1] is auth for item in calls)
+    assert result["state"] == "VALIDATING_CHILDREN"
+    stored = guided.get_job(job["id"]); di106, di105 = stored["operations"][1:]
+    assert (di106["state"], di106["attempt_count"], di106["request_id"], di106["http_status"]) == ("VERIFIED", 1, "accepted-di106", 200)
+    assert (di105["state"], di105["attempt_count"], di105["request_id"], di105["http_status"]) == ("PREPARED", 0, None, None)
+    with get_db_connection() as conn:
+        evidence = conn.execute("SELECT evidence_json FROM pc_guided_events WHERE job_id=? ORDER BY id DESC LIMIT 1", (job["id"],)).fetchone()[0]
+    assert "accepted_child_get" in evidence and "listing-di106" in evidence and "PATCH" not in evidence
+
+
+@pytest.mark.parametrize("failure", ["catalog_parent", "listing_identity", "lease", "hash"])
+def test_guarded_accepted_di106_reconciliation_fails_closed_without_any_write(failure):
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_accepted_di106_ambiguity_job(); calls = []
+    if failure == "lease":
+        with get_db_connection() as conn:
+            conn.execute("INSERT INTO pc_guided_worker_leases(job_id,owner_id,expires_at_utc,updated_at_utc) VALUES(?,?,?,?)", (job["id"], "other", "2999-01-01T00:00:00+00:00", "now")); conn.commit()
+    def listing(*_args):
+        calls.append("listing")
+        return {"status": 200, "request_id": "listing", "api_sku": "WRONG" if failure == "listing_identity" else "DI-106", "api_asins": ["B0CC2HZNFH"], "product_type": "DISHWARE_PLATE", "attributes": {"child_parent_sku_relationship": [{"parent_sku": "Prince_Plate"}]}, "issues": []}
+    def catalog(*_args):
+        calls.append("catalog")
+        parent = "B0OTHER01" if failure == "catalog_parent" else "B0HJW82XKN"
+        return {"asin": "B0CC2HZNFH", "relationships": [{"relationships": [{"parentAsins": [parent]}]}]}, {"http_status": 200, "request_id": "catalog"}
+    with pytest.raises(ValueError, match="hash|lease|ambiguous|identity"):
+        worker.reconcile_accepted_di106_get(job["id"], "wrong" if failure == "hash" else job["family_hash"], object(), {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must never run"), "child_patch": lambda *_: pytest.fail("PATCH must never run")})
+    if failure in ("lease", "hash"): assert calls == []
+    stored = guided.get_job(job["id"])
+    assert stored["state"] == "NEEDS_ATTENTION"
+    assert stored["operations"][1]["state"] == "ACCEPTED" and stored["operations"][1]["attempt_count"] == 1
+    assert stored["operations"][2]["state"] == "PREPARED" and stored["operations"][2]["attempt_count"] == 0
+
+
 def _child_authorization_adapters(parents=None, listing_mutation=None, catalog_mutation=None):
     """Exact sanitized GET fixtures, with write transports that prove preparation is GET-only."""
     parents = parents or {}
