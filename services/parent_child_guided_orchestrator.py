@@ -154,6 +154,9 @@ def approve(draft_id, exact_family_hash, approved_by=None):
                 conn.execute("INSERT INTO pc_guided_operations(id,job_id,operation_key,operation_type,child_asin,vendor_sku,sequence_number,idempotency_key,payload_hash,state,prepared_at_utc,updated_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (_operation_identity(exact_family_hash, "record:" + key), job_id, key, kind, asin, sku, sequence, _operation_identity(exact_family_hash, key), payload_hash, "PREPARED", stamp, stamp))
             conn.execute("INSERT INTO pc_guided_events(job_id,event_key,from_state,to_state,evidence_json,created_at_utc) VALUES(?,?,?,?,?,?)", (job_id, "approved", "READY_FOR_CONFIRMATION", "APPROVED", "{}", stamp))
             job = _conn_row(conn, "SELECT * FROM pc_guided_jobs WHERE id=?", (job_id,))
+        # The exact final-family confirmation is also the only normal-mode
+        # execution selection.  It cannot broaden to any other job.
+        conn.execute("UPDATE pc_guided_execution_control SET mode='SELECTED_JOB',selected_job_id=?,selected_family_hash=?,updated_at_utc=? WHERE singleton_id=1", (job["id"], exact_family_hash, stamp))
         conn.commit()
     return get_job(job["id"])
 

@@ -212,19 +212,46 @@ def test_phase_two_mocked_worker_completes_sequential_family_without_real_transp
     def listing(_auth, _market, _vendor, sku):
         if sku == "GUIDED-PARENT":
             if "parent" not in attached: return {"status": 404}
-            return {"status": 200, "api_sku": "GUIDED-PARENT", "product_type": "TYPE", "parent_verified": True, "theme_verified": True, "issues": []}
+            return {"status": 200, "request_id": "listing-parent", "api_sku": "GUIDED-PARENT", "api_asins": ["B0PARENT01"], "product_type": "TYPE", "parent_verified": True, "theme_verified": True, "issues": []}
         asin = "B000000001" if sku == "CHILD-1" else "B000000002"
-        return {"status": 200, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "current_parent": "GUIDED-PARENT" if sku in attached else None, "attached_to_parent": sku in attached, "issues": []}
+        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "current_parent": "GUIDED-PARENT" if sku in attached else None, "attached_to_parent": sku in attached, "issues": []}
     def parent_put(_auth, _family, _body, _key): attached.add("parent"); calls.append("parent"); return {"http_status": 202, "request_id": "safe"}
     def child_patch(_auth, _family, sku, _body, _key): attached.add(sku); calls.append(sku); return {"http_status": 202, "request_id": "safe"}
-    api = {"get_definition": definition, "listing": listing, "catalog": lambda _a,_m,asin: ({"asin": asin, "relationships": []}, {"http_status": 200, "request_id": "catalog-safe"}), "parent_put": parent_put, "child_patch": child_patch,
+    def catalog(_auth, _market, asin):
+        sku = "CHILD-1" if asin == "B000000001" else "CHILD-2"
+        parents = ["B0PARENT01"] if sku in attached else []
+        return {"asin": asin, "relationships": [{"relationships": [{"parentAsins": parents}]}]}, {"http_status": 200, "request_id": "catalog-safe"}
+    api = {"get_definition": definition, "listing": listing, "catalog": catalog, "parent_put": parent_put, "child_patch": child_patch,
            "validate_parent": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []},
            "validate_child": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}}
     actions = [worker.process_next_safe_action(job["id"], object(), api)["action"] for _ in range(12)]
     final = guided.get_job(job["id"])
-    assert final["state"] == "NEEDS_ATTENTION", (actions, final["blocking_issue"], final["operations"])
-    assert "authorization" in final["blocking_issue"]["message"].lower()
-    assert calls == ["parent"]
+    assert final["state"] == "COMPLETED", (actions, final["blocking_issue"], final["operations"])
+    assert calls == ["parent", "CHILD-1", "CHILD-2"]
+
+
+def test_one_immutable_approval_runs_ten_children_sequentially_and_pauses_on_completion():
+    from services import parent_child_guided_worker as worker
+    children = [{"asin": f"B000000{index:03d}", "vendor_sku": f"CHILD-{index}", "variation_value": f"{index} Inch"} for index in range(1, 11)]
+    value = draft(); saved = guided.save_draft(family(children=children, vendor_context_id=value["family"]["vendor_context_id"]), value["id"]); job = guided.approve(saved["id"], saved["family_hash"])
+    assert worker.execution_control()["selected_job_id"] == job["id"]
+    attached, writes = set(), []
+    schema = {"properties": {"parentage_level": {}, "variation_theme": {}, "child_parent_sku_relationship": {}, "size": {}}, "required": []}
+    def listing(_auth, _market, _vendor, sku):
+        if sku == "GUIDED-PARENT": return {"status": 200, "request_id": "parent-get", "api_sku": sku, "api_asins": ["B0PARENT01"], "product_type": "TYPE", "parent_verified": True, "theme_verified": True, "issues": []} if "parent" in attached else {"status": 404}
+        index = int(sku.split("-")[1]); asin = f"B000000{index:03d}"
+        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "attributes": {}, "issues": []}
+    def catalog(_auth, _market, asin):
+        sku = "CHILD-" + str(int(asin[-3:])); parents = ["B0PARENT01"] if sku in attached else []
+        return {"asin": asin, "relationships": [{"relationships": [{"parentAsins": parents}]}]}, {"http_status": 200, "request_id": "catalog-" + asin}
+    def parent_put(*_args): attached.add("parent"); writes.append("parent"); return {"http_status": 202, "request_id": "parent-put"}
+    def child_patch(_auth, _family, sku, _body, _key): attached.add(sku); writes.append(sku); return {"http_status": 202, "request_id": "patch-" + sku}
+    api = {"get_definition": lambda *_: (schema, {}), "listing": listing, "catalog": catalog, "parent_put": parent_put, "child_patch": child_patch, "validate_parent": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}, "validate_child": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}}
+    for _ in range(40): worker.process_next_safe_action(job["id"], object(), api)
+    stored = guided.get_job(job["id"])
+    assert stored["state"] == "COMPLETED" and writes == ["parent"] + [f"CHILD-{index}" for index in range(1, 11)]
+    assert all(item["attempt_count"] == 1 for item in stored["operations"])
+    assert worker.execution_control()["mode"] == "PAUSED"
 
 
 def test_phase_two_unknown_is_get_only_and_cancel_is_prewrite_only():
@@ -341,6 +368,7 @@ def _persisted_child_authorization_job():
 
 def _persisted_accepted_di106_ambiguity_job():
     """Real persisted state matching the narrow production DI-106 reconciliation guard."""
+    from services import parent_child_guided_worker as worker
     context = draft()
     saved = guided.save_draft(family(parent_sku="Prince_Plate", parent_title="Prince Party Plate Pack of 10", product_type="DISHWARE_PLATE", vendor_context_id=context["family"]["vendor_context_id"], children=[{"asin": "B0CC2HZNFH", "vendor_sku": "DI-106", "variation_value": "7 Inch"}, {"asin": "B0CC2JL6F6", "vendor_sku": "DI-105", "variation_value": "9 Inch"}]), context["id"])
     job = guided.approve(saved["id"], saved["family_hash"])
@@ -353,6 +381,7 @@ def _persisted_accepted_di106_ambiguity_job():
     guided.transition(job["id"], "ATTACHING_CHILDREN")
     guided.update_operation(job["id"], "child:B0CC2HZNFH", "SUBMITTING")
     guided.update_operation(job["id"], "child:B0CC2HZNFH", "ACCEPTED", request_id="accepted-di106", http_status=200)
+    worker.set_execution_control("PAUSED")
     return guided.transition(job["id"], "NEEDS_ATTENTION", {"message": "Child Listings/Catalog parent identity is ambiguous"})
 
 
@@ -625,18 +654,18 @@ def test_persisted_child_authorization_records_one_shot_patch_outcomes_without_r
     assert attempts == [1]
 
 
-def test_persisted_child_authorization_scheduler_fails_closed_and_selected_preparation_leaves_unrelated_job_untouched():
+def test_persisted_family_approval_authorizes_selected_job_only_and_leaves_unrelated_job_untouched():
     from services import parent_child_guided_worker as worker
     job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters(); writes = []
     api["child_patch"] = lambda *_: writes.append("patch")
-    # Scheduler sees a real eligible job, but cannot cross the explicit authorization boundary.
+    # The immutable family approval authorizes this selected job internally.
     worker.scheduler_tick(object(), api, "isolated-owner")
-    assert writes == []
-    assert guided.get_job(job["id"])["operations"][1]["attempt_count"] == 0
+    assert writes == ["patch"]
+    assert guided.get_job(job["id"])["operations"][1]["attempt_count"] == 1
     value = draft()
     other_saved = guided.save_draft(family(parent_sku="UNRELATED-AUTH-PARENT", vendor_context_id=value["family"]["vendor_context_id"], children=[{"asin": "B000000031", "vendor_sku": "UNRELATED-1", "variation_value": "7 INCH"}, {"asin": "B000000032", "vendor_sku": "UNRELATED-2", "variation_value": "9 INCH"}]), value["id"])
     other = guided.approve(other_saved["id"], other_saved["family_hash"])
-    worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    assert worker.execution_control()["selected_job_id"] == other["id"]
     assert guided.get_job(other["id"])["state"] == "APPROVED"
 
 
@@ -881,7 +910,7 @@ def test_guided_readiness_preserves_parent_provenance_without_job():
     """
     assert "Complete every required parent field." in ui
     assert "Family is ready for review." in ui
-    assert "await progress(d.job.id,latest.id,state.review.family_hash)" in ui
+    assert "await openJob(d.job.id)" in ui
     assert "function openDraft" in ui and "/current-job" in ui and "d.family_hash" in ui
 
 

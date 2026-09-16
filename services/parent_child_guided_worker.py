@@ -104,6 +104,12 @@ def _due_after(job_id, action, seconds=30):
     delay = min(900, seconds * (2 ** min(attempt, 5)))
     _save_runtime(job_id, next_attempt=(_now() + timedelta(seconds=delay)).isoformat(), action=action, increment=True)
 
+def _pause_selected_terminal(job_id):
+    """A selected family never leaves normal execution enabled after its outcome."""
+    with get_db_connection() as conn:
+        conn.execute("UPDATE pc_guided_execution_control SET mode='PAUSED',selected_job_id=NULL,selected_family_hash=NULL,updated_at_utc=? WHERE singleton_id=1 AND mode='SELECTED_JOB' AND selected_job_id=?", (utcnow(), job_id))
+        conn.commit()
+
 def _adapters(overrides):
     # Parent/child normal writes require explicit injection.  This is a hard
     # Phase-2 guard against accidental live writes during local operation.
@@ -310,6 +316,8 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
     job = get_job(job_id)
     if not job: raise ValueError("Guided job not found")
     if job["state"] == "CANCELLED_BEFORE_WRITES": raise ValueError("Cancelled guided jobs cannot be processed")
+    if job["state"] in ("COMPLETED", "PARTIAL_COMPLETION", "SUBMISSION_UNKNOWN", "NEEDS_ATTENTION"):
+        return {"job": status(job_id), "action": next_action(job_id)}
     _require_execution_permit(job_id, job["family_hash"])
     api = _adapters(adapters); action = next_action(job_id)
     try:
@@ -341,12 +349,20 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
             transition(job_id, "ATTACHING_CHILDREN")
         elif action == "ATTACH_CHILD":
             current = get_job(job_id); child = next(item for item in current["operations"] if item["operation_type"] == "PATCH" and item["state"] == "PREPARED")
-            attached, existing_parent, _ = _verify_child(current, child, api, auth_client)
+            try: attached, existing_parent, _ = _verify_child(current, child, api, auth_client)
+            except ValueError as exc:
+                if str(exc) == "Child Listings/Catalog parent identity is ambiguous":
+                    _due_after(job_id, action); return {"job": status(job_id), "action": "WAITING_FOR_AMAZON"}
+                raise
             if attached: update_operation(job_id, child["operation_key"], "VERIFIED")
             elif existing_parent not in (None, "", "Unknown"): raise ValueError("Child is attached to a different parent")
             else:
                 if "child_patch" not in api: raise ValueError("No approved child write transport is configured")
                 payload = _runtime(job_id)["snapshot"]["payload"]; body = next(item["body"] for item in payload["children"] if item["asin"] == child["child_asin"])
+                # The immutable family approval is the user authorization.
+                # Refresh GET evidence and bind it to the existing plan just
+                # before every one-shot child PATCH; no browser payload is used.
+                authorize_children_from_family_approval(job_id, current["family_hash"], auth_client, api)
                 _child_write_authorized(current, child, body)
                 update_operation(job_id, child["operation_key"], "SUBMITTING")
                 try: result = api["child_patch"](auth_client, current["family"], child["vendor_sku"], body, child["idempotency_key"])
@@ -362,14 +378,21 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
                 else: outcome = "UNKNOWN"
                 update_operation(job_id, child["operation_key"], outcome, result.get("request_id"), result.get("http_status"), result.get("issues"))
                 _child_write_audit(current, child, outcome, result)
-                if outcome == "REJECTED": transition(job_id, "PARTIAL_COMPLETION")
-                elif outcome == "UNKNOWN": transition(job_id, "SUBMISSION_UNKNOWN")
+                if outcome == "REJECTED":
+                    transition(job_id, "PARTIAL_COMPLETION"); _pause_selected_terminal(job_id)
+                elif outcome == "UNKNOWN":
+                    transition(job_id, "SUBMISSION_UNKNOWN"); _pause_selected_terminal(job_id)
         elif action in ("RECONCILE_CHILD_GET", "VERIFY_CHILD_GET"):
             child = next(item for item in get_job(job_id)["operations"] if item["state"] in ("SUBMITTING", "UNKNOWN", "ACCEPTED"))
-            verified, _, _ = _verify_child(job, child, api, auth_client)
+            try: verified, _, _ = _verify_child(job, child, api, auth_client)
+            except ValueError as exc:
+                if str(exc) == "Child Listings/Catalog parent identity is ambiguous":
+                    _due_after(job_id, action); return {"job": status(job_id), "action": "WAITING_FOR_AMAZON"}
+                raise
             if verified: update_operation(job_id, child["operation_key"], "VERIFIED")
             else: _due_after(job_id, action)
-        elif action == "COMPLETE": transition(job_id, "VERIFYING_FAMILY"); transition(job_id, "COMPLETED")
+        elif action == "COMPLETE":
+            transition(job_id, "VERIFYING_FAMILY"); transition(job_id, "COMPLETED"); _pause_selected_terminal(job_id)
         elif action in ("NEEDS_ATTENTION", "PARTIAL_COMPLETION"): return {"job": status(job_id), "action": action}
         else: return {"job": status(job_id), "action": action}
     except Exception as exc:
@@ -377,6 +400,7 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
         if current and current["state"] not in ("NEEDS_ATTENTION", "COMPLETED", "CANCELLED_BEFORE_WRITES"):
             try: transition(job_id, "NEEDS_ATTENTION", {"message": str(exc)})
             except ValueError: pass
+            _pause_selected_terminal(job_id)
     return {"job": status(job_id), "action": action}
 
 def start(job_id, auth_client=None, adapters=None): return process_next_safe_action(job_id, auth_client, adapters)
@@ -407,7 +431,7 @@ def reconcile_accepted_parent_get(job_id, expected_family_hash, auth_client, ada
     update_operation(job_id, "parent", "VERIFIED")
     return transition(job_id, "VALIDATING_CHILDREN", {"parent_get": evidence, "message": "Accepted parent verified by guarded Listings GET"})
 
-def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, adapters=None):
+def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, adapters=None, allow_held_lease=False):
     """Guarded child reconciliation only; it never has a PATCH path.
 
     All child GET responses are evaluated before any ledger change, so a wrong
@@ -427,7 +451,7 @@ def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, a
     if not children or any(item["attempt_count"] or item.get("request_id") or item.get("http_status") for item in children) or any(item["state"] != "VERIFIED" or item["attempt_count"] != 1 for item in all_children if item not in children):
         raise ValueError("Guarded child reconciliation requires untouched pending children and resolved earlier writes")
     with get_db_connection() as conn:
-        if conn.execute("SELECT 1 FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone():
+        if not allow_held_lease and conn.execute("SELECT 1 FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone():
             raise ValueError("Guarded child reconciliation requires no runtime lease")
     api = _adapters(adapters); checked = []
     for child in children:
@@ -565,9 +589,9 @@ def _child_write_audit(job, child, outcome, result):
                                  {"http_status": (result or {}).get("http_status"), "request_id": (result or {}).get("request_id")})
             conn.commit()
 
-def prepare_child_write_authorization(job_id, family_hash, auth_client, adapters=None):
+def prepare_child_write_authorization(job_id, family_hash, auth_client, adapters=None, _allow_held_lease=False):
     """GET-only preparation. Browser receives this exact immutable plan."""
-    result = reconcile_prepared_children_get(job_id, family_hash, auth_client, adapters)
+    result = reconcile_prepared_children_get(job_id, family_hash, auth_client, adapters, allow_held_lease=_allow_held_lease)
     job = get_job(job_id); plan = _child_plan(job)
     checked = {item["vendor_sku"]: item for item in result["children"]}
     evidence = [{"operation_key": child["operation_key"], "asin": child["child_asin"], "vendor_sku": child["vendor_sku"],
@@ -585,7 +609,7 @@ def prepare_child_write_authorization(job_id, family_hash, auth_client, adapters
             previous, consumed = _authorization_evidence(existing)
             if existing["confirmed_by"] is not None or consumed:
                 ledger = {item["operation_key"]: item for item in job["operations"] if item["operation_type"] == "PATCH"}
-                if existing["expires_at_utc"] > utcnow() or any(key not in ledger or ledger[key]["state"] != "VERIFIED" or ledger[key]["attempt_count"] != 1 for key in consumed):
+                if any(key not in ledger or ledger[key]["state"] != "VERIFIED" or ledger[key]["attempt_count"] != 1 for key in consumed):
                     if existing["confirmed_by"] is not None and not consumed:
                         raise ValueError("Confirmed child authorization cannot be replaced before expiry")
                     raise ValueError("Consumed or unresolved child authorization cannot be replaced")
@@ -635,6 +659,28 @@ def confirm_child_write_authorization(job_id, family_hash, plan_hash, confirmati
         conn.commit()
     if job["state"] == "NEEDS_ATTENTION": transition(job_id, "VALIDATING_CHILDREN", {"message": "Explicit child PATCH plan confirmed"})
     return {"job_id":job_id,"family_hash":family_hash,"plan_hash":plan_hash,"confirmed":True,"next_safe_action":"VALIDATE_CHILDREN"}
+
+def authorize_children_from_family_approval(job_id, family_hash, auth_client, adapters=None):
+    """Server-owned continuation of the original immutable family approval.
+
+    It deliberately reuses the durable GET evidence/plan/consumption boundary;
+    the only difference is that the original exact family approval, rather than
+    a second browser prompt, is recorded as the confirmation source.
+    """
+    prepared = prepare_child_write_authorization(job_id, family_hash, auth_client, adapters, _allow_held_lease=True)
+    with get_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?", (job_id,)).fetchone()
+        if not row or row["family_hash"] != family_hash or row["plan_hash"] != prepared["plan_hash"] or row["expires_at_utc"] <= utcnow() or row["confirmed_by"] is not None:
+            raise ValueError("Fresh immutable-family child authorization could not be recorded")
+        data, consumed = _authorization_evidence(row)
+        live = {item["operation_key"]: item for item in get_job(job_id)["operations"] if item["operation_type"] == "PATCH"}
+        if any(key not in live or live[key]["state"] != "VERIFIED" or live[key]["attempt_count"] != 1 for key in consumed) or checksum(data["plan"]) != prepared["plan_hash"] or data["plan"] != prepared["plan"]:
+            raise ValueError("Immutable-family child authorization plan changed")
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET confirmed_by=?,confirmed_at_utc=? WHERE id=?", ("immutable_family_approval", utcnow(), row["id"]))
+        _authorization_event(conn, row, None, "FAMILY_APPROVAL_CONFIRMED", {"plan_hash": prepared["plan_hash"]})
+        conn.commit()
+    return prepared
 
 def cancel(job_id, reason="Cancelled before writes"):
     job = get_job(job_id)
