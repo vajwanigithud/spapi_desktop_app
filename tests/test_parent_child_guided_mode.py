@@ -987,6 +987,21 @@ def test_confirmation_client_fails_closed_for_scope_hash_and_browser_tampering()
     assert "Return to edit and review it again." in ui
 
 
+def test_long_immutable_confirmation_uses_bounded_scroll_and_persistent_footer():
+    page = Path("ui/index.html").read_text(encoding="utf-8")
+    css = Path("ui/css/parent_child_manager.css").read_text(encoding="utf-8")
+    ui = Path("ui/js/parent_child_guided_mode.js").read_text(encoding="utf-8")
+    assert 'pcg-confirm-dialog' in page and 'pcg-confirm-scroll' in page and 'pcg-confirm-footer' in page
+    assert 'pcg-confirm-dialog,.pcg-confirm-dialog *{box-sizing:border-box}' in css
+    assert 'height:min(760px,calc(100dvh - 32px))' in css and '.pcg-confirm-scroll{min-height:0;overflow-y:auto;overscroll-behavior:contain' in css
+    assert 'body.pcg-modal-open{overflow:hidden}' in css and 'word-break:break-all' in css
+    assert 'Source details' in ui and 'function friendly(v)' in ui
+    assert 'document.body.classList.add("pcg-modal-open")' in ui and 'document.body.classList.remove("pcg-modal-open")' in ui
+    children = [{"asin": f"B000000{index:03d}", "vendor_sku": f"CHILD-{index}", "variation_value": f"{index} Inch"} for index in range(1, 11)]
+    review = {"children": children, "parent_required_values": {f"field_{index}": {"value": f"Value {index}", "provenance": {"source": "PTD", "asins": [children[0]["asin"]]}} for index in range(10)}}
+    assert len(review["children"]) == 10 and len(review["parent_required_values"]) == 10
+
+
 def test_guided_parent_localized_values_are_unboxed_once_and_size_patches_stay_unchanged():
     from services import parent_child_guided_worker as worker
     from services.parent_child_preview import build_preview
