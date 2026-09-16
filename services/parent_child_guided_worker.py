@@ -4,6 +4,7 @@ Every invocation performs one persisted action.  Write transports are injected;
 there is deliberately no default normal-write implementation in this module.
 """
 import json
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,64 @@ ALLOWED_RELATIONSHIP_PATHS = {"parentage_level", "variation_theme", "child_paren
 
 def _now(): return datetime.now(timezone.utc)
 def _safe(value): return redact(value)
+
+TERMINAL_GUIDED_STATES = {"COMPLETED", "CANCELLED_BEFORE_WRITES"}
+EXECUTION_MODES = {"PAUSED", "SELECTED_JOB", "AUTOMATIC"}
+
+def _emergency_scheduler_disabled():
+    """Environment override is an absolute stop, even when the durable mode permits work."""
+    return os.getenv("GUIDED_SCHEDULER_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+def _execution_row(conn):
+    row = conn.execute("SELECT mode,selected_job_id,selected_family_hash,updated_at_utc FROM pc_guided_execution_control WHERE singleton_id=1").fetchone()
+    if not row: raise RuntimeError("Guided execution control is unavailable")
+    return dict(row)
+
+def execution_control():
+    """Return durable configuration and the effective fail-closed mode, without starting work."""
+    ensure_parent_child_schema()
+    with get_db_connection() as conn: control = _execution_row(conn)
+    return {**control, "emergency_override": _emergency_scheduler_disabled(),
+            "effective_mode": "PAUSED" if _emergency_scheduler_disabled() else control["mode"]}
+
+def _control_allows(control, job_id, family_hash):
+    if _emergency_scheduler_disabled() or control["mode"] == "PAUSED": return False
+    return control["mode"] == "AUTOMATIC" or (control["mode"] == "SELECTED_JOB" and control["selected_job_id"] == job_id and control["selected_family_hash"] == family_hash)
+
+def set_execution_control(mode, *, job_id=None, family_hash=None, confirmation=None):
+    """Durably change the only scheduler authorization.  PAUSED is always safe and immediate."""
+    ensure_parent_child_schema()
+    if mode not in EXECUTION_MODES: raise ValueError("Unknown Guided execution mode")
+    if mode == "SELECTED_JOB":
+        if confirmation != "RUN SELECTED JOB": raise ValueError("Exact RUN SELECTED JOB confirmation is required")
+        if not isinstance(job_id, str) or not job_id or not isinstance(family_hash, str) or not family_hash: raise ValueError("An exact job ID and immutable family hash are required")
+    elif mode == "AUTOMATIC":
+        if confirmation != "ENABLE AUTOMATIC PROCESSING": raise ValueError("Exact ENABLE AUTOMATIC PROCESSING confirmation is required")
+        job_id = family_hash = None
+    else:
+        job_id = family_hash = None
+    with get_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if mode == "SELECTED_JOB":
+            job = conn.execute("SELECT family_hash,state FROM pc_guided_jobs WHERE id=?", (job_id,)).fetchone()
+            if not job or job["state"] in TERMINAL_GUIDED_STATES: raise ValueError("Selected Guided job must exist and be non-terminal")
+            if job["family_hash"] != family_hash: raise ValueError("Selected Guided job hash does not match its immutable family")
+        conn.execute("UPDATE pc_guided_execution_control SET mode=?,selected_job_id=?,selected_family_hash=?,updated_at_utc=? WHERE singleton_id=1", (mode, job_id, family_hash, utcnow()))
+        conn.commit()
+    return execution_control()
+
+def _execution_permits_job(job_id, family_hash=None):
+    ensure_parent_child_schema()
+    with get_db_connection() as conn:
+        control = _execution_row(conn)
+        if family_hash is None:
+            row = conn.execute("SELECT family_hash FROM pc_guided_jobs WHERE id=?", (job_id,)).fetchone()
+            family_hash = row["family_hash"] if row else None
+    return bool(family_hash and _control_allows(control, job_id, family_hash))
+
+def _require_execution_permit(job_id, family_hash=None):
+    if not _execution_permits_job(job_id, family_hash):
+        raise ValueError("Guided execution is paused or this job is not selected")
 
 def _runtime(job_id):
     ensure_parent_child_schema()
@@ -205,19 +264,40 @@ def _listing_child_parent(row):
     if len(parents) > 1: raise ValueError("Child Listings relationship is ambiguous")
     return next(iter(parents), None)
 
+def _catalog_child_parent(catalog):
+    groups = catalog.get("relationships") or []
+    if not isinstance(groups, list): raise ValueError("Child Catalog relationships are malformed")
+    parents = set()
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("relationships"), list):
+            raise ValueError("Child Catalog relationships are malformed")
+        for relationship in group["relationships"]:
+            if not isinstance(relationship, dict): raise ValueError("Child Catalog relationship is malformed")
+            asins = relationship.get("parentAsins") or []
+            if not isinstance(asins, list) or any(not isinstance(asin, str) or not asin.strip() for asin in asins):
+                raise ValueError("Child Catalog parent identity is malformed")
+            parents.update(asins)
+    if len(parents) > 1: raise ValueError("Child Catalog parent identity is ambiguous")
+    return next(iter(parents), None)
+
 def _verify_child(job, child, api, auth_client):
     family = job["family"]
     auth = _verification_auth(auth_client)
     row = api["listing"](auth, family["marketplace_id"], family["vendor_code"], child["vendor_sku"])
-    if not isinstance(row, dict) or row.get("status") != 200 or row.get("api_sku") != child["vendor_sku"] or row.get("product_type") != family["product_type"] or _issues_blocking(row):
+    if not isinstance(row, dict) or row.get("status") != 200 or row.get("api_sku") != child["vendor_sku"] or row.get("api_asins") != [child["child_asin"]] or row.get("product_type") != family["product_type"] or _issues_blocking(row):
         raise ValueError("Child Listings GET identity or issue response is ambiguous")
-    listing_parent = _listing_child_parent(row) or row.get("current_parent")
-    if listing_parent is not None:
-        return listing_parent == family["parent_sku"] or row.get("attached_to_parent") is True, listing_parent, _safe(row)
+    listing_parent = _listing_child_parent(row)
     catalog, catalog_details = api["catalog"](auth, family["marketplace_id"], child["child_asin"])
-    if not isinstance(catalog_details, dict) or catalog_details.get("http_status") != 200 or not isinstance(catalog, dict):
+    if not isinstance(catalog_details, dict) or catalog_details.get("http_status") != 200 or not isinstance(catalog, dict) or catalog.get("asin") != child["child_asin"]:
         raise ValueError("Child Catalog GET response is ambiguous")
-    catalog_parent = current_parent(catalog)
+    catalog_parent = _catalog_child_parent(catalog)
+    if listing_parent is not None:
+        if listing_parent != family["parent_sku"]:
+            return False, listing_parent, _safe({"listing": row, "catalog": {"http_status": catalog_details.get("http_status"), "request_id": catalog_details.get("request_id"), "parent_asin": catalog_parent}})
+        parent_asins = _verified_parent_asins(job["id"])
+        if not parent_asins or catalog_parent not in parent_asins:
+            raise ValueError("Child Listings/Catalog parent identity is ambiguous")
+        return True, listing_parent, _safe({"listing": row, "catalog": {"http_status": catalog_details.get("http_status"), "request_id": catalog_details.get("request_id"), "parent_asin": catalog_parent}})
     if catalog_parent is None:
         return False, None, _safe({"listing": row, "catalog": {"http_status": catalog_details.get("http_status"), "request_id": catalog_details.get("request_id")}})
     parent_asins = _verified_parent_asins(job["id"])
@@ -230,6 +310,7 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
     job = get_job(job_id)
     if not job: raise ValueError("Guided job not found")
     if job["state"] == "CANCELLED_BEFORE_WRITES": raise ValueError("Cancelled guided jobs cannot be processed")
+    _require_execution_permit(job_id, job["family_hash"])
     api = _adapters(adapters); action = next_action(job_id)
     try:
         if action == "LOCAL_VALIDATE":
@@ -264,14 +345,25 @@ def process_next_safe_action(job_id, auth_client=None, adapters=None):
             if attached: update_operation(job_id, child["operation_key"], "VERIFIED")
             elif existing_parent not in (None, "", "Unknown"): raise ValueError("Child is attached to a different parent")
             else:
-                _child_write_authorized(current, child)
                 if "child_patch" not in api: raise ValueError("No approved child write transport is configured")
                 payload = _runtime(job_id)["snapshot"]["payload"]; body = next(item["body"] for item in payload["children"] if item["asin"] == child["child_asin"])
+                _child_write_authorized(current, child, body)
                 update_operation(job_id, child["operation_key"], "SUBMITTING")
-                result = api["child_patch"](auth_client, current["family"], child["vendor_sku"], body, child["idempotency_key"])
-                if result.get("http_status") in (200, 202) and not _issues_blocking(result): update_operation(job_id, child["operation_key"], "ACCEPTED", result.get("request_id"), result.get("http_status"), result.get("issues"))
-                elif result.get("http_status") in (400, 422): update_operation(job_id, child["operation_key"], "REJECTED", result.get("request_id"), result.get("http_status"), result.get("issues")); transition(job_id, "PARTIAL_COMPLETION")
-                else: update_operation(job_id, child["operation_key"], "UNKNOWN", result.get("request_id"), result.get("http_status"), result.get("issues")); transition(job_id, "SUBMISSION_UNKNOWN")
+                try: result = api["child_patch"](auth_client, current["family"], child["vendor_sku"], body, child["idempotency_key"])
+                except Exception:
+                    update_operation(job_id, child["operation_key"], "UNKNOWN")
+                    _child_write_audit(current, child, "UNKNOWN", None)
+                    transition(job_id, "SUBMISSION_UNKNOWN", {"message": "Child PATCH acknowledgement is uncertain; do not retry"})
+                    return {"job": status(job_id), "action": action}
+                if not isinstance(result, dict): result = {}
+                if result.get("http_status") in (200, 202) and not _issues_blocking(result):
+                    outcome = "ACCEPTED"
+                elif result.get("http_status") in (400, 422): outcome = "REJECTED"
+                else: outcome = "UNKNOWN"
+                update_operation(job_id, child["operation_key"], outcome, result.get("request_id"), result.get("http_status"), result.get("issues"))
+                _child_write_audit(current, child, outcome, result)
+                if outcome == "REJECTED": transition(job_id, "PARTIAL_COMPLETION")
+                elif outcome == "UNKNOWN": transition(job_id, "SUBMISSION_UNKNOWN")
         elif action in ("RECONCILE_CHILD_GET", "VERIFY_CHILD_GET"):
             child = next(item for item in get_job(job_id)["operations"] if item["state"] in ("SUBMITTING", "UNKNOWN", "ACCEPTED"))
             verified, _, _ = _verify_child(job, child, api, auth_client)
@@ -324,14 +416,16 @@ def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, a
     job = get_job(job_id)
     if not job: raise ValueError("Guided job not found")
     if job["family_hash"] != expected_family_hash: raise ValueError("Guided child reconciliation hash does not match the immutable job")
-    if job["state"] != "NEEDS_ATTENTION" or (job.get("blocking_issue") or {}).get("message") != "'NoneType' object has no attribute 'get_lwa_access_token'":
-        raise ValueError("Guarded child reconciliation is limited to the missing-auth failure")
+    reason = (job.get("blocking_issue") or {}).get("message")
+    if (job["state"] != "ATTACHING_CHILDREN" and (job["state"] != "NEEDS_ATTENTION" or reason not in ("'NoneType' object has no attribute 'get_lwa_access_token'", "Explicit unexpired child write authorization is required"))):
+        raise ValueError("Guarded child reconciliation is limited to the missing-auth or expired-authorization failure")
     parent = next(item for item in job["operations"] if item["operation_key"] == "parent")
-    children = [item for item in job["operations"] if item["operation_type"] == "PATCH"]
+    all_children = [item for item in job["operations"] if item["operation_type"] == "PATCH"]
+    children = [item for item in all_children if item["state"] == "PREPARED"]
     if parent["state"] != "VERIFIED" or parent["attempt_count"] != 1:
         raise ValueError("Guarded child reconciliation requires the original verified one-attempt parent")
-    if any(item["state"] != "PREPARED" or item["attempt_count"] or item.get("request_id") or item.get("http_status") for item in children):
-        raise ValueError("Guarded child reconciliation requires every child to be conclusively pre-write")
+    if not children or any(item["attempt_count"] or item.get("request_id") or item.get("http_status") for item in children) or any(item["state"] != "VERIFIED" or item["attempt_count"] != 1 for item in all_children if item not in children):
+        raise ValueError("Guarded child reconciliation requires untouched pending children and resolved earlier writes")
     with get_db_connection() as conn:
         if conn.execute("SELECT 1 FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone():
             raise ValueError("Guarded child reconciliation requires no runtime lease")
@@ -340,35 +434,156 @@ def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, a
         attached, observed_parent, evidence = _verify_child(job, child, api, auth_client)
         if observed_parent not in (None, "", "Unknown") and not attached:
             raise ValueError("Child is attached to a different parent")
-        checked.append((child, attached, evidence))
-    for child, attached, _ in checked:
+        listing = evidence.get("listing", evidence) if isinstance(evidence, dict) else {}
+        catalog = evidence.get("catalog", {}) if isinstance(evidence, dict) else {}
+        checked.append((child, attached, observed_parent, evidence, listing, catalog))
+    for child, attached, _, _, _, _ in checked:
         if attached: update_operation(job_id, child["operation_key"], "VERIFIED")
-    return {"job": get_job(job_id), "children": [{"vendor_sku": child["vendor_sku"], "attached": attached, "evidence": evidence} for child, attached, evidence in checked], "next_safe_action": "EXPLICIT_CHILD_WRITE_AUTHORIZATION_REQUIRED"}
+    return {"job": get_job(job_id), "children": [{"vendor_sku": child["vendor_sku"], "operation_key": child["operation_key"],
+             "attached": attached, "observed_parent": observed_parent, "listing_status": listing.get("status"),
+             "listing_request_id": listing.get("request_id"), "catalog_status": catalog.get("http_status"),
+             "catalog_request_id": catalog.get("request_id")}
+             for child, attached, observed_parent, _, listing, catalog in checked],
+            "next_safe_action": "EXPLICIT_CHILD_WRITE_AUTHORIZATION_REQUIRED"}
 
-def _child_write_authorized(job, child):
+def _child_plan(job):
+    """Bind the visible plan to the persisted snapshot AND operation ledger."""
+    runtime = _runtime(job["id"])
+    payload = (runtime.get("snapshot") or {}).get("payload") or {}
+    bodies = {item.get("asin"): item.get("body") for item in payload.get("children", []) if isinstance(item, dict)}
+    children = [item for item in job["operations"] if item["operation_type"] == "PATCH" and item["state"] == "PREPARED"]
+    if not children or len(bodies) != len(job["family"]["children"]): raise ValueError("Immutable child PATCH snapshot is incomplete")
+    dimensions = active_variation_keys(runtime.get("child_ptd") or {}, job["family"]["variation_theme"])
+    allowed = ALLOWED_RELATIONSHIP_PATHS | dimensions
+    plan = []
+    for child in children:
+        body = bodies.get(child["child_asin"])
+        if not isinstance(body, dict) or body.get("productType") != job["family"]["product_type"] or not isinstance(body.get("patches"), list) or not body["patches"]:
+            raise ValueError("Immutable child PATCH body is incomplete")
+        paths = [patch.get("path") for patch in body["patches"] if isinstance(patch, dict)]
+        if len(paths) != len(body["patches"]) or len(set(paths)) != len(paths) or any(path not in {"/attributes/" + key for key in allowed} for path in paths):
+            raise ValueError("Child PATCH has an unsupported or duplicate attribute")
+        if any(patch.get("op") not in ("add", "replace") or patch.get("value") in (None, "", [], {}) for patch in body["patches"]):
+            raise ValueError("Child PATCH has an invalid operation or value")
+        plan.append({"operation_key": child["operation_key"], "asin": child["child_asin"], "vendor_sku": child["vendor_sku"],
+                     "operation_payload_hash": child["payload_hash"], "body_hash": checksum(body),
+                     "patches": [{"path": patch["path"], "value": patch["value"]} for patch in body["patches"]]})
+    return plan
+
+def _authorization_evidence(row):
+    try:
+        data = json.loads(row["child_evidence_json"])
+        consumed = json.loads(row["consumed_operations_json"])
+    except (ValueError, TypeError) as exc: raise ValueError("Child authorization evidence is malformed") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("plan"), list) or not isinstance(data.get("children"), list) or not isinstance(consumed, list):
+        raise ValueError("Child authorization evidence is malformed")
+    return data, consumed
+
+def _authorization_event(conn, row, child, action, evidence=None):
+    conn.execute("INSERT INTO pc_guided_child_write_authorization_events(authorization_id,operation_key,action,evidence_json,created_at_utc) VALUES(?,?,?,?,?)",
+                 (row["id"], child, action, json.dumps(_safe(evidence or {})), utcnow()))
+
+def _child_write_authorized(job, child, body):
+    current_plan = _child_plan(job)
+    current_entry = next((item for item in current_plan if item["operation_key"] == child["operation_key"]), None)
     with get_db_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE"); row=conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?", (job["id"],)).fetchone()
-        consumed=json.loads(row["consumed_operations_json"]) if row else []
-        if not row or not row["confirmed_by"] or row["family_hash"] != job["family_hash"] or row["expires_at_utc"] <= utcnow() or child["operation_key"] in consumed: conn.rollback(); raise ValueError("Explicit unexpired child write authorization is required")
-        consumed.append(child["operation_key"]); conn.execute("UPDATE pc_guided_child_write_authorizations SET consumed_operations_json=? WHERE id=?",(json.dumps(consumed),row["id"])); conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?", (job["id"],)).fetchone()
+        if not row or not row["confirmed_by"] or row["family_hash"] != job["family_hash"] or row["expires_at_utc"] <= utcnow():
+            raise ValueError("Explicit unexpired child write authorization is required")
+        data, consumed = _authorization_evidence(row)
+        entry = next((item for item in data["plan"] if item.get("operation_key") == child["operation_key"]), None)
+        ledger = conn.execute("SELECT state,attempt_count,payload_hash FROM pc_guided_operations WHERE job_id=? AND operation_key=?", (job["id"], child["operation_key"])).fetchone()
+        if row["plan_hash"] != checksum(data["plan"]) or not entry or entry != current_entry or entry["body_hash"] != checksum(body) or child["operation_key"] in consumed or not ledger or ledger["state"] != "PREPARED" or ledger["attempt_count"] or ledger["payload_hash"] != entry["operation_payload_hash"]:
+            raise ValueError("Child PATCH plan is changed or already consumed")
+        proof = next((item for item in data["children"] if item.get("operation_key") == child["operation_key"]), None)
+        if not proof or proof.get("asin") != child["child_asin"] or proof.get("vendor_sku") != child["vendor_sku"] or proof.get("observed_parent") is not None or proof.get("attached") is not False:
+            raise ValueError("Child GET eligibility evidence is incomplete")
+        if len(consumed) != len(set(consumed)): raise ValueError("Child authorization consumption is malformed")
+        consumed.append(child["operation_key"])
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET consumed_operations_json=? WHERE id=?", (json.dumps(consumed), row["id"]))
+        _authorization_event(conn, row, child["operation_key"], "CONSUMED_BEFORE_PATCH", {"body_hash": entry["body_hash"]})
+        conn.commit()
     return row
+
+def _child_write_audit(job, child, outcome, result):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT id FROM pc_guided_child_write_authorizations WHERE job_id=?", (job["id"],)).fetchone()
+        if row:
+            _authorization_event(conn, row, child["operation_key"], "PATCH_" + outcome,
+                                 {"http_status": (result or {}).get("http_status"), "request_id": (result or {}).get("request_id")})
+            conn.commit()
 
 def prepare_child_write_authorization(job_id, family_hash, auth_client, adapters=None):
     """GET-only preparation. Browser receives this exact immutable plan."""
     result = reconcile_prepared_children_get(job_id, family_hash, auth_client, adapters)
-    job = get_job(job_id); plan = [{"operation_key": x["operation_key"], "asin": x["child_asin"], "vendor_sku": x["vendor_sku"], "payload_hash": x["payload_hash"]} for x in job["operations"] if x["operation_type"] == "PATCH"]
+    job = get_job(job_id); plan = _child_plan(job)
+    checked = {item["vendor_sku"]: item for item in result["children"]}
+    evidence = [{"operation_key": child["operation_key"], "asin": child["child_asin"], "vendor_sku": child["vendor_sku"],
+                 "attached": checked[child["vendor_sku"]]["attached"], "observed_parent": checked[child["vendor_sku"]]["observed_parent"],
+                 "listing_status": checked[child["vendor_sku"]]["listing_status"], "listing_request_id": checked[child["vendor_sku"]]["listing_request_id"],
+                 "catalog_status": checked[child["vendor_sku"]]["catalog_status"], "catalog_request_id": checked[child["vendor_sku"]]["catalog_request_id"]}
+                for child in job["operations"] if child["operation_type"] == "PATCH" and child["state"] == "PREPARED"]
+    if len(evidence) != len(plan) or any(item["attached"] or item["observed_parent"] is not None or item["listing_status"] != 200 or not item["listing_request_id"] or item["catalog_status"] != 200 or not item["catalog_request_id"] for item in evidence):
+        raise ValueError("Every proposed child write requires exact fresh GET eligibility")
     plan_hash = checksum(plan); expiry = (_now() + timedelta(minutes=5)).isoformat()
     with get_db_connection() as conn:
-        conn.execute("INSERT OR REPLACE INTO pc_guided_child_write_authorizations(id,job_id,family_hash,plan_hash,child_evidence_json,expires_at_utc,confirmed_at_utc,confirmed_by,consumed_operations_json) VALUES(?,?,?,?,?,?,?,?,?)", (str(uuid.uuid4()),job_id,family_hash,plan_hash,json.dumps(_safe(result["children"])),expiry,utcnow(),None,"[]")); conn.commit()
-    return {"job_id":job_id,"family_hash":family_hash,"plan":plan,"plan_hash":plan_hash,"expires_at_utc":expiry}
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?", (job_id,)).fetchone()
+        if existing:
+            previous, consumed = _authorization_evidence(existing)
+            if existing["confirmed_by"] is not None or consumed:
+                ledger = {item["operation_key"]: item for item in job["operations"] if item["operation_type"] == "PATCH"}
+                if existing["expires_at_utc"] > utcnow() or any(key not in ledger or ledger[key]["state"] != "VERIFIED" or ledger[key]["attempt_count"] != 1 for key in consumed):
+                    if existing["confirmed_by"] is not None and not consumed:
+                        raise ValueError("Confirmed child authorization cannot be replaced before expiry")
+                    raise ValueError("Consumed or unresolved child authorization cannot be replaced")
+        stored = json.dumps({"plan": plan, "children": evidence}, sort_keys=True)
+        if existing:
+            conn.execute("UPDATE pc_guided_child_write_authorizations SET plan_hash=?,child_evidence_json=?,expires_at_utc=?,confirmed_by=NULL,confirmed_at_utc=NULL WHERE id=?",
+                         (plan_hash, stored, expiry, existing["id"]))
+            row = existing
+        else:
+            key = str(uuid.uuid4())
+            conn.execute("INSERT INTO pc_guided_child_write_authorizations(id,job_id,family_hash,plan_hash,child_evidence_json,expires_at_utc,confirmed_at_utc,confirmed_by,consumed_operations_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (key,job_id,family_hash,plan_hash,stored,expiry,None,None,"[]"))
+            row = {"id": key}
+        _authorization_event(conn, row, None, "GET_PREPARED", {"plan_hash": plan_hash, "expires_at_utc": expiry})
+        conn.commit()
+    return {"job_id":job_id,"family_hash":family_hash,"plan":plan,"children":evidence,"plan_hash":plan_hash,"expires_at_utc":expiry}
 
-def confirm_child_write_authorization(job_id, family_hash, plan_hash, confirmed_by=None):
+def confirm_child_write_authorization(job_id, family_hash, plan_hash, confirmation):
+    if confirmation != "AUTHORIZE CHILDREN": raise ValueError("Exact AUTHORIZE CHILDREN confirmation is required")
+    job = get_job(job_id)
+    if not job or job["family_hash"] != family_hash or job["state"] not in ("NEEDS_ATTENTION", "ATTACHING_CHILDREN"): raise ValueError("The approved Guided job is not eligible for child authorization")
+    parent = next(item for item in job["operations"] if item["operation_key"] == "parent")
+    children = [item for item in job["operations"] if item["operation_type"] == "PATCH"]
+    if parent["state"] != "VERIFIED" or parent["attempt_count"] != 1 or not any(item["state"] == "PREPARED" for item in children) or any(item["state"] not in ("PREPARED", "VERIFIED") or (item["attempt_count"] != (1 if item["state"] == "VERIFIED" else 0)) for item in children):
+        raise ValueError("Child authorization requires a verified parent and untouched pending children")
+    current_plan = _child_plan(job)
     with get_db_connection() as conn:
-        row=conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?",(job_id,)).fetchone()
-        if not row or row["family_hash"] != family_hash or row["plan_hash"] != plan_hash or row["expires_at_utc"] <= utcnow(): raise ValueError("Fresh exact child write evidence is required")
-        if row["confirmed_by"] is not None: raise ValueError("Child write authorization was already confirmed")
-        conn.execute("UPDATE pc_guided_child_write_authorizations SET confirmed_by=?,confirmed_at_utc=? WHERE id=?",(confirmed_by or "user",utcnow(),row["id"])); conn.commit()
-    return {"job_id":job_id,"family_hash":family_hash,"plan_hash":plan_hash,"confirmed":True}
+        conn.execute("BEGIN IMMEDIATE")
+        live = conn.execute("SELECT state,family_hash FROM pc_guided_jobs WHERE id=?", (job_id,)).fetchone()
+        if not live or live["state"] not in ("NEEDS_ATTENTION", "ATTACHING_CHILDREN") or live["family_hash"] != family_hash or conn.execute("SELECT 1 FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone():
+            raise ValueError("Child authorization requires an unchanged unleased Guided job")
+        live_children = conn.execute("SELECT operation_key,state,attempt_count,payload_hash FROM pc_guided_operations WHERE job_id=? AND operation_type='PATCH'", (job_id,)).fetchall()
+        current_by_key = {item["operation_key"]: item for item in children}
+        if len(live_children) != len(children) or any(row["operation_key"] not in current_by_key or row["state"] != current_by_key[row["operation_key"]]["state"] or row["attempt_count"] != current_by_key[row["operation_key"]]["attempt_count"] or row["payload_hash"] != current_by_key[row["operation_key"]]["payload_hash"] for row in live_children):
+            raise ValueError("Guided child operation ledger changed before confirmation")
+        row = conn.execute("SELECT * FROM pc_guided_child_write_authorizations WHERE job_id=?",(job_id,)).fetchone()
+        if not row or row["family_hash"] != family_hash or row["plan_hash"] != plan_hash or row["expires_at_utc"] <= utcnow() or row["confirmed_by"] is not None:
+            raise ValueError("Fresh unconfirmed exact child write evidence is required")
+        data, consumed = _authorization_evidence(row)
+        ledger = {item["operation_key"]: item for item in children}
+        if any(key not in ledger or ledger[key]["state"] != "VERIFIED" or ledger[key]["attempt_count"] != 1 for key in consumed) or checksum(data["plan"]) != plan_hash or data["plan"] != current_plan:
+            raise ValueError("Child authorization plan has changed")
+        if len(data["children"]) != len(data["plan"]) or any(item.get("attached") is not False or item.get("observed_parent") is not None or item.get("listing_status") != 200 or item.get("catalog_status") != 200 for item in data["children"]):
+            raise ValueError("Child GET evidence is ambiguous")
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET confirmed_by=?,confirmed_at_utc=? WHERE id=?",("local_user",utcnow(),row["id"]))
+        _authorization_event(conn, row, None, "EXACT_PLAN_CONFIRMED", {"plan_hash": plan_hash})
+        conn.commit()
+    if job["state"] == "NEEDS_ATTENTION": transition(job_id, "VALIDATING_CHILDREN", {"message": "Explicit child PATCH plan confirmed"})
+    return {"job_id":job_id,"family_hash":family_hash,"plan_hash":plan_hash,"confirmed":True,"next_safe_action":"VALIDATE_CHILDREN"}
 
 def cancel(job_id, reason="Cancelled before writes"):
     job = get_job(job_id)
@@ -384,6 +599,10 @@ def cancel(job_id, reason="Cancelled before writes"):
 def eligible_jobs():
     ensure_parent_child_schema(); now = utcnow()
     with get_db_connection() as conn:
+        control = _execution_row(conn)
+        if _emergency_scheduler_disabled() or control["mode"] == "PAUSED": return []
+        if control["mode"] == "SELECTED_JOB":
+            return [row[0] for row in conn.execute("SELECT j.id FROM pc_guided_jobs j LEFT JOIN pc_guided_job_runtime r ON r.job_id=j.id WHERE j.id=? AND j.family_hash=? AND j.state NOT IN ('COMPLETED','CANCELLED_BEFORE_WRITES') AND (r.next_attempt_at_utc IS NULL OR r.next_attempt_at_utc<=?)", (control["selected_job_id"], control["selected_family_hash"], now))]
         return [row[0] for row in conn.execute("SELECT j.id FROM pc_guided_jobs j LEFT JOIN pc_guided_job_runtime r ON r.job_id=j.id WHERE j.state NOT IN ('COMPLETED','CANCELLED_BEFORE_WRITES') AND (r.next_attempt_at_utc IS NULL OR r.next_attempt_at_utc<=?)", (now,))]
 
 def claim_job(job_id, owner_id, lease_seconds=60):
@@ -391,6 +610,8 @@ def claim_job(job_id, owner_id, lease_seconds=60):
     ensure_parent_child_schema(); stamp = _now(); expiry = stamp + timedelta(seconds=lease_seconds)
     with get_db_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT family_hash FROM pc_guided_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or not _control_allows(_execution_row(conn), job_id, job["family_hash"]): conn.rollback(); return False
         row = conn.execute("SELECT owner_id,expires_at_utc FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone()
         if row and row["owner_id"] != owner_id and row["expires_at_utc"] > stamp.isoformat(): conn.rollback(); return False
         conn.execute("INSERT INTO pc_guided_worker_leases(job_id,owner_id,expires_at_utc,updated_at_utc) VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET owner_id=excluded.owner_id,expires_at_utc=excluded.expires_at_utc,updated_at_utc=excluded.updated_at_utc", (job_id, owner_id, expiry.isoformat(), stamp.isoformat())); conn.commit()

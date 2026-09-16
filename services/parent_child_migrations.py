@@ -194,11 +194,22 @@ MIGRATIONS = [
     CREATE TABLE IF NOT EXISTS pc_guided_child_write_authorizations (
       id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, family_hash TEXT NOT NULL,
       plan_hash TEXT NOT NULL, child_evidence_json TEXT NOT NULL, expires_at_utc TEXT NOT NULL,
-      confirmed_at_utc TEXT NOT NULL, confirmed_by TEXT, consumed_operations_json TEXT NOT NULL DEFAULT '[]',
+      confirmed_at_utc TEXT, confirmed_by TEXT, consumed_operations_json TEXT NOT NULL DEFAULT '[]',
       FOREIGN KEY(job_id) REFERENCES pc_guided_jobs(id));
     CREATE TABLE IF NOT EXISTS pc_guided_child_write_authorization_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, authorization_id TEXT NOT NULL, operation_key TEXT,
       action TEXT NOT NULL, evidence_json TEXT, created_at_utc TEXT NOT NULL);
+    """),
+    ("017_guided_execution_control", """
+    CREATE TABLE IF NOT EXISTS pc_guided_execution_control (
+      singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+      mode TEXT NOT NULL CHECK(mode IN ('PAUSED','SELECTED_JOB','AUTOMATIC')),
+      selected_job_id TEXT, selected_family_hash TEXT,
+      updated_at_utc TEXT NOT NULL,
+      CHECK((mode='SELECTED_JOB' AND selected_job_id IS NOT NULL AND selected_family_hash IS NOT NULL)
+         OR (mode!='SELECTED_JOB' AND selected_job_id IS NULL AND selected_family_hash IS NULL)));
+    INSERT OR IGNORE INTO pc_guided_execution_control(singleton_id,mode,selected_job_id,selected_family_hash,updated_at_utc)
+      VALUES(1,'PAUSED',NULL,NULL,CURRENT_TIMESTAMP);
     """),
 ]
 

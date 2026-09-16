@@ -44,7 +44,9 @@ class GuidedDraftRequest(BaseModel): definition:Dict[str,Any]; draft_id:str|None
 class GuidedApprovalRequest(BaseModel): family_hash:str; approved_by:str|None=None
 class GuidedResumeRequest(BaseModel): family_hash:str
 class GuidedParentReconciliationRequest(BaseModel): family_hash:str
-class GuidedChildWriteConfirmation(BaseModel): family_hash:str; plan_hash:str; confirmed_by:str|None=None
+class GuidedChildWriteConfirmation(BaseModel): family_hash:str; plan_hash:str; confirmation:str
+class GuidedSelectedExecutionRequest(BaseModel): job_id:str; family_hash:str; confirmation:str
+class GuidedAutomaticExecutionRequest(BaseModel): confirmation:str
 
 def _checked_context(marketplace_id,vendor_code, context_id=None):
     found=next((x for x in vendor_contexts(marketplace_id) if x['vendor_code']==vendor_code and x['verified'] and x['active']),None)
@@ -127,6 +129,25 @@ def guided_jobs():
         items.append({'id': job['id'], 'state': job['state'], 'family_hash': job['family_hash'], 'parent_sku': job['family']['parent_sku'], 'parent_title': job['family'].get('parent_title'), 'created_at_utc': job['created_at_utc'], 'approved_at_utc': job['approved_at_utc'], 'failure_reason': job['blocking_issue'], 'write_attempted': any(item['attempt_count'] or item['state'] != 'PREPARED' for item in operations)})
     return {'items': items}
 
+@router.get('/guided/execution-control')
+def guided_execution_control():
+    """Durable local scheduler control; this endpoint never starts or ticks a worker."""
+    return guided_worker.execution_control()
+
+@router.post('/guided/execution-control/pause')
+def guided_pause_execution():
+    return guided_worker.set_execution_control('PAUSED')
+
+@router.post('/guided/execution-control/selected-job')
+def guided_run_selected_job(payload: GuidedSelectedExecutionRequest):
+    try: return guided_worker.set_execution_control('SELECTED_JOB', job_id=payload.job_id, family_hash=payload.family_hash, confirmation=payload.confirmation)
+    except ValueError as exc: raise HTTPException(409, str(exc))
+
+@router.post('/guided/execution-control/automatic')
+def guided_enable_automatic_execution(payload: GuidedAutomaticExecutionRequest):
+    try: return guided_worker.set_execution_control('AUTOMATIC', confirmation=payload.confirmation)
+    except ValueError as exc: raise HTTPException(409, str(exc))
+
 @router.get('/guided/jobs/{job_id}')
 def guided_job(job_id: str):
     value = guided.get_job(job_id)
@@ -164,7 +185,7 @@ def guided_prepare_child_write_authorization(job_id: str, payload: GuidedParentR
 
 @router.post('/guided/jobs/{job_id}/confirm-child-write-authorization')
 def guided_confirm_child_write_authorization(job_id: str, payload: GuidedChildWriteConfirmation):
-    try: return guided_worker.confirm_child_write_authorization(job_id, payload.family_hash, payload.plan_hash, payload.confirmed_by)
+    try: return guided_worker.confirm_child_write_authorization(job_id, payload.family_hash, payload.plan_hash, payload.confirmation)
     except ValueError as exc: raise HTTPException(409, str(exc))
 
 @router.post('/guided/jobs/{job_id}/start')

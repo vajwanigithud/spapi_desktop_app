@@ -1,4 +1,5 @@
 import threading
+import json
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,104 @@ def draft():
 def approved_job():
     value = draft()
     return guided.approve(value["id"], value["family_hash"], "tester")
+
+
+def allow_selected_guided_job(job):
+    from services import parent_child_guided_worker as worker
+    return worker.set_execution_control("SELECTED_JOB", job_id=job["id"], family_hash=job["family_hash"], confirmation="RUN SELECTED JOB")
+
+
+def test_guided_execution_control_defaults_paused_and_persists_selected_mode_across_restart():
+    from services import parent_child_guided_worker as worker
+    assert worker.execution_control()["mode"] == "PAUSED"
+    job = approved_job(); changed = allow_selected_guided_job(job)
+    assert changed["mode"] == "SELECTED_JOB" and changed["selected_job_id"] == job["id"]
+    import importlib
+    reloaded = importlib.reload(worker)
+    persisted = reloaded.execution_control()
+    assert persisted["mode"] == "SELECTED_JOB" and persisted["selected_family_hash"] == job["family_hash"]
+
+
+def test_guided_execution_control_migration_defaults_existing_database_to_paused():
+    from services.db import get_db_connection
+    from services.parent_child_migrations import ensure_parent_child_schema
+    with get_db_connection() as conn:
+        conn.execute("DROP TABLE pc_guided_execution_control")
+        conn.execute("DELETE FROM pc_schema_migrations WHERE version='017_guided_execution_control'")
+        conn.commit()
+    ensure_parent_child_schema()
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT mode,selected_job_id,selected_family_hash FROM pc_guided_execution_control WHERE singleton_id=1").fetchone()
+    assert tuple(row) == ("PAUSED", None, None)
+
+
+def test_guided_execution_control_rejects_invalid_hash_terminal_job_and_unconfirmed_automatic():
+    from services import parent_child_guided_worker as worker
+    job = approved_job()
+    with pytest.raises(ValueError, match="confirmation"):
+        worker.set_execution_control("AUTOMATIC", confirmation="RUN")
+    with pytest.raises(ValueError, match="hash"):
+        worker.set_execution_control("SELECTED_JOB", job_id=job["id"], family_hash="wrong", confirmation="RUN SELECTED JOB")
+    worker.cancel(job["id"])
+    with pytest.raises(ValueError, match="non-terminal"):
+        worker.set_execution_control("SELECTED_JOB", job_id=job["id"], family_hash=job["family_hash"], confirmation="RUN SELECTED JOB")
+
+
+def test_guided_execution_control_emergency_override_is_absolute(monkeypatch):
+    from services import parent_child_guided_worker as worker
+    job = approved_job()
+    worker.set_execution_control("AUTOMATIC", confirmation="ENABLE AUTOMATIC PROCESSING")
+    monkeypatch.setenv("GUIDED_SCHEDULER_DISABLED", "true")
+    control = worker.execution_control()
+    assert control["mode"] == "AUTOMATIC" and control["effective_mode"] == "PAUSED" and control["emergency_override"]
+    assert worker.eligible_jobs() == []
+    assert worker.claim_job(job["id"], "emergency-test") is False
+    with pytest.raises(ValueError, match="paused"):
+        worker.process_next_safe_action(job["id"], object(), {"get_definition": lambda *_: pytest.fail("worker must stop before transport")})
+
+
+def test_guided_execution_control_selected_job_filters_eligibility_claims_and_unrelated_jobs():
+    from services import parent_child_guided_worker as worker
+    first = approved_job()
+    value = draft(); second_draft = guided.save_draft(family(parent_sku="CONTROL-OTHER", vendor_context_id=value["family"]["vendor_context_id"], children=[{"asin": "B000000031", "vendor_sku": "CONTROL-1", "variation_value": "7 INCH"}, {"asin": "B000000032", "vendor_sku": "CONTROL-2", "variation_value": "9 INCH"}]), value["id"])
+    second = guided.approve(second_draft["id"], second_draft["family_hash"])
+    allow_selected_guided_job(first)
+    assert worker.eligible_jobs() == [first["id"]]
+    assert worker.claim_job(second["id"], "other") is False
+    with pytest.raises(ValueError, match="not selected"):
+        worker.process_next_safe_action(second["id"], object(), {"get_definition": lambda *_: pytest.fail("unrelated job must not run")})
+    assert guided.get_job(second["id"])["state"] == "APPROVED"
+
+
+def test_guided_execution_control_lease_race_and_pause_between_actions():
+    from services import parent_child_guided_worker as worker
+    job = approved_job(); allow_selected_guided_job(job); claims = []
+    threads = [threading.Thread(target=lambda owner=owner: claims.append((owner, worker.claim_job(job["id"], owner)))) for owner in ("one", "two")]
+    [thread.start() for thread in threads]; [thread.join() for thread in threads]
+    assert sum(result for _, result in claims) == 1
+    owner = next(owner for owner, result in claims if result); worker.release_job(job["id"], owner)
+    schema = {"properties": {}, "required": []}
+    worker.process_next_safe_action(job["id"], object(), {"get_definition": lambda *_: (schema, {}), "build_preview": worker.build_preview})
+    assert guided.get_job(job["id"])["state"] == "AMAZON_VALIDATING"
+    worker.set_execution_control("PAUSED")
+    with pytest.raises(ValueError, match="paused"):
+        worker.process_next_safe_action(job["id"], object(), {"validate_parent": lambda *_: pytest.fail("pause must block the next action")})
+    assert guided.get_job(job["id"])["state"] == "AMAZON_VALIDATING"
+
+
+def test_guided_execution_control_ui_and_routes_are_server_owned():
+    from routes import parent_child_routes as routes
+    html = Path("ui/index.html").read_text(encoding="utf-8")
+    js = Path("ui/js/parent_child_guided_mode.js").read_text(encoding="utf-8")
+    assert routes.guided_execution_control()["mode"] == "PAUSED"
+    job = approved_job()
+    selected = routes.guided_run_selected_job(routes.GuidedSelectedExecutionRequest(job_id=job["id"], family_hash=job["family_hash"], confirmation="RUN SELECTED JOB"))
+    assert selected["mode"] == "SELECTED_JOB" and selected["selected_job_id"] == job["id"]
+    assert routes.guided_pause_execution()["mode"] == "PAUSED"
+    assert "Guided execution control" in html and "Enable automatic processing" in html
+    assert "/guided/execution-control/selected-job" in js and "RUN SELECTED JOB" in js
+    assert "/guided/execution-control/automatic" in js and "ENABLE AUTOMATIC PROCESSING" in js
+    assert "production_adapters" not in js and "auth_client" not in js
 
 
 def test_valid_and_invalid_guided_transitions():
@@ -107,23 +206,25 @@ def test_phase_one_endpoints_are_local_only_and_production_family_is_absent(monk
 
 def test_phase_two_mocked_worker_completes_sequential_family_without_real_transport():
     from services import parent_child_guided_worker as worker
-    job = approved_job(); attached = set(); calls = []
+    job = approved_job(); allow_selected_guided_job(job); attached = set(); calls = []
     schema = {"properties": {"parentage_level": {}, "variation_theme": {}, "child_parent_sku_relationship": {}, "size": {}}, "required": []}
     def definition(*_args): return schema, {"marketplaceIds": ["M"]}
     def listing(_auth, _market, _vendor, sku):
         if sku == "GUIDED-PARENT":
             if "parent" not in attached: return {"status": 404}
             return {"status": 200, "api_sku": "GUIDED-PARENT", "product_type": "TYPE", "parent_verified": True, "theme_verified": True, "issues": []}
-        return {"status": 200, "api_sku": sku, "product_type": "TYPE", "current_parent": "GUIDED-PARENT" if sku in attached else None, "attached_to_parent": sku in attached, "issues": []}
+        asin = "B000000001" if sku == "CHILD-1" else "B000000002"
+        return {"status": 200, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "current_parent": "GUIDED-PARENT" if sku in attached else None, "attached_to_parent": sku in attached, "issues": []}
     def parent_put(_auth, _family, _body, _key): attached.add("parent"); calls.append("parent"); return {"http_status": 202, "request_id": "safe"}
     def child_patch(_auth, _family, sku, _body, _key): attached.add(sku); calls.append(sku); return {"http_status": 202, "request_id": "safe"}
-    api = {"get_definition": definition, "listing": listing, "catalog": lambda *_: ({"relationships": []}, {"http_status": 200, "request_id": "catalog-safe"}), "parent_put": parent_put, "child_patch": child_patch,
+    api = {"get_definition": definition, "listing": listing, "catalog": lambda _a,_m,asin: ({"asin": asin, "relationships": []}, {"http_status": 200, "request_id": "catalog-safe"}), "parent_put": parent_put, "child_patch": child_patch,
            "validate_parent": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []},
            "validate_child": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}}
     actions = [worker.process_next_safe_action(job["id"], object(), api)["action"] for _ in range(12)]
     final = guided.get_job(job["id"])
-    assert final["state"] == "COMPLETED", (actions, final["blocking_issue"], final["operations"])
-    assert calls == ["parent", "CHILD-1", "CHILD-2"]
+    assert final["state"] == "NEEDS_ATTENTION", (actions, final["blocking_issue"], final["operations"])
+    assert "authorization" in final["blocking_issue"]["message"].lower()
+    assert calls == ["parent"]
 
 
 def test_phase_two_unknown_is_get_only_and_cancel_is_prewrite_only():
@@ -152,7 +253,9 @@ def _persisted_accepted_parent_job(parent_sku="GUIDED-PARENT"):
     guided.transition(job["id"], "CREATING_PARENT")
     guided.update_operation(job["id"], "parent", "SUBMITTING")
     guided.update_operation(job["id"], "parent", "ACCEPTED", request_id="parent-put", http_status=200)
-    return guided.transition(job["id"], "WAITING_FOR_PARENT")
+    result = guided.transition(job["id"], "WAITING_FOR_PARENT")
+    allow_selected_guided_job(result)
+    return result
 
 
 def test_persisted_accepted_parent_get_uses_configured_auth_and_never_writes():
@@ -217,18 +320,251 @@ def _persisted_verified_parent_children_prepared_job():
     return guided.transition(job["id"], "NEEDS_ATTENTION", {"message": "'NoneType' object has no attribute 'get_lwa_access_token'"})
 
 
+def _persisted_child_authorization_job():
+    """A real migrated job/runtime at the child-write boundary; no live transport."""
+    from services import parent_child_guided_worker as worker
+    job = approved_job()
+    schema = {"properties": {"parentage_level": {}, "variation_theme": {}, "child_parent_sku_relationship": {}, "size": {}}, "required": []}
+    worker._local_validate(job, {"get_definition": lambda *_: (schema, {"source": "isolated"}), "build_preview": worker.build_preview}, object())
+    guided.transition(job["id"], "LOCAL_VALIDATING")
+    guided.transition(job["id"], "AMAZON_VALIDATING")
+    guided.transition(job["id"], "CREATING_PARENT")
+    guided.update_operation(job["id"], "parent", "SUBMITTING")
+    guided.update_operation(job["id"], "parent", "ACCEPTED", request_id="parent-put", http_status=200)
+    guided.update_operation(job["id"], "parent", "VERIFIED")
+    guided.transition(job["id"], "WAITING_FOR_PARENT")
+    guided.transition(job["id"], "VALIDATING_CHILDREN", {"parent_get": {"status": 200, "request_id": "parent-get", "api_sku": "GUIDED-PARENT", "api_asins": ["B0PARENT01"], "product_type": "TYPE"}})
+    result = guided.transition(job["id"], "ATTACHING_CHILDREN")
+    allow_selected_guided_job(result)
+    return result
+
+
+def _child_authorization_adapters(parents=None, listing_mutation=None, catalog_mutation=None):
+    """Exact sanitized GET fixtures, with write transports that prove preparation is GET-only."""
+    parents = parents or {}
+    calls = []
+    asins = {"CHILD-1": "B000000001", "CHILD-2": "B000000002"}
+    def listing(auth, _marketplace, _vendor, sku):
+        calls.append(("listing", auth, sku))
+        row = {"status": 200, "request_id": "listing-" + sku, "api_sku": sku,
+               "api_asins": [asins[sku]], "product_type": "TYPE", "attributes": {}, "issues": []}
+        if listing_mutation: listing_mutation(row, sku)
+        return row
+    def catalog(auth, _marketplace, asin):
+        calls.append(("catalog", auth, asin))
+        relation = {"relationships": [{"relationships": [{"parentAsins": parents.get(asin, [])}]}]}
+        value = {"asin": asin, **relation}
+        details = {"http_status": 200, "request_id": "catalog-" + asin}
+        if catalog_mutation: catalog_mutation(value, details, asin)
+        return value, details
+    return {"listing": listing, "catalog": catalog,
+            "parent_put": lambda *_: pytest.fail("Child authorization preparation must never PUT"),
+            "child_patch": lambda *_: pytest.fail("Child authorization preparation must never PATCH")}, calls
+
+
+@pytest.mark.parametrize("case", ["wrong_sku", "wrong_asin", "wrong_type", "different_parent", "multiple_parents", "malformed_catalog", "missing_metadata"])
+def test_persisted_child_authorization_preparation_fails_closed_for_identity_and_evidence(case):
+    from services import parent_child_guided_worker as worker
+    job = _persisted_child_authorization_job()
+    def list_mutation(row, _sku):
+        if case == "wrong_sku": row["api_sku"] = "OTHER"
+        if case == "wrong_asin": row["api_asins"] = ["B000000099"]
+        if case == "wrong_type": row["product_type"] = "OTHER"
+        if case == "missing_metadata": row.pop("request_id")
+    def catalog_mutation(value, details, asin):
+        if case == "different_parent": value["relationships"][0]["relationships"][0]["parentAsins"] = ["B0OTHER01"]
+        if case == "multiple_parents": value["relationships"][0]["relationships"][0]["parentAsins"] = ["B0OTHER01", "B0OTHER02"]
+        if case == "malformed_catalog": value["relationships"] = {"not": "a list"}
+        if case == "missing_metadata": details.pop("request_id")
+    api, calls = _child_authorization_adapters(listing_mutation=list_mutation, catalog_mutation=catalog_mutation)
+    with pytest.raises(ValueError, match="ambiguous|malformed|different parent|exact fresh GET eligibility"):
+        worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    assert calls
+    stored = guided.get_job(job["id"])
+    assert all(item["attempt_count"] == 0 and item["state"] == "PREPARED" for item in stored["operations"][1:])
+
+
+def test_persisted_child_authorization_preparation_is_get_only_and_reconciles_already_correct_child():
+    from services import parent_child_guided_worker as worker
+    job = _persisted_child_authorization_job()
+    # Listings is authoritative for an already-correct child; it gets reconciled, never authorized for PATCH.
+    def list_mutation(row, sku):
+        if sku == "CHILD-1": row["attributes"] = {"child_parent_sku_relationship": [{"parent_sku": "GUIDED-PARENT"}]}
+    api, calls = _child_authorization_adapters(parents={"B000000001": ["B0PARENT01"]}, listing_mutation=list_mutation)
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    assert [entry["vendor_sku"] for entry in prepared["plan"]] == ["CHILD-2"]
+    assert all(name in ("listing", "catalog") for name, *_ in calls)
+    stored = guided.get_job(job["id"])
+    assert stored["operations"][1]["state"] == "VERIFIED" and stored["operations"][1]["attempt_count"] == 0
+    assert stored["operations"][2]["state"] == "PREPARED" and stored["operations"][2]["attempt_count"] == 0
+
+
+def test_persisted_child_authorization_confirmation_binds_exact_hash_plan_expiry_lease_and_audit():
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters()
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    with pytest.raises(ValueError, match="not eligible"):
+        worker.confirm_child_write_authorization(job["id"], "wrong", prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    with pytest.raises(ValueError, match="Fresh unconfirmed"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], "wrong", "AUTHORIZE CHILDREN")
+    with pytest.raises(ValueError, match="Exact AUTHORIZE"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "authorize children")
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO pc_guided_worker_leases(job_id,owner_id,expires_at_utc,updated_at_utc) VALUES(?,?,?,?)", (job["id"], "other", "2999-01-01T00:00:00+00:00", "now")); conn.commit()
+    with pytest.raises(ValueError, match="unleased"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM pc_guided_worker_leases WHERE job_id=?", (job["id"],))
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET expires_at_utc='2000-01-01T00:00:00+00:00' WHERE job_id=?", (job["id"],)); conn.commit()
+    with pytest.raises(ValueError, match="Fresh unconfirmed"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    with get_db_connection() as conn:
+        conn.execute("UPDATE pc_guided_operations SET payload_hash='changed' WHERE job_id=? AND operation_key='child:B000000001'", (job["id"],)); conn.commit()
+    with pytest.raises(ValueError, match="ledger changed|plan has changed"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    # Restore the exact ledger value, then verify the durable sanitized confirmation audit.
+    original_hash = next(entry["operation_payload_hash"] for entry in prepared["plan"] if entry["operation_key"] == "child:B000000001")
+    with get_db_connection() as conn:
+        conn.execute("UPDATE pc_guided_operations SET payload_hash=? WHERE job_id=? AND operation_key='child:B000000001'", (original_hash, job["id"])); conn.commit()
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    with get_db_connection() as conn:
+        audit = conn.execute("SELECT action,evidence_json FROM pc_guided_child_write_authorization_events WHERE authorization_id=(SELECT id FROM pc_guided_child_write_authorizations WHERE job_id=?) ORDER BY id", (job["id"],)).fetchall()
+    assert audit[-1]["action"] == "EXACT_PLAN_CONFIRMED"
+    assert any(row["action"] == "GET_PREPARED" for row in audit)
+    assert "local_user" not in audit[-1]["evidence_json"]
+
+
+def test_persisted_child_authorization_consumption_is_atomic_restart_safe_and_renews_only_after_verified_sibling():
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters(); prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    first = guided.get_job(job["id"])["operations"][1]
+    body = next(item["body"] for item in worker._runtime(job["id"])["snapshot"]["payload"]["children"] if item["asin"] == first["child_asin"])
+    changed_body = json.loads(json.dumps(body)); changed_body["patches"][-1]["value"] = [{"value": "wrong"}]
+    with pytest.raises(ValueError, match="changed or already consumed"):
+        worker._child_write_authorized(guided.get_job(job["id"]), first, changed_body)
+    consumed = []
+    def consume():
+        try:
+            worker._child_write_authorized(guided.get_job(job["id"]), first, body)
+            consumed.append("consumed")
+        except ValueError:
+            consumed.append("rejected")
+    threads = [threading.Thread(target=consume), threading.Thread(target=consume)]
+    [thread.start() for thread in threads]; [thread.join() for thread in threads]
+    assert sorted(consumed) == ["consumed", "rejected"]
+    with pytest.raises(ValueError, match="changed or already consumed"):
+        worker._child_write_authorized(guided.get_job(job["id"]), first, body)
+    # Reloading the real module cannot turn a durable consumed authorization back into a usable one.
+    import importlib
+    reloaded = importlib.reload(worker)
+    with pytest.raises(ValueError, match="changed or already consumed"):
+        reloaded._child_write_authorized(guided.get_job(job["id"]), first, body)
+    guided.update_operation(job["id"], first["operation_key"], "SUBMITTING")
+    guided.update_operation(job["id"], first["operation_key"], "ACCEPTED", request_id="one", http_status=202)
+    guided.update_operation(job["id"], first["operation_key"], "VERIFIED")
+    with get_db_connection() as conn:
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET expires_at_utc='2000-01-01T00:00:00+00:00' WHERE job_id=?", (job["id"],)); conn.commit()
+    renewed = reloaded.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    assert [entry["operation_key"] for entry in renewed["plan"]] == ["child:B000000002"]
+    reloaded.confirm_child_write_authorization(job["id"], job["family_hash"], renewed["plan_hash"], "AUTHORIZE CHILDREN")
+    with get_db_connection() as conn:
+        consumed = json.loads(conn.execute("SELECT consumed_operations_json FROM pc_guided_child_write_authorizations WHERE job_id=?", (job["id"],)).fetchone()[0])
+    assert consumed == ["child:B000000001"]
+
+
+def test_persisted_child_authorization_rejects_malformed_evidence_and_double_confirmation():
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters(); prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    with get_db_connection() as conn:
+        original = conn.execute("SELECT child_evidence_json FROM pc_guided_child_write_authorizations WHERE job_id=?", (job["id"],)).fetchone()[0]
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET child_evidence_json='not-json' WHERE job_id=?", (job["id"],)); conn.commit()
+    with pytest.raises(ValueError, match="malformed"):
+        worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    with get_db_connection() as conn:
+        conn.execute("UPDATE pc_guided_child_write_authorizations SET child_evidence_json=? WHERE job_id=?", (original, job["id"])); conn.commit()
+    results = []
+    def confirm():
+        try:
+            worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+            results.append("confirmed")
+        except ValueError:
+            results.append("rejected")
+    threads = [threading.Thread(target=confirm), threading.Thread(target=confirm)]
+    [thread.start() for thread in threads]; [thread.join() for thread in threads]
+    assert sorted(results) == ["confirmed", "rejected"]
+
+
+@pytest.mark.parametrize("http_status,outcome", [(202, "ACCEPTED"), (422, "REJECTED"), (500, "UNKNOWN")])
+def test_persisted_child_authorization_records_one_shot_patch_outcomes_without_retry(http_status, outcome):
+    from services import parent_child_guided_worker as worker
+    from services.db import get_db_connection
+    job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters(); auth = object()
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], auth, api)
+    worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    attempts = []
+    api["child_patch"] = lambda *_: (attempts.append(1) or {"http_status": http_status, "request_id": "patch-safe", "issues": []})
+    worker.process_next_safe_action(job["id"], auth, api)
+    stored = guided.get_job(job["id"]); first = stored["operations"][1]
+    assert attempts == [1] and first["attempt_count"] == 1 and first["state"] == outcome
+    with get_db_connection() as conn:
+        actions = [row[0] for row in conn.execute("SELECT action FROM pc_guided_child_write_authorization_events WHERE operation_key=?", (first["operation_key"],))]
+    assert "CONSUMED_BEFORE_PATCH" in actions and "PATCH_" + outcome in actions
+    worker.process_next_safe_action(job["id"], auth, api)
+    assert attempts == [1]
+
+
+def test_persisted_child_authorization_scheduler_fails_closed_and_selected_preparation_leaves_unrelated_job_untouched():
+    from services import parent_child_guided_worker as worker
+    job = _persisted_child_authorization_job(); api, _ = _child_authorization_adapters(); writes = []
+    api["child_patch"] = lambda *_: writes.append("patch")
+    # Scheduler sees a real eligible job, but cannot cross the explicit authorization boundary.
+    worker.scheduler_tick(object(), api, "isolated-owner")
+    assert writes == []
+    assert guided.get_job(job["id"])["operations"][1]["attempt_count"] == 0
+    value = draft()
+    other_saved = guided.save_draft(family(parent_sku="UNRELATED-AUTH-PARENT", vendor_context_id=value["family"]["vendor_context_id"], children=[{"asin": "B000000031", "vendor_sku": "UNRELATED-1", "variation_value": "7 INCH"}, {"asin": "B000000032", "vendor_sku": "UNRELATED-2", "variation_value": "9 INCH"}]), value["id"])
+    other = guided.approve(other_saved["id"], other_saved["family_hash"])
+    worker.prepare_child_write_authorization(job["id"], job["family_hash"], object(), api)
+    assert guided.get_job(other["id"])["state"] == "APPROVED"
+
+
+def test_child_authorization_migration_applies_on_fresh_and_prior_migration_databases():
+    """The isolation fixture starts fresh; replaying 016 models a database at migration 015."""
+    from services.db import get_db_connection
+    from services.parent_child_migrations import ensure_parent_child_schema
+    with get_db_connection() as conn:
+        assert conn.execute("SELECT 1 FROM pc_schema_migrations WHERE version='016_guided_child_write_authorizations'").fetchone()
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pc_guided_child_write_authorizations'").fetchone()
+        conn.execute("DROP TABLE pc_guided_child_write_authorization_events")
+        conn.execute("DROP TABLE pc_guided_child_write_authorizations")
+        conn.execute("DELETE FROM pc_schema_migrations WHERE version='016_guided_child_write_authorizations'")
+        conn.commit()
+    ensure_parent_child_schema()
+    with get_db_connection() as conn:
+        assert conn.execute("SELECT 1 FROM pc_schema_migrations WHERE version='016_guided_child_write_authorizations'").fetchone()
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(pc_guided_child_write_authorizations)")}
+    assert {"family_hash", "plan_hash", "child_evidence_json", "expires_at_utc", "confirmed_at_utc", "consumed_operations_json"} <= columns
+
+
 def test_guarded_persisted_child_reconciliation_uses_auth_and_is_get_only():
     from services import parent_child_guided_worker as worker
     job = _persisted_verified_parent_children_prepared_job(); configured_auth = object(); calls = []
     def listing(auth, _marketplace, _vendor, sku):
         calls.append(("listing", auth, sku))
         relationship = [{"parent_sku": "GUIDED-PARENT"}] if sku == "CHILD-1" else []
-        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "product_type": "TYPE", "attributes": {"child_parent_sku_relationship": relationship}, "issues": []}
+        asin = "B000000001" if sku == "CHILD-1" else "B000000002"
+        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "attributes": {"child_parent_sku_relationship": relationship}, "issues": []}
     def catalog(auth, _marketplace, asin):
         calls.append(("catalog", auth, asin))
-        return {"relationships": [{"relationships": [{"parentAsins": ["B0PARENT01"]}]}]}, {"http_status": 200, "request_id": "catalog-" + asin}
+        return {"asin": asin, "relationships": [{"relationships": [{"parentAsins": ["B0PARENT01"]}]}]}, {"http_status": 200, "request_id": "catalog-" + asin}
     result = worker.reconcile_prepared_children_get(job["id"], job["family_hash"], configured_auth, {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must not run"), "child_patch": lambda *_: pytest.fail("PATCH must not run")})
-    assert [item[0] for item in calls] == ["listing", "listing", "catalog"]
+    assert [item[0] for item in calls] == ["listing", "catalog", "listing", "catalog"]
     assert all(item[1] is configured_auth for item in calls)
     assert all(child["attached"] for child in result["children"])
     stored = guided.get_job(job["id"])
@@ -263,25 +599,35 @@ def test_persisted_guided_end_to_end_rehearsal_and_unknown_acknowledgement():
     """Scheduler-free, mocked transport rehearsal of the exact durable worker path."""
     from services import parent_child_guided_worker as worker
     import importlib
-    job = approved_job(); auth = object(); present = set(); writes = []
+    job = approved_job(); allow_selected_guided_job(job); auth = object(); present = set(); writes = []
     schema = {"properties": {"parentage_level": {}, "variation_theme": {}, "child_parent_sku_relationship": {}, "size": {}}, "required": []}
     def listing(actual_auth, _m, _v, sku):
         assert actual_auth is auth
         if sku == "GUIDED-PARENT":
-            return {"status": 200 if "parent" in present else 404, "api_sku": sku if "parent" in present else None, "product_type": "TYPE", "parent_verified": "parent" in present, "theme_verified": "parent" in present, "issues": []}
-        return {"status": 200, "api_sku": sku, "product_type": "TYPE", "current_parent": "GUIDED-PARENT" if sku in present else None, "attributes": {}, "issues": []}
+            return {"status": 200 if "parent" in present else 404, "api_sku": sku if "parent" in present else None, "api_asins": ["B0PARENT01"] if "parent" in present else [], "product_type": "TYPE", "parent_verified": "parent" in present, "theme_verified": "parent" in present, "issues": []}
+        asin = "B000000001" if sku == "CHILD-1" else "B000000002"
+        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "attributes": {}, "issues": []}
     def parent_put(_a, _f, _b, _k): present.add("parent"); writes.append("parent"); return {"http_status": 200, "request_id": "put-parent", "issues": []}
     def child_patch(_a, _f, sku, _b, _k): present.add(sku); writes.append(sku); return {"http_status": 202, "request_id": "patch-" + sku, "issues": []}
-    api = {"get_definition": lambda *_: (schema, {}), "listing": listing, "catalog": lambda *_: ({"relationships": []}, {"http_status": 200, "request_id": "catalog"}), "validate_parent": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}, "validate_child": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}, "parent_put": parent_put, "child_patch": child_patch}
+    def catalog(_auth, _market, asin):
+        sku = "CHILD-1" if asin == "B000000001" else "CHILD-2"
+        parents = ["B0PARENT01"] if sku in present else []
+        return {"asin": asin, "relationships": [{"relationships": [{"parentAsins": parents}]}]}, {"http_status": 200, "request_id": "catalog-" + asin}
+    api = {"get_definition": lambda *_: (schema, {}), "listing": listing, "catalog": catalog, "validate_parent": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}, "validate_child": lambda *_: {"classification": "PASSED", "http_status": 200, "issues": []}, "parent_put": parent_put, "child_patch": child_patch}
     for _ in range(3): worker.process_next_safe_action(job["id"], auth, api)
     worker = importlib.reload(worker)  # persisted state, not in-memory recovery
-    for _ in range(8): worker.process_next_safe_action(job["id"], auth, api)
+    for _ in range(2): worker.process_next_safe_action(job["id"], auth, api)
+    prepared = worker.prepare_child_write_authorization(job["id"], job["family_hash"], auth, api)
+    assert writes == ["parent"]
+    worker.confirm_child_write_authorization(job["id"], job["family_hash"], prepared["plan_hash"], "AUTHORIZE CHILDREN")
+    for _ in range(6): worker.process_next_safe_action(job["id"], auth, api)
     stored = guided.get_job(job["id"])
     assert stored["state"] == "COMPLETED" and writes == ["parent", "CHILD-1", "CHILD-2"]
     assert [item["attempt_count"] for item in stored["operations"]] == [1, 1, 1]
     value = draft()
     saved = guided.save_draft(family(parent_sku="UNKNOWN-PARENT", vendor_context_id=value["family"]["vendor_context_id"], children=[{"asin": "B000000021", "vendor_sku": "UNKNOWN-1", "variation_value": "7 INCH"}, {"asin": "B000000022", "vendor_sku": "UNKNOWN-2", "variation_value": "9 INCH"}]), value["id"])
     unknown = guided.approve(saved["id"], saved["family_hash"])
+    allow_selected_guided_job(unknown)
     unknown_api = dict(api, listing=lambda actual_auth, _m, _v, sku: {"status": 404, "api_sku": None, "issues": []} if sku == "UNKNOWN-PARENT" else listing(actual_auth, _m, _v, sku), parent_put=lambda *_: {"http_status": 500, "request_id": "unknown", "issues": []})
     for _ in range(3): worker.process_next_safe_action(unknown["id"], auth, unknown_api)
     blocked = guided.get_job(unknown["id"])
@@ -294,7 +640,10 @@ def test_scheduler_free_route_loads_guarded_child_reconciliation_without_unrelat
     from routes import parent_child_routes as routes
     from services import parent_child_guided_worker as worker
     job = _persisted_verified_parent_children_prepared_job(); value = draft(); saved = guided.save_draft(family(parent_sku="UNRELATED-PARENT", vendor_context_id=value["family"]["vendor_context_id"], children=[{"asin": "B000000031", "vendor_sku": "UNRELATED-1", "variation_value": "7 INCH"}, {"asin": "B000000032", "vendor_sku": "UNRELATED-2", "variation_value": "9 INCH"}]), value["id"]); unrelated = guided.approve(saved["id"], saved["family_hash"]); auth = object()
-    monkeypatch.setattr(worker, "production_adapters", lambda: {"listing": lambda _a, _m, _v, sku: {"status": 200, "api_sku": sku, "product_type": "TYPE", "current_parent": "GUIDED-PARENT", "attributes": {}, "issues": []}, "catalog": lambda *_: ({"relationships": []}, {"http_status": 200})})
+    def listing(_a, _m, _v, sku):
+        asin = "B000000001" if sku == "CHILD-1" else "B000000002"
+        return {"status": 200, "request_id": "listing-" + sku, "api_sku": sku, "api_asins": [asin], "product_type": "TYPE", "attributes": {}, "issues": []}
+    monkeypatch.setattr(worker, "production_adapters", lambda: {"listing": listing, "catalog": lambda _a,_m,asin: ({"asin": asin, "relationships": [{"relationships": [{"parentAsins": []}]}]}, {"http_status": 200, "request_id": "catalog-" + asin})})
     app = FastAPI(); routes.register_parent_child_routes(app, auth)
     assert not hasattr(app.state, "guided_scheduler")
     response = TestClient(app).post(f"/api/parent-child/guided/jobs/{job['id']}/reconcile-prepared-children", json={"family_hash": job["family_hash"]})
@@ -358,7 +707,7 @@ def test_saved_jobs_inventory_and_exact_job_navigation_are_local_only(monkeypatc
 def test_phase_three_worker_lease_and_guided_ui_contract():
     from services import parent_child_guided_worker as worker
     from pathlib import Path
-    job = approved_job()
+    job = approved_job(); allow_selected_guided_job(job)
     assert worker.claim_job(job["id"], "one") is True
     assert worker.claim_job(job["id"], "two") is False
     worker.release_job(job["id"], "one")
