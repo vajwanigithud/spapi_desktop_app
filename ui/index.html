@@ -14,6 +14,7 @@
   <link rel="icon" type="image/png" sizes="512x512" href="/static/icons/spapi-app-512.png" />
   <link rel="apple-touch-icon" href="/static/icons/spapi-app-256.png" />
   <link rel="manifest" href="/static/manifest.json" />
+  <link rel="stylesheet" href="/ui/css/parent_child_manager.css?v=1" />
   <meta name="theme-color" content="#f59e0b" />
   <meta name="application-name" content="SP-API Desktop App" />
   <style>
@@ -792,6 +793,7 @@
         <button id="tab-btn-vrt-audit" class="tab-btn" data-tab="vrt-audit" draggable="true" onclick="showTab('vrt-audit')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Vendor Real Time Audit</span></button>
         <button class="tab-btn" data-tab="inventory" draggable="true" onclick="showTab('inventory')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">Inventory</span></button>
         <button class="tab-btn" data-tab="df-payments" draggable="true" onclick="showTab('df-payments')"><span class="tab-drag-handle">⋮⋮</span><span class="tab-label">DF Payments</span></button>
+        <button class="tab-btn" data-tab="parent-child" draggable="true" onclick="showTab('parent-child')"><span class="tab-drag-handle">&#8942;&#8942;</span><span class="tab-label">Parent–Child Manager</span></button>
         <button class="tab-btn" data-tab="activity-logs" draggable="true" onclick="showTab('activity-logs')"><span class="tab-drag-handle">&#8942;&#8942;</span><span class="tab-label">Activity Logs</span></button>
       </div>
       <button class="tab-reset-btn" id="tab-reset-order-btn" type="button">Reset tab order</button>
@@ -957,6 +959,33 @@
       </div>
     </div>
   </div>
+    <div class="panel pc-manager" id="parent-child-tab" style="display:none; margin-top:14px;">
+      <section id="pc-guided" class="pc-guided" aria-labelledby="pc-guided-title">
+        <div class="pc-heading"><div><h2 id="pc-guided-title">Create a product family</h2><p>Guided Mode <span id="pcg-draft-status" class="pc-meta"></span></p></div><div><button class="btn btn-outline-secondary" type="button" id="pcg-drafts">Saved drafts</button> <button class="btn btn-outline-secondary" type="button" id="pcg-jobs">Saved jobs</button></div></div>
+        <div id="pcg-error" class="pc-inline-error" hidden role="alert"></div>
+        <div class="pc-guided-grid"><section class="pc-guided-card"><h3>1. Parent</h3><label>Parent SKU<input id="pcg-parent-sku" /></label><label>Parent title<input id="pcg-parent-title" /></label></section><section class="pc-guided-card"><h3>2. Children</h3><label>Paste child ASINs<textarea id="pcg-asins" rows="5" placeholder="One ASIN per line, comma, or spreadsheet paste"></textarea></label><button class="btn" id="pcg-find" type="button">Find Products</button><div id="pcg-counts" class="pc-counts"></div></section></div>
+        <section class="pc-guided-card"><h3>3. Variation</h3><label>Variation theme<select id="pcg-theme" disabled><option>Find products first</option></select></label><div id="pcg-children" class="pc-cards"></div></section>
+        <section class="pc-guided-card"><h3>4. Required parent information</h3><details><summary>Automatically completed</summary><div id="pcg-automatic">Verified unanimous values appear here.</div></details><div id="pcg-required"></div></section>
+        <section class="pc-guided-card"><h3>5. Review</h3><div id="pcg-review">Complete the family details to review.</div><p class="pc-guided-notice">No prices, costs, inventory, images, identifiers or unrelated listing attributes will be changed.</p><button class="btn" id="pcg-review-button" type="button">Review family</button></section>
+        <section id="pcg-progress" class="pc-guided-card" hidden aria-live="polite"></section>
+      </section>
+      <details class="pc-advanced"><summary>Advanced Mode — troubleshooting and technical manager</summary><div class="pc-advanced-inner">
+      <div class="pc-heading"><div><h2>Parent–Child Manager</h2><p>Read-only verification workspace. Amazon writes are disabled.</p></div><div><button class="btn btn-outline-secondary" type="button" onclick="PC.drafts()">Saved drafts</button> <span class="pc-readonly">READ ONLY</span></div></div>
+      <div id="pc-saved-drafts" class="pc-preview-card" hidden></div>
+      <div class="pc-steps"><button data-pc-step="1" class="active">1 <span>Parent</span></button><button data-pc-step="2">2 <span>Add Products</span></button><button data-pc-step="3">3 <span>Review</span></button><button data-pc-step="4">4 <span>Submit & Track</span></button></div>
+      <section class="pc-step" data-step="1">
+        <div id="pc-setup-error" class="pc-inline-error" hidden></div>
+        <div id="pc-setup-card" class="pc-setup-card" hidden><h3>Complete one-time setup</h3><p>1. Marketplace: <span id="pc-setup-marketplace">Loading…</span><br>2. Vendor Code: Not configured<br>3. Verification: Required</p><button class="btn" id="pc-setup-add">Add and Verify Vendor Code</button><button class="btn btn-outline-secondary" id="pc-open-credentials">Open Credentials</button></div>
+        <div id="pc-parent-form" hidden><div class="pc-form-grid"><label>Marketplace<select id="pc-marketplace"></select></label><label>Verified vendor code<div class="pc-select-action"><select id="pc-vendor"></select><button class="btn btn-outline-secondary" id="pc-add-vendor" type="button">Add Vendor Code</button></div><div class="pc-context-actions"><button id="pc-reverify-vendor" type="button">Re-verify</button><button id="pc-edit-vendor" type="button">Edit label</button><button id="pc-disable-vendor" type="button">Disable context</button></div></label><label>Parent mode<select id="pc-parent-mode"><option value="new">Create New Parent</option><option value="existing">Existing Parent</option></select></label><label>Parent SKU<input id="pc-parent-sku" /></label><label class="pc-wide">Parent title<input id="pc-parent-title" /></label><div class="pc-detected-type"><strong>Product type</strong><span id="pc-product-type-status">Product type will be detected from child products.</span><b id="pc-product-type-value"></b></div><label>Variation theme<select id="pc-theme" disabled><option>Resolve child products first</option></select></label></div><details><summary>Advanced Details</summary><label>Manual Product Type override <input id="pc-product-type" placeholder="Amazon internal product type" /></label><button class="btn" id="pc-discover" type="button">Discover product type schema</button><pre id="pc-schema"></pre></details><div class="pc-actions"><button class="btn" onclick="PC.go(2)">Continue to products</button></div></div>
+      </section>
+      <section class="pc-step" data-step="2" hidden><label>Paste ASINs (one per line, comma, space, or Excel paste)<textarea id="pc-asins" rows="8" placeholder="B000000000"></textarea></label><div id="pc-counts" class="pc-counts"></div><button class="btn pc-find" id="pc-find">Find Products</button><div id="pc-schema-status" class="pc-schema-status" aria-live="polite"></div><label class="pc-theme-control">Variation Theme<select id="pc-theme-step2" disabled><option>Resolve child products first</option></select></label><div id="pc-detection-summary" class="pc-detection-summary" aria-live="polite"></div><div id="pc-family-warning"></div><div id="pc-products" class="pc-cards"></div><div class="pc-actions"><button class="btn btn-outline-secondary" onclick="PC.go(1)">Back</button><button class="btn" id="pc-review-button" onclick="PC.go(3)" disabled>Review family</button><span id="pc-review-reason" class="pc-meta">Resolve eligible products first.</span></div></section>
+      <section class="pc-step" data-step="3" hidden><div id="pc-summary" class="pc-summary"></div><div id="pc-family" class="pc-family"></div><div id="pc-parent-required" class="pc-parent-required"></div><div id="pc-payload-preview" class="pc-payload-preview"></div><div class="pc-actions"><button class="btn btn-outline-secondary" onclick="PC.go(2)">Back</button><button class="btn" id="pc-preview-payload" onclick="PC.previewPayload()">Preview Amazon payload</button><span class="pc-readonly-notice" aria-disabled="true">Read-only: Amazon submission is disabled.</span><button class="btn" onclick="PC.save()">Save draft</button><button class="btn" onclick="PC.go(4)">View tracker</button></div></section>
+      <section class="pc-step" data-step="4" hidden><h3>Submission tracker</h3><p class="muted-text">Accepted for Processing is never treated as completed. Relationships may take 24–48 hours; monitoring can continue up to 72 hours.</p><label>Filter <select id="pc-job-filter"><option value="">All</option><option>Active</option><option>Completed</option><option>Partial</option><option>Failed</option></select></label><button class="btn btn-outline-secondary" onclick="PC.refreshJobs()">Refresh status</button><div id="pc-jobs"></div><details><summary>Advanced Details</summary><p>Only GET-only verification evidence will appear here for legitimate future submissions.</p></details></section>
+      </div></details>
+      <div class="pc-guided-modal" id="pcg-confirm-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="pcg-confirm-title"><div class="pc-vendor-dialog"><h3 id="pcg-confirm-title">Confirm and create family</h3><div id="pcg-confirm-summary"></div><label class="pcg-check"><input id="pcg-confirm-check" type="checkbox" /> I confirm immutable family hash <code id="pcg-confirm-hash"></code>.</label><div class="pc-actions"><button class="btn" id="pcg-create" type="button" disabled>Create family</button><button class="btn btn-outline-secondary" id="pcg-close-modal" type="button">Back</button></div></div></div>
+      <div class="pc-image-preview-modal" id="pc-image-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Product image preview"><button id="pc-image-modal-close" type="button" aria-label="Close image preview">Close</button><img id="pc-image-large" alt="" /></div>
+      <div class="pc-vendor-modal" id="pc-vendor-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Vendor code setup"><div class="pc-vendor-dialog"><h3>Add Vendor Code</h3><label>Marketplace<select id="pc-vendor-marketplace"></select></label><label>Vendor code<input id="pc-vendor-code" autocomplete="off" /></label><label>Friendly label <small>(optional)</small><input id="pc-vendor-label" autocomplete="off" placeholder="Main UAE Vendor" /></label><div id="pc-vendor-verify-result" class="pc-verify-result"></div><div class="pc-actions"><button class="btn" id="pc-vendor-verify" type="button">Verify Access</button><button class="btn btn-outline-secondary" id="pc-vendor-cancel" type="button">Cancel</button></div></div></div>
+    </div>
     <div class="panel" id="df-payments-tab" style="display:none; margin-top:14px;">
       <h2>DF Payments</h2>
       <div class="dfp-controls">
@@ -4093,16 +4122,100 @@
       updatePicklistButtonState();
     }
 
-    function writePrintWindowLoading(printWindow) {
-      printWindow.document.open();
-      printWindow.document.write(`
+    function createHiddenPrintFrame() {
+      const printFrame = document.createElement("iframe");
+      printFrame.setAttribute("aria-hidden", "true");
+      printFrame.style.cssText = "position:fixed;width:0;height:0;border:0;visibility:hidden;pointer-events:none;";
+      document.body.appendChild(printFrame);
+      writePrintFrameLoading(printFrame);
+      return printFrame;
+    }
+
+    function writePrintFrameLoading(printFrame) {
+      const printDocument = printFrame?.contentDocument;
+      if (!printDocument) return;
+      printDocument.open();
+      printDocument.write(`
         <!DOCTYPE html>
         <html><head><title>Pick List</title></head>
         <body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#111827;">
           <div style="font-weight:700;">Preparing pick list...</div>
         </body></html>
       `);
-      printWindow.document.close();
+      printDocument.close();
+    }
+
+    function writePrintFrameError(printFrame, message) {
+      const printDocument = printFrame?.contentDocument;
+      if (!printDocument) return;
+      printDocument.open();
+      printDocument.write(`
+        <!DOCTYPE html>
+        <html><head><title>Pick List Print Error</title></head>
+        <body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#b91c1c;">
+          <div style="font-weight:700;">Failed to prepare pick list print</div>
+          <p>${picklistEscapeHtml(message)}</p>
+        </body></html>
+      `);
+      printDocument.close();
+    }
+
+    function removePrintFrame(printFrame) {
+      if (printFrame?.isConnected) printFrame.remove();
+    }
+
+    function waitForPrintImages(printFrame) {
+      const printDocument = printFrame?.contentDocument;
+      const images = Array.from(printDocument?.images || []);
+      const waits = images.map((img) => new Promise((resolve) => {
+        if (img.complete) {
+          resolve();
+          return;
+        }
+        const done = () => resolve();
+        img.addEventListener("load", done, { once: true });
+        img.addEventListener("error", done, { once: true });
+      }));
+      return Promise.race([
+        Promise.all(waits),
+        new Promise((resolve) => setTimeout(resolve, 8000)),
+      ]);
+    }
+
+    function printHtmlInHiddenFrame(html, printFrame) {
+      const printDocument = printFrame?.contentDocument;
+      const printWindow = printFrame?.contentWindow;
+      if (!printDocument || !printWindow) return false;
+      try {
+        printDocument.open();
+        printDocument.write(html);
+        printDocument.close();
+      } catch (err) {
+        console.error("Failed to write picklist print frame", err);
+        writePrintFrameError(printFrame, err?.message || "Unable to prepare the print document. Please try again.");
+        alert("Unable to prepare the Pick List print document. Please try again.");
+        setTimeout(() => removePrintFrame(printFrame), 30000);
+        return false;
+      }
+
+      const cleanup = () => removePrintFrame(printFrame);
+      printWindow.addEventListener("afterprint", cleanup, { once: true });
+      waitForPrintImages(printFrame).then(() => {
+        setTimeout(() => {
+          if (!printFrame.isConnected) return;
+          try {
+            printWindow.focus();
+            printWindow.print();
+            setTimeout(cleanup, 30000);
+          } catch (err) {
+            console.error("Failed to open picklist print dialog", err);
+            writePrintFrameError(printFrame, err?.message || "Unable to open the print dialog. Please try again.");
+            alert("Unable to open the Pick List print dialog. Please try again.");
+            setTimeout(cleanup, 30000);
+          }
+        }, 150);
+      });
+      return true;
     }
 
     function buildPickListHtml(data, poNumbers) {
@@ -4194,50 +4307,13 @@
               </tbody>
             </table>
           </main>
-          <script>
-            function waitForImagesThenPrint() {
-              const images = Array.from(document.images || []);
-              const waits = images.map((img) => new Promise((resolve) => {
-                if (img.complete) {
-                  resolve();
-                  return;
-                }
-                const done = () => resolve();
-                img.addEventListener("load", done, { once: true });
-                img.addEventListener("error", done, { once: true });
-              }));
-              Promise.race([
-                Promise.all(waits),
-                new Promise((resolve) => setTimeout(resolve, 8000))
-              ]).then(() => {
-                setTimeout(() => {
-                  window.focus();
-                  window.print();
-                }, 150);
-              });
-            }
-            window.addEventListener("load", waitForImagesThenPrint);
-          <\/script>
         </body>
         </html>
       `;
     }
 
-    function openPickListPrintWindow(data, poNumbers, printWindow) {
-      if (!printWindow || printWindow.closed) {
-        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
-        return false;
-      }
-      try {
-        printWindow.document.open();
-        printWindow.document.write(buildPickListHtml(data, poNumbers));
-        printWindow.document.close();
-      } catch (err) {
-        console.error("Failed to write picklist print window", err);
-        alert("Unable to prepare the print window. Please try again.");
-        return false;
-      }
-      return true;
+    function openPickListPrintWindow(data, poNumbers, printFrame) {
+      return printHtmlInHiddenFrame(buildPickListHtml(data, poNumbers), printFrame);
     }
 
     async function printSelectedPicklistA4(button) {
@@ -4245,26 +4321,23 @@
         alert("Please select at least one PO to print a pick list.");
         return;
       }
-      const printWindow = window.open("", "_blank");
-      if (!printWindow) {
-        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
-        return;
-      }
-      writePrintWindowLoading(printWindow);
+      // Create the frame before the first await so native Edge/PWA print has a live document.
+      const printFrame = createHiddenPrintFrame();
       const poNumbers = [...selectedPoNumbers];
       setPicklistPrintLoading(button, true);
       try {
         const data = await fetchPicklistPreviewData(poNumbers);
         currentPicklistPreviewData = data;
         currentPicklistPreviewPoNumbers = poNumbers;
-        if (!openPickListPrintWindow(data, poNumbers, printWindow)) {
+        if (!openPickListPrintWindow(data, poNumbers, printFrame)) {
           return;
         }
       } catch (err) {
         console.error("Failed to prepare picklist print", err);
         const message = err?.message || String(err);
-        printWindow.document.body.innerHTML = `<p style="font-family:Segoe UI,Arial,sans-serif;color:#b91c1c;">Failed to prepare pick list print: ${picklistEscapeHtml(message)}</p>`;
-        alert(`Failed to prepare picklist print: ${message}`);
+        writePrintFrameError(printFrame, message);
+        alert(`Failed to prepare pick list print: ${message}`);
+        setTimeout(() => removePrintFrame(printFrame), 30000);
       } finally {
         setPicklistPrintLoading(button, false);
       }
@@ -4283,15 +4356,10 @@
         printSelectedPicklistA4(button);
         return;
       }
-      const printWindow = window.open("", "_blank");
-      if (!printWindow) {
-        alert("Unable to open print window. Please allow pop-ups for this app and try again.");
-        return;
-      }
+      const printFrame = createHiddenPrintFrame();
       setPicklistPrintLoading(button, true);
       try {
-        writePrintWindowLoading(printWindow);
-        if (!openPickListPrintWindow(data, poNumbers, printWindow)) {
+        if (!openPickListPrintWindow(data, poNumbers, printFrame)) {
           return;
         }
       } finally {
@@ -6389,6 +6457,7 @@
       "vrt-audit",
       "inventory",
       "df-payments",
+      "parent-child",
     ];
     const TAB_ORDER_STORAGE_KEY = "spapi_desktop_tab_order_v1";
     const ACTIVITY_LOG_STORAGE_KEY = "spapi_desktop_activity_logs_v1";
@@ -6685,6 +6754,7 @@
         { id: "tab-vrt-audit", tab: "vrt-audit" },
         { id: "inventory-tab", tab: "inventory" },
         { id: "df-payments-tab", tab: "df-payments" },
+        { id: "parent-child-tab", tab: "parent-child" },
       ];
       panels.forEach(({ id, tab }) => {
         const panelEl = document.getElementById(id);
@@ -6724,6 +6794,7 @@
           loadDfPaymentsState();
         }
       }
+      if (tabName === "parent-child" && window.PC) window.PC.init();
       if (tabName === "pos") {
         refreshVendorPoStatus();
       }
@@ -6790,6 +6861,8 @@
     </div>
   </div>
   <script src="/ui/js/df_payments.js"></script>
+  <script src="/ui/js/parent_child_manager.js?v=1"></script>
+  <script src="/ui/js/parent_child_guided_mode.js?v=1"></script>
   <script src="/ui/js/workers_status.js?v=3"></script>
   <div class="backdrop" id="credentials-modal" style="display:none;">
     <div class="modal" style="max-width:980px;">

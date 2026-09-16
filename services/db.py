@@ -74,6 +74,25 @@ def get_db_connection():
                 logger.warning(f"[DB] Error closing connection: {e}")
 
 
+@contextmanager
+def get_readonly_db_connection():
+    """Open the catalog database without any operation that can change it.
+
+    This intentionally does not share the normal connection setup: enabling WAL
+    is a write-affecting pragma, and is therefore inappropriate for status GETs.
+    SQLite's URI mode also makes a missing database fail rather than creating it.
+    """
+    conn = None
+    try:
+        target = Path(CATALOG_DB_PATH).resolve().as_posix()
+        conn = sqlite3.connect(f"file:{target}?mode=ro", uri=True, timeout=_db_timeout)
+        conn.row_factory = sqlite3.Row
+        yield conn
+    finally:
+        if conn:
+            conn.close()
+
+
 def execute_write(sql: str, params: tuple = (), commit: bool = True):
     """
     Serialize all write operations to prevent SQLITE_BUSY errors.

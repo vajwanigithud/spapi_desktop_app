@@ -11,6 +11,7 @@ import ctypes
 import pystray
 from pystray import MenuItem as Item
 from PIL import Image, ImageDraw
+from services.desktop_single_instance import SingleInstanceGuard
 
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -232,14 +233,22 @@ def _release_lock():
 
 
 def main():
+    instance_guard = SingleInstanceGuard()
+    if not instance_guard.acquire():
+        return
     if not _acquire_single_instance_lock():
         # Already running -> exit silently
+        instance_guard.release()
         return
 
     atexit.register(_release_lock)
+    atexit.register(instance_guard.release)
 
     app = TrayApp()
-    app.run()
+    try:
+        app.run()
+    finally:
+        instance_guard.release()
 
 
 if __name__ == "__main__":

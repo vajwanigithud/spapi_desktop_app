@@ -111,6 +111,7 @@ from endpoint_presets import ENDPOINT_PRESETS
 from routes.activity_log_routes import register_activity_log_routes
 from routes.barcode_print_routes import register_barcode_print_routes
 from routes.credentials_routes import register_credentials_routes
+from routes.parent_child_routes import register_parent_child_routes
 from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
@@ -120,6 +121,7 @@ from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_route
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
 from routes.worker_status_routes import register_worker_status_routes
 from services import spapi_reports
+from services import parent_child_guided_worker as guided_worker
 from services.activity_log import add_activity
 from services.async_utils import run_single_arg
 from services.catalog_images import attach_image_urls
@@ -283,6 +285,29 @@ if not tester_logger.handlers:
     tester_logger.addHandler(tester_handler)
 
 app = FastAPI(title="SP-API Desktop App (Minimal)", version="1.0.0")
+_guided_worker_stop = threading.Event()
+_guided_worker_thread = None
+
+def guided_scheduler_enabled():
+    """Explicit opt-out for a controlled, GET-only backend instance."""
+    return os.getenv("GUIDED_SCHEDULER_DISABLED", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+def _guided_worker_loop():
+    """Bounded recovery loop; leases prevent concurrent desktop instances."""
+    owner = f"desktop-{uuid.uuid4()}"
+    while not _guided_worker_stop.wait(15):
+        try:
+            guided_worker.scheduler_tick(auth_client, guided_worker.production_adapters(), owner)
+        except Exception:
+            logger.exception("Guided Mode scheduler tick failed")
+
+def start_guided_worker_scheduler():
+    global _guided_worker_thread
+    if _guided_worker_thread and _guided_worker_thread.is_alive(): return
+    _guided_worker_stop.clear(); _guided_worker_thread = threading.Thread(target=_guided_worker_loop, name="guided-mode-worker", daemon=True); _guided_worker_thread.start()
+
+def stop_guided_worker_scheduler():
+    _guided_worker_stop.set()
 
 # Ensure Vendor PO tables exist as early as possible.
 try:
@@ -334,6 +359,10 @@ def startup_event():
         # Start realtime inventory auto-refresh loop (single-flight + cooldown inside)
         start_vendor_rt_inventory_auto_refresh()
         start_df_payments_incremental_scheduler()
+        if guided_scheduler_enabled():
+            start_guided_worker_scheduler()
+        else:
+            logger.warning("[Startup] Guided scheduler explicitly disabled for controlled backend")
         logger.info("[Startup] Background tasks initialized successfully")
         add_activity("BG", "Background workers initialized")
     except Exception as e:
@@ -345,6 +374,7 @@ def startup_event():
 def shutdown_event():
     """Signal background workers to stop."""
     try:
+        stop_guided_worker_scheduler()
         stop_df_payments_incremental_scheduler()
     except Exception as exc:
         logger.warning(f"[Shutdown] Failed to stop DF Payments scheduler cleanly: {exc}")
@@ -352,6 +382,11 @@ def shutdown_event():
         _stop_catalog_fetch_worker()
     except Exception as exc:
         logger.warning(f"[Shutdown] Failed to stop catalog fetch worker cleanly: {exc}")
+    try:
+        stop_vendor_rt_sales_auto_sync()
+        stop_vendor_rt_inventory_auto_refresh()
+    except Exception as exc:
+        logger.warning(f"[Shutdown] Failed to signal realtime workers cleanly: {exc}")
 
 
 # -------------------------------
@@ -1304,6 +1339,13 @@ def start_vendor_rt_sales_auto_sync():
     logger.info("[RTSalesAutoSync] Background thread started")
 
 
+def stop_vendor_rt_sales_auto_sync():
+    """Signal the daemon loop during application shutdown without changing its schedule."""
+    global _rt_sales_auto_sync_stop
+    _rt_sales_auto_sync_stop = True
+    logger.info("[RTSalesAutoSync] Stop requested")
+
+
 # ========================================
 # Vendor Real-Time Inventory Auto-Refresh
 # ========================================
@@ -1383,6 +1425,13 @@ def start_vendor_rt_inventory_auto_refresh():
     )
     _rt_inventory_auto_refresh_thread.start()
     logger.info("[RtInventoryAutoRefresh] Background thread started")
+
+
+def stop_vendor_rt_inventory_auto_refresh():
+    """Signal the daemon loop during application shutdown without changing its schedule."""
+    global _rt_inventory_auto_refresh_stop
+    _rt_inventory_auto_refresh_stop = True
+    logger.info("[RtInventoryAutoRefresh] Stop requested")
 
 
 
@@ -1774,6 +1823,7 @@ def credential_vendor_po_access_test() -> List[Dict[str, Any]]:
 
 
 register_credentials_routes(app, reload_runtime_credentials, credential_vendor_po_access_test)
+register_parent_child_routes(app, auth_client)
 
 
 def _parse_qty(val: Any) -> int:

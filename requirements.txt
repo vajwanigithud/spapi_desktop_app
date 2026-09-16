@@ -2,8 +2,10 @@
 uvicorn
 python-dotenv
 requests
+jsonschema>=4.23,<5
 boto3
 python-barcode
 reportlab==4.4.7
 pillow==12.1.0
 openpyxl
+pywebview==6.2.1
