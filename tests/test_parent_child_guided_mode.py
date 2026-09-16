@@ -368,7 +368,8 @@ def test_guarded_accepted_di106_reconciliation_is_get_only_and_preserves_patch_m
         return {"asin": "B0CC2HZNFH", "relationships": [{"relationships": [{"parentAsins": ["B0HJW82XKN"]}]}]}, {"http_status": 200, "request_id": "catalog-di106"}
     result = worker.reconcile_accepted_di106_get(job["id"], job["family_hash"], auth, {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must never run"), "child_patch": lambda *_: pytest.fail("PATCH must never run")})
     assert [item[0] for item in calls] == ["listing", "catalog"] and all(item[1] is auth for item in calls)
-    assert result["state"] == "VALIDATING_CHILDREN"
+    assert result["state"] == "VERIFIED"
+    assert result["next_action"] == "VALIDATE_CHILDREN"
     stored = guided.get_job(job["id"]); di106, di105 = stored["operations"][1:]
     assert (di106["state"], di106["attempt_count"], di106["request_id"], di106["http_status"]) == ("VERIFIED", 1, "accepted-di106", 200)
     assert (di105["state"], di105["attempt_count"], di105["request_id"], di105["http_status"]) == ("PREPARED", 0, None, None)
@@ -399,6 +400,49 @@ def test_guarded_accepted_di106_reconciliation_fails_closed_without_any_write(fa
     assert stored["state"] == "NEEDS_ATTENTION"
     assert stored["operations"][1]["state"] == "ACCEPTED" and stored["operations"][1]["attempt_count"] == 1
     assert stored["operations"][2]["state"] == "PREPARED" and stored["operations"][2]["attempt_count"] == 0
+
+
+def _persisted_accepted_di105_ambiguity_job():
+    job = _persisted_accepted_di106_ambiguity_job()
+    guided.update_operation(job["id"], "child:B0CC2HZNFH", "VERIFIED")
+    guided.update_operation(job["id"], "child:B0CC2JL6F6", "SUBMITTING")
+    guided.update_operation(job["id"], "child:B0CC2JL6F6", "ACCEPTED", request_id="accepted-di105", http_status=200)
+    return guided.get_job(job["id"])
+
+
+def test_guarded_accepted_di105_reconciliation_is_get_only_and_returns_sanitized_operation():
+    from services import parent_child_guided_worker as worker
+    job = _persisted_accepted_di105_ambiguity_job(); calls = []; auth = object()
+    def listing(actual_auth, _market, _vendor, sku):
+        calls.append(("listing", actual_auth, sku))
+        return {"status": 200, "request_id": "listing-di105", "api_sku": "DI-105", "api_asins": ["B0CC2JL6F6"], "product_type": "DISHWARE_PLATE", "attributes": {"child_parent_sku_relationship": [{"parent_sku": "Prince_Plate"}]}, "issues": []}
+    def catalog(actual_auth, _market, asin):
+        calls.append(("catalog", actual_auth, asin))
+        return {"asin": "B0CC2JL6F6", "relationships": [{"relationships": [{"parentAsins": ["B0HJW82XKN"]}]}]}, {"http_status": 200, "request_id": "catalog-di105"}
+    result = worker.reconcile_accepted_child_get(job["id"], job["family_hash"], "child:B0CC2JL6F6", auth, {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must never run"), "child_patch": lambda *_: pytest.fail("PATCH must never run")})
+    assert [item[0] for item in calls] == ["listing", "catalog"] and all(item[1] is auth for item in calls)
+    assert result == {"job_id": job["id"], "operation_key": "child:B0CC2JL6F6", "vendor_sku": "DI-105", "asin": "B0CC2JL6F6", "state": "VERIFIED", "attempt_count": 1, "request_id": "accepted-di105", "http_status": 200, "next_action": "VALIDATE_CHILDREN"}
+    assert "family" not in result and "operations" not in result
+    stored = guided.get_job(job["id"])
+    assert stored["operations"][1]["state"] == "VERIFIED" and stored["operations"][2]["state"] == "VERIFIED"
+
+
+@pytest.mark.parametrize("failure", ["wrong_operation", "wrong_hash", "wrong_sku", "wrong_asin", "wrong_product_type", "wrong_parent", "not_paused"])
+def test_guarded_accepted_di105_reconciliation_fails_closed_without_writes(failure):
+    from services import parent_child_guided_worker as worker
+    job = _persisted_accepted_di105_ambiguity_job(); calls = []
+    if failure == "not_paused": worker.set_execution_control("AUTOMATIC", confirmation="ENABLE AUTOMATIC PROCESSING")
+    def listing(*_args):
+        calls.append("listing")
+        return {"status": 200, "request_id": "listing", "api_sku": "WRONG" if failure == "wrong_sku" else "DI-105", "api_asins": ["B0WRONG" if failure == "wrong_asin" else "B0CC2JL6F6"], "product_type": "WRONG" if failure == "wrong_product_type" else "DISHWARE_PLATE", "attributes": {"child_parent_sku_relationship": [{"parent_sku": "Prince_Plate"}]}, "issues": []}
+    def catalog(*_args):
+        calls.append("catalog")
+        return {"asin": "B0CC2JL6F6", "relationships": [{"relationships": [{"parentAsins": ["B0OTHER" if failure == "wrong_parent" else "B0HJW82XKN"]}]}]}, {"http_status": 200, "request_id": "catalog"}
+    with pytest.raises(ValueError, match="operation|hash|ambiguous|PAUSED|accepted PATCH"):
+        worker.reconcile_accepted_child_get(job["id"], "wrong" if failure == "wrong_hash" else job["family_hash"], "child:B0CC2HZNFH" if failure == "wrong_operation" else "child:B0CC2JL6F6", object(), {"listing": listing, "catalog": catalog, "parent_put": lambda *_: pytest.fail("PUT must never run"), "child_patch": lambda *_: pytest.fail("PATCH must never run")})
+    if failure in ("wrong_operation", "wrong_hash", "not_paused"): assert calls == []
+    stored = guided.get_job(job["id"])
+    assert stored["state"] == "NEEDS_ATTENTION" and stored["operations"][2]["state"] == "ACCEPTED" and stored["operations"][2]["attempt_count"] == 1
 
 
 def _child_authorization_adapters(parents=None, listing_mutation=None, catalog_mutation=None):
@@ -764,6 +808,19 @@ def test_saved_jobs_inventory_and_exact_job_navigation_are_local_only(monkeypatc
     ui = Path("ui/js/parent_child_guided_mode.js").read_text(encoding="utf-8")
     assert 'api("/guided/jobs")' in ui and 'api(`/guided/jobs/${id}`)' in ui
     assert "Failure reason:" in ui and "Write attempted:" in ui
+
+
+def test_open_job_polling_is_local_non_overlapping_and_stops_with_the_panel():
+    ui = Path("ui/js/parent_child_guided_mode.js").read_text(encoding="utf-8")
+    assert "jobPollTimer:null,jobPollBusy:false" in ui
+    assert "window.setInterval(()=>refreshOpenJob().catch(e=>error(e.message)),30000)" in ui
+    assert "if(!id||state.jobPollBusy)return" in ui
+    assert "api(`/guided/jobs/${id}`),api(`/guided/jobs/${id}/progress`)" in ui
+    assert "Last checked:" in ui and "Refresh status" in ui
+    assert "function stopJobPolling()" in ui
+    assert "stopJobPolling();state.selectedJob=null;return showJobsList();" in ui
+    assert "async function openDraft(id){stopJobPolling();state.selectedJob=null;" in ui
+    assert "parent_put" not in ui and "child_patch" not in ui
 
 
 def test_phase_three_worker_lease_and_guided_ui_contract():

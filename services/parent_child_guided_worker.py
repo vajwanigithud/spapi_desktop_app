@@ -446,12 +446,12 @@ def reconcile_prepared_children_get(job_id, expected_family_hash, auth_client, a
              for child, attached, observed_parent, _, listing, catalog in checked],
             "next_safe_action": "EXPLICIT_CHILD_WRITE_AUTHORIZATION_REQUIRED"}
 
-def reconcile_accepted_di106_get(job_id, expected_family_hash, auth_client, adapters=None):
-    """One guarded GET-only verification for the single accepted Prince_Plate child.
+def reconcile_accepted_child_get(job_id, expected_family_hash, operation_key, auth_client, adapters=None):
+    """Reconcile exactly one accepted child via Listings/Catalog GET only.
 
-    This is deliberately not a generic retry or child-attachment path.  Every
-    durable precondition is checked before Listings/Catalog is contacted, and
-    no state changes occur unless both returned identities prove the attachment.
+    This is neither a retry nor a child-attachment path.  It can only verify
+    the next accepted child in the persisted sequence while execution is
+    PAUSED; every check completes before the ledger can change.
     """
     job = get_job(job_id)
     if not job: raise ValueError("Guided job not found")
@@ -459,29 +459,43 @@ def reconcile_accepted_di106_get(job_id, expected_family_hash, auth_client, adap
     if job["state"] != "NEEDS_ATTENTION" or (job.get("blocking_issue") or {}).get("message") != "Child Listings/Catalog parent identity is ambiguous":
         raise ValueError("Guarded accepted-child reconciliation is limited to the exact child identity ambiguity")
     family = job["family"]
-    if family.get("parent_sku") != "Prince_Plate" or family.get("product_type") != "DISHWARE_PLATE":
-        raise ValueError("Guarded accepted-child reconciliation has an unexpected immutable family scope")
     parent = next(item for item in job["operations"] if item["operation_key"] == "parent")
-    accepted = [item for item in job["operations"] if item["operation_type"] == "PATCH" and item["state"] == "ACCEPTED"]
-    pending = [item for item in job["operations"] if item["operation_type"] == "PATCH" and item["state"] == "PREPARED"]
+    children = [item for item in job["operations"] if item["operation_type"] == "PATCH"]
+    target_index = next((index for index, child in enumerate(children) if child["operation_key"] == operation_key), None)
+    if target_index is None: raise ValueError("Guarded accepted-child reconciliation operation is not part of this immutable job")
+    target = children[target_index]
     if parent["state"] != "VERIFIED" or parent["attempt_count"] != 1:
         raise ValueError("Guarded accepted-child reconciliation requires the original verified parent")
-    if len(accepted) != 1 or accepted[0]["vendor_sku"] != "DI-106" or accepted[0]["child_asin"] != "B0CC2HZNFH" or accepted[0]["attempt_count"] != 1 or not accepted[0].get("request_id") or accepted[0].get("http_status") is None:
-        raise ValueError("Guarded accepted-child reconciliation requires exactly one accepted DI-106 PATCH with retained metadata")
-    if len(pending) != 1 or pending[0]["vendor_sku"] != "DI-105" or pending[0]["child_asin"] != "B0CC2JL6F6" or pending[0]["attempt_count"] != 0 or pending[0].get("request_id") or pending[0].get("http_status") is not None:
-        raise ValueError("Guarded accepted-child reconciliation requires untouched DI-105")
-    if _verified_parent_asins(job_id) != {"B0HJW82XKN"}:
+    if target["state"] != "ACCEPTED" or target["attempt_count"] != 1 or not target.get("request_id") or target.get("http_status") is None:
+        raise ValueError("Guarded accepted-child reconciliation requires one accepted PATCH with retained metadata")
+    if any(child["state"] != "VERIFIED" or child["attempt_count"] != 1 for child in children[:target_index]):
+        raise ValueError("Guarded accepted-child reconciliation requires every earlier child to be verified")
+    if any(child["state"] != "PREPARED" or child["attempt_count"] or child.get("request_id") or child.get("http_status") is not None for child in children[target_index + 1:]):
+        raise ValueError("Guarded accepted-child reconciliation requires every later child to remain untouched")
+    parent_asins = _verified_parent_asins(job_id)
+    if len(parent_asins) != 1: raise ValueError("Guarded accepted-child reconciliation requires one exact verified parent ASIN")
+    if family.get("parent_sku") == "Prince_Plate" and family.get("product_type") == "DISHWARE_PLATE" and parent_asins != {"B0HJW82XKN"}:
         raise ValueError("Guarded accepted-child reconciliation requires the exact verified Prince_Plate ASIN")
     with get_db_connection() as conn:
         if conn.execute("SELECT 1 FROM pc_guided_worker_leases WHERE job_id=?", (job_id,)).fetchone():
             raise ValueError("Guarded accepted-child reconciliation requires no runtime lease")
-    attached, observed_parent, evidence = _verify_child(job, accepted[0], _adapters(adapters), auth_client)
-    if not attached or observed_parent != "Prince_Plate":
-        raise ValueError("DI-106 propagation is incomplete or ambiguous; no ledger changed")
+        control = _execution_row(conn)
+        if control["mode"] != "PAUSED": raise ValueError("Guarded accepted-child reconciliation requires execution PAUSED")
+    attached, observed_parent, evidence = _verify_child(job, target, _adapters(adapters), auth_client)
+    if not attached or observed_parent != family["parent_sku"]:
+        raise ValueError("Accepted child propagation is incomplete or ambiguous; no ledger changed")
     # update_operation retains the original accepted request ID/status through COALESCE.
-    update_operation(job_id, accepted[0]["operation_key"], "VERIFIED")
-    return transition(job_id, "VALIDATING_CHILDREN", {"accepted_child_get": evidence,
-        "message": "Accepted DI-106 verified by guarded Listings/Catalog GET"})
+    update_operation(job_id, target["operation_key"], "VERIFIED")
+    transition(job_id, "VALIDATING_CHILDREN", {"accepted_child_get": evidence,
+        "message": f"Accepted {target['vendor_sku']} verified by guarded Listings/Catalog GET"})
+    verified = next(item for item in get_job(job_id)["operations"] if item["operation_key"] == operation_key)
+    return {"job_id": job_id, "operation_key": operation_key, "vendor_sku": verified["vendor_sku"], "asin": verified["child_asin"],
+            "state": verified["state"], "attempt_count": verified["attempt_count"], "request_id": verified["request_id"],
+            "http_status": verified["http_status"], "next_action": next_action(job_id)}
+
+def reconcile_accepted_di106_get(job_id, expected_family_hash, auth_client, adapters=None):
+    """Compatibility wrapper for the existing DI-106 guarded route."""
+    return reconcile_accepted_child_get(job_id, expected_family_hash, "child:B0CC2HZNFH", auth_client, adapters)
 
 def _child_plan(job):
     """Bind the visible plan to the persisted snapshot AND operation ledger."""

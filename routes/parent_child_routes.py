@@ -44,6 +44,7 @@ class GuidedDraftRequest(BaseModel): definition:Dict[str,Any]; draft_id:str|None
 class GuidedApprovalRequest(BaseModel): family_hash:str; approved_by:str|None=None
 class GuidedResumeRequest(BaseModel): family_hash:str
 class GuidedParentReconciliationRequest(BaseModel): family_hash:str
+class GuidedAcceptedChildReconciliationRequest(BaseModel): family_hash:str; operation_key:str
 class GuidedChildWriteConfirmation(BaseModel): family_hash:str; plan_hash:str; confirmation:str
 class GuidedSelectedExecutionRequest(BaseModel): job_id:str; family_hash:str; confirmation:str
 class GuidedAutomaticExecutionRequest(BaseModel): confirmation:str
@@ -183,6 +184,13 @@ def guided_reconcile_accepted_di106(job_id: str, payload: GuidedParentReconcilia
     """Guarded DI-106 Listings/Catalog reconciliation only; no write transport is reachable."""
     try:
         return {'job': guided_worker.reconcile_accepted_di106_get(job_id, payload.family_hash, getattr(router, '_auth_client', None), guided_worker.production_adapters())}
+    except ValueError as exc: raise HTTPException(409, str(exc))
+
+@router.post('/guided/jobs/{job_id}/reconcile-accepted-child')
+def guided_reconcile_accepted_child(job_id: str, payload: GuidedAcceptedChildReconciliationRequest):
+    """One exact accepted-child Listings/Catalog reconciliation; it cannot reach a write transport."""
+    try:
+        return guided_worker.reconcile_accepted_child_get(job_id, payload.family_hash, payload.operation_key, getattr(router, '_auth_client', None), guided_worker.production_adapters())
     except ValueError as exc: raise HTTPException(409, str(exc))
 
 @router.post('/guided/jobs/{job_id}/prepare-child-write-authorization')
