@@ -37,11 +37,8 @@ def test_picklist_preview_returns_lines(monkeypatch):
 
     monkeypatch.setattr(main, "get_vendor_pos_by_numbers", fake_get_pos)
     monkeypatch.setattr(main, "store_get_vendor_po_lines", fake_lines)
-    monkeypatch.setattr(main, "load_oos_state", lambda: {})
-    monkeypatch.setattr(main, "save_oos_state", lambda payload: None)
     monkeypatch.setattr(main, "spapi_catalog_status", lambda: {})
     monkeypatch.setattr(main, "get_rejected_vendor_po_lines", lambda _: [])
-    monkeypatch.setattr(main.oos_service, "upsert_oos_entry", lambda *args, **kwargs: None)
 
     with TestClient(main.app) as client:
         resp = client.post("/api/picklist/preview", json={"purchaseOrderNumbers": ["PO-123"]})

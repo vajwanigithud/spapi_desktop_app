@@ -12,10 +12,7 @@ logger = logging.getLogger(__name__)
 def consolidate_picklist(
     po_numbers: List[str],
     po_records: List[Dict[str, Any]],
-    load_oos_state_fn,
-    save_oos_state_fn,
     spapi_catalog_status_fn,
-    upsert_oos_entry_fn,
     fetch_rejected_lines_fn: Callable[[List[str]], List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
     if not po_records:
@@ -95,13 +92,6 @@ def consolidate_picklist(
                     continue
 
                 ckey = (asin, sku)
-                is_oos = False
-                
-                # Only mark as OOS if the item has 0 accepted quantity
-                # Do NOT check the oos_state dictionary as it accumulates stale data
-                if accepted_qty == 0:
-                    is_oos = True
-
                 if ckey not in consolidated:
                     info = catalog.get(asin) or {}
                     master_sku = info.get("sku")
@@ -113,7 +103,6 @@ def consolidate_picklist(
                         "title": info.get("title"),
                         "image": info.get("image"),
                         "totalQty": 0,
-                        "isOutOfStock": is_oos,
                     }
                 # Add accepted quantity (not ordered)
                 consolidated[ckey]["totalQty"] += int(accepted_qty)
