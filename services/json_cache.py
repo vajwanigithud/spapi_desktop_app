@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_VENDOR_POS_CACHE = ROOT / "vendor_pos_cache.json"
 DEFAULT_ASIN_CACHE_PATH = ROOT / "asin_image_cache.json"
 DEFAULT_PO_TRACKER_PATH = ROOT / "po_tracker.json"
-DEFAULT_OOS_STATE_PATH = ROOT / "oos_state.json"
 
 
 def _read_json(path: Path, default: Any, raise_on_error: bool = False) -> Any:
@@ -70,14 +69,3 @@ def load_po_tracker(path: Optional[Path] = None) -> Dict[str, Any]:
 def save_po_tracker(tracker: Dict[str, Any], path: Optional[Path] = None) -> None:
     load_po_tracker.cache_clear()
     _write_json(path or DEFAULT_PO_TRACKER_PATH, tracker)
-
-
-@functools.lru_cache(maxsize=32)
-def load_oos_state(path: Optional[Path] = None) -> Dict[str, Any]:
-    data = _read_json(path or DEFAULT_OOS_STATE_PATH, {})
-    return data if isinstance(data, dict) else {}
-
-
-def save_oos_state(state: Dict[str, Any], path: Optional[Path] = None) -> None:
-    load_oos_state.cache_clear()
-    _write_json(path or DEFAULT_OOS_STATE_PATH, state)

@@ -64,9 +64,8 @@
 # ================================================================
 
 # Wave 2A module split plan (helpers move, routes stay here):
-# - services/json_cache.py       # JSON file I/O (vendor_pos_cache, asin cache, trackers, oos)
+# - services/json_cache.py       # JSON file I/O (vendor_pos_cache, asin cache, trackers)
 # - services/catalog_service.py  # Catalog DB helpers (init, upsert, status, barcode setters)
-# - services/oos_service.py      # OOS helpers (upsert/seed utilities)
 # - services/picklist_service.py # Picklist aggregation + PDF generation helpers
 # - (future) vendor/debug helpers remain inline until further split
 
@@ -75,7 +74,6 @@
 # =============================================
 
 import asyncio
-import csv
 import heapq
 import importlib.util
 import json
@@ -86,7 +84,6 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from io import StringIO
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -101,7 +98,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-import services.oos_service as oos_service
 import services.picklist_service as picklist_service
 import services.picklist_xlsx_service as picklist_xlsx_service
 import services.vendor_realtime_sales as vendor_realtime_sales_service
@@ -156,9 +152,7 @@ from services.df_payments import (
 from services.credential_test_service import safe_response_text
 from services.json_cache import (
     load_asin_cache,
-    load_oos_state,
     load_po_tracker,
-    save_oos_state,
     save_po_tracker,
 )
 from services.perf import get_recent_timings, time_block
@@ -514,7 +508,6 @@ CATALOG_API_HOST = os.getenv("CATALOG_API_HOST", "https://sellingpartnerapi-na.a
 EU_MARKETPLACE_IDS = {"A2VIGQ35RCS4UG", "A1PA6795UKMFR9", "A13V1IB3VIYZZH", "A1RKKUPIHCS9HS", "A1F83G8C2ARO7P"}
 FE_MARKETPLACE_IDS = {"A1VC38T7YXB528"}  # JP
 PO_TRACKER_PATH = Path(__file__).parent / "po_tracker.json"
-OOS_STATE_PATH = Path(__file__).parent / "oos_state.json"
 CATALOG_FETCHER_EXCLUSIONS_PATH = Path(__file__).parent / "catalog_fetcher_exclusions.json"
 _catalog_fetch_guard = threading.Lock()
 _catalog_fetch_inflight: Set[str] = set()
@@ -743,12 +736,10 @@ try:
     vendor_realtime_sales_service.init_vendor_rt_audit_hours_table()
     from services.db import (
         ensure_app_kv_table,
-        ensure_oos_export_history_table,
         ensure_vendor_inventory_table,
         init_vendor_rt_sales_state_table,
     )
     init_vendor_rt_sales_state_table()
-    ensure_oos_export_history_table()
     ensure_vendor_inventory_table()
     ensure_app_kv_table()
     _ensure_rt_sales_ledger_normalized_once()
@@ -2085,24 +2076,13 @@ def _attach_po_status_totals(pos_list: List[Dict[str, Any]]) -> None:
             po.setdefault("total_pending_qty", 0)
 
 
-def seed_oos_from_rejected_lines(po_numbers: List[str], po_date_map: Dict[str, str] | None = None) -> int:
-    return oos_service.seed_oos_from_rejected_lines(po_numbers, po_date_map)
-
-
-def seed_oos_from_rejected_payload(purchase_orders: List[Dict[str, Any]]) -> int:
-    return oos_service.seed_oos_from_rejected_payload(purchase_orders)
-
-
 def consolidate_picklist(po_numbers: List[str]) -> Dict[str, Any]:
     selected_pos = get_vendor_pos_by_numbers(po_numbers)
     _hydrate_picklist_po_details(selected_pos)
     return picklist_service.consolidate_picklist(
         po_numbers,
         selected_pos,
-        load_oos_state,
-        save_oos_state,
         spapi_catalog_status,
-        oos_service.upsert_oos_entry,
         get_rejected_vendor_po_lines,
     )
 
@@ -4069,188 +4049,6 @@ def update_po_status(po_number: str, payload: PoStatusUpdate):
     }
 
 
-@app.get("/api/oos-items")
-def get_oos_items():
-    """
-    Return consolidated Out-of-Stock items (one per ASIN) for the OOS tab.
-    Includes export_status field indicating if ASIN was previously exported.
-    """
-    from services.db import is_asin_exported
-    
-    state = load_oos_state()
-    items = list(state.values())
-    catalog = spapi_catalog_status()
-
-    agg: Dict[str, Dict[str, Any]] = {}
-    for it in items:
-        asin = (it or {}).get("asin")
-        if not asin:
-            continue
-        qty_raw = (it or {}).get("qty")
-        try:
-            qty_val = float(qty_raw)
-        except Exception:
-            qty_val = 0
-        if qty_val <= 0:
-            continue
-        entry = agg.get(asin) or {
-            "asin": asin,
-            "vendorSku": (it or {}).get("vendorSku"),
-            "poNumbers": set(),
-            "purchaseOrderDate": (it or {}).get("purchaseOrderDate"),
-            "shipToPartyId": (it or {}).get("shipToPartyId"),
-            "qty": 0,
-            "image": (it or {}).get("image"),
-            "isOutOfStock": True,
-            "export_status": "pending",  # Default to pending
-        }
-        entry["qty"] = (entry.get("qty") or 0) + qty_val
-        if (it or {}).get("poNumber"):
-            entry["poNumbers"].add(it.get("poNumber"))
-        if not entry.get("image"):
-            entry["image"] = (catalog.get(asin) or {}).get("image")
-        agg[asin] = entry
-
-    consolidated = []
-    for asin, entry in agg.items():
-        entry["poNumbers"] = sorted(list(entry.get("poNumbers") or []))
-        # Set export_status based on export history
-        entry["export_status"] = "exported" if is_asin_exported(asin) else "pending"
-        consolidated.append(entry)
-
-    return {"items": consolidated}
-
-
-@app.get("/api/oos-items/export")
-def export_oos_items():
-    """
-    Export OOS items as a simple XLS-friendly TSV (ASINs only).
-    Only includes ASINs with export_status="pending" (not previously exported).
-    Records exported ASINs in export history for future reference.
-    """
-    import uuid
-
-    from services.db import is_asin_exported, mark_oos_asins_exported
-    
-    state = load_oos_state()
-    items = list(state.values())
-    pending_asins: list[str] = []
-    
-    for it in items:
-        asin = (it or {}).get("asin")
-        if not asin:
-            continue
-        qty_raw = (it or {}).get("qty")
-        try:
-            qty_val = float(qty_raw)
-        except Exception:
-            qty_val = 0
-        if qty_val <= 0:
-            continue
-        # Only include pending ASINs (not yet exported)
-        if not is_asin_exported(asin):
-            pending_asins.append(asin)
-
-    # Generate export batch ID
-    batch_id = str(uuid.uuid4())
-    
-    # If there are pending ASINs, record them as exported
-    if pending_asins:
-        mark_oos_asins_exported(pending_asins, batch_id)
-    
-    # Build CSV with pending ASINs
-    output = StringIO()
-    writer = csv.writer(output, delimiter="\t")
-    writer.writerow(["asin"])
-    for asin in sorted(pending_asins):
-        writer.writerow([asin])
-
-    data = output.getvalue().encode("utf-8-sig")
-    headers_resp = {"Content-Disposition": 'attachment; filename="oos_items.xls"'}
-    
-    return Response(
-        content=data,
-        media_type="application/vnd.ms-excel",
-        headers=headers_resp
-    )
-
-
-@app.post("/api/oos-items/mark")
-def mark_oos_item(payload: Dict[str, Any]):
-    """
-    Mark a single PO item as out-of-stock.
-    Payload:
-      {
-        "poNumber": "...",
-        "asin": "...",
-        "vendorSku": "...",
-        "purchaseOrderDate": "...",
-        "shipToPartyId": "...",
-        "qty": <number>,
-        "image": "https://..."   # optional
-      }
-    """
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Invalid payload")
-
-    po = payload.get("poNumber")
-    asin = payload.get("asin")
-    if not po or not asin:
-        raise HTTPException(status_code=400, detail="poNumber and asin required")
-
-    key = f"{po}::{asin}"
-    state = load_oos_state()
-    state[key] = {
-        "poNumber": po,
-        "asin": asin,
-        "vendorSku": payload.get("vendorSku"),
-        "purchaseOrderDate": payload.get("purchaseOrderDate"),
-        "shipToPartyId": payload.get("shipToPartyId"),
-        "qty": payload.get("qty"),
-        "image": payload.get("image"),
-        "isOutOfStock": True,
-    }
-    save_oos_state(state)
-    return {"status": "ok", "key": key}
-
-
-@app.post("/api/oos-items/restock")
-def restock_oos_item(payload: Dict[str, Any]):
-    """
-    Clear OOS flag (or remove entry) for a single PO item.
-    Payload:
-      {
-        "poNumber": "...",
-        "asin": "..."
-      }
-    """
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Invalid payload")
-
-    po = payload.get("poNumber")
-    asin = payload.get("asin")
-    if not asin:
-        raise HTTPException(status_code=400, detail="asin required")
-
-    state = load_oos_state()
-    removed = 0
-    if po:
-        key = f"{po}::{asin}"
-        if key in state:
-            del state[key]
-            removed = 1
-    else:
-        to_delete = [k for k, v in state.items() if (v or {}).get("asin") == asin]
-        for k in to_delete:
-            del state[k]
-        removed = len(to_delete)
-
-    if removed:
-        save_oos_state(state)
-
-    return {"status": "ok", "asin": asin, "removed": removed}
-
-
 def _load_inventory_asin_set() -> Set[str]:
     try:
         snapshot = get_cached_realtime_inventory_snapshot()
@@ -4799,7 +4597,7 @@ def update_catalog_barcode_endpoint(payload: Dict[str, Any]):
 @app.post("/api/picklist/preview")
 def picklist_preview(payload: Dict[str, Any]):
     """
-    Consolidate items across selected POs (excluding OOS) for preview.
+    Consolidate items across selected POs for preview.
     """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
@@ -5748,14 +5546,6 @@ def rebuild_all_vendor_po_lines():
     bootstrap_headers_from_cache()
     normalized = get_vendor_po_list(order_desc=True)
     po_numbers = [po.get("purchaseOrderNumber") for po in normalized if po.get("purchaseOrderNumber")]
-    po_date_map = {
-        po.get("purchaseOrderNumber"): (
-            po.get("purchaseOrderDate")
-            or po.get("orderDetails", {}).get("purchaseOrderDate")
-        )
-        for po in normalized
-        if po.get("purchaseOrderNumber")
-    }
 
     if not po_numbers:
         logger.info("[VendorPO] No POs found in database")
@@ -5787,16 +5577,6 @@ def rebuild_all_vendor_po_lines():
     success_count = sum(1 for _, err in results if err is None)
     error_count = len([1 for _, err in results if err is not None])
     
-    try:
-        added_oos = seed_oos_from_rejected_lines(po_numbers, po_date_map)
-        if added_oos:
-            logger.info(f"[VendorPO] Seeded {added_oos} rejected lines into OOS after rebuild")
-        added_payload = seed_oos_from_rejected_payload(normalized)
-        if added_payload:
-            logger.info(f"[VendorPO] Seeded {added_payload} rejected payload lines into OOS after rebuild")
-    except Exception as e:
-        logger.warning(f"[VendorPO] Could not seed OOS from rejected lines: {e}")
-
     # Final summary
     try:
         line_count = count_vendor_po_lines()
