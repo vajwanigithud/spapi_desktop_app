@@ -2922,6 +2922,12 @@ def get_vendor_pos(
     tracker = load_po_tracker()
     for po in filtered:
         po_num = po.get("purchaseOrderNumber")
+        # Existing headers from before the line-sync fix can still hold a zero
+        # count. The persisted line table is authoritative for the list view,
+        # so users see the correct PO Items value without another API refresh.
+        po_line_count = _coerce_int((line_totals_map.get(po_num) or {}).get("line_items_count")) if po_num else 0
+        if po_line_count > 0:
+            po["poItemsCount"] = po_line_count
         internal_status = "Pending"
         appointment_date = None
         if po_num and isinstance(tracker, dict):

@@ -117,18 +117,20 @@
     #pos-tab table { font-size:14px; }
     #pos-tab th, #pos-tab td { font-size:14px; }
     #pos-tab input, #pos-tab select, #pos-tab button { font-size:14px; }
-    #vendor-po-table { table-layout:fixed; min-width:1640px; }
+    /* Keep the PO grid inside its tab: rows can scroll vertically, but columns
+       must share the available width instead of forcing a horizontal scrollbar. */
+    #vendor-po-table { table-layout:fixed; width:100%; min-width:0; }
     #vendor-po-table th, #vendor-po-table td { vertical-align:middle; }
-    #vendor-po-table th.col-select, #vendor-po-table td.col-select { width:38px; text-align:center; padding-left:6px; padding-right:6px; }
-    #vendor-po-table th.col-po, #vendor-po-table td.col-po { width:170px; }
-    #vendor-po-table th.col-items, #vendor-po-table td.col-items { width:74px; text-align:center; }
-    #vendor-po-table th.col-date, #vendor-po-table td.col-date { width:112px; }
-    #vendor-po-table th.col-qty, #vendor-po-table td.col-qty { width:102px; text-align:right; font-variant-numeric:tabular-nums; }
-    #vendor-po-table th.col-cost, #vendor-po-table td.col-cost { width:138px; text-align:right; font-variant-numeric:tabular-nums; }
-    #vendor-po-table th.col-status, #vendor-po-table td.col-status { width:190px; }
-    #vendor-po-table th.col-status-date, #vendor-po-table td.col-status-date { width:126px; }
-    #vendor-po-table th.col-amazon-status, #vendor-po-table td.col-amazon-status { width:132px; }
-    #vendor-po-table th.col-ship-to, #vendor-po-table td.col-ship-to { width:148px; }
+    #vendor-po-table th, #vendor-po-table td { min-width:0; overflow-wrap:anywhere; }
+    #vendor-po-table th.col-select, #vendor-po-table td.col-select { width:3%; text-align:center; padding-left:4px; padding-right:4px; }
+    #vendor-po-table th.col-po, #vendor-po-table td.col-po { width:11%; }
+    #vendor-po-table th.col-items, #vendor-po-table td.col-items { width:4%; text-align:center; }
+    #vendor-po-table th.col-date, #vendor-po-table td.col-date { width:7%; }
+    #vendor-po-table th.col-qty, #vendor-po-table td.col-qty { width:7%; text-align:right; font-variant-numeric:tabular-nums; }
+    #vendor-po-table th.col-cost, #vendor-po-table td.col-cost { width:10%; text-align:right; font-variant-numeric:tabular-nums; }
+    #vendor-po-table th.col-status, #vendor-po-table td.col-status { width:14%; }
+    #vendor-po-table th.col-status-date, #vendor-po-table td.col-status-date { width:9%; }
+    #vendor-po-table th.col-ship-to, #vendor-po-table td.col-ship-to { width:7%; }
     #vendor-po-table .po-cell-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
     #vendor-po-table .po-number-text { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
     #vendor-po-table .po-status-line { display:flex; align-items:center; gap:5px; min-height:18px; }
@@ -825,7 +827,7 @@
         </div>
         <div id="inhouse-summary" style="font-size:12px; color:var(--muted); font-weight:600;"></div>
       </div>
-      <div style="overflow:auto; max-height: calc(100vh - 200px);">
+      <div style="overflow-y:auto; overflow-x:hidden; max-height: calc(100vh - 200px);">
           <table id="vendor-po-table">
             <thead>
               <tr>
@@ -841,7 +843,6 @@
                 <th class="col-cost">Total Accepted Cost</th>
                 <th class="col-status">Status</th>
                 <th class="col-status-date">Status Date</th>
-                <th class="col-amazon-status">Amazon Status</th>
                 <th class="col-ship-to">Ship To Location</th>
               </tr>
             </thead>
@@ -1897,7 +1898,7 @@
       tbody.innerHTML = "";
       const list = filteredPOs && Array.isArray(filteredPOs) ? filteredPOs : vendorPOs;
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="14" class="empty">No POs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="empty">No POs</td></tr>';
         return;
       }
 
@@ -1923,7 +1924,6 @@
         const totalAcceptedCost = `${costCurrency} ${costAmount}`;
         
         const internalStatus = po._internalStatus || "Pending";
-        const amazonStatus = po.amazonStatus || "—";
         const shipToLocation = po.shipToText || (po.orderDetails?.shipToParty?.partyId ? `${po.orderDetails.shipToParty.partyId}` : "");
 
         const tr = document.createElement("tr");
@@ -1973,7 +1973,6 @@
       <td class="col-cost">${totalAcceptedCost}</td>
       <td class="col-status">${statusDropdown}</td>
       <td class="col-status-date">${statusDateCellHtml}</td>
-      <td class="col-amazon-status">${amazonStatus}</td>
       <td class="col-ship-to">${shipToLocation}</td>
     `;
 
