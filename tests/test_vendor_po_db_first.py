@@ -10,6 +10,7 @@ from services.vendor_po_store import (
     export_vendor_pos_snapshot,
     get_vendor_po_list,
     replace_vendor_po_lines,
+    update_header_raw_payload,
     update_header_totals_from_lines,
     upsert_vendor_po_headers,
 )
@@ -143,6 +144,23 @@ def test_totals_update_from_lines(tmp_path, monkeypatch):
     assert po["cancelledQty"] == 1
     assert po["total_accepted_cost"] == 49.0
     assert po["totalAcceptedCostCurrency"] == "AED"
+
+
+def test_raw_status_payload_keeps_item_status_count(tmp_path, monkeypatch):
+    _setup_tmp_db(tmp_path, monkeypatch)
+    po_number = "PO-ITEM-COUNT"
+    upsert_vendor_po_headers([_sample_po(po_number)], source="test", source_detail="seed")
+
+    update_header_raw_payload(
+        po_number,
+        {
+            "purchaseOrderNumber": po_number,
+            "itemStatus": [{"itemSequenceNumber": "1"}, {"itemSequenceNumber": "2"}],
+        },
+        source="test",
+    )
+
+    assert store_get_vendor_po(po_number)["poItemsCount"] == 2
 
 
 def test_export_snapshot_lists_raw_json(tmp_path, monkeypatch):

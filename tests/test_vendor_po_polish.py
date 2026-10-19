@@ -303,6 +303,13 @@ def test_vendor_po_table_status_marks_new(vendor_po_client):
     assert po["po_status_reason"] == "all_zero_uncancelled"
 
 
+def test_vendor_po_list_uses_persisted_line_count(vendor_po_client):
+    resp = vendor_po_client.get("/api/vendor-pos", params={"createdAfter": "2025-01-01T00:00:00"})
+    assert resp.status_code == 200
+    po = next(item for item in resp.json()["items"] if item["purchaseOrderNumber"] == "PO-TEST-1")
+    assert po["poItemsCount"] == 1
+
+
 def test_vendor_po_table_status_respects_explicit_cancel(vendor_po_client):
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     upsert_vendor_po_headers(

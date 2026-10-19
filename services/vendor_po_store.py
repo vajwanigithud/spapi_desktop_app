@@ -457,6 +457,7 @@ def aggregate_line_totals(po_numbers: Iterable[str]) -> Dict[str, Dict[str, int]
     sql = f"""
         SELECT
             po_number,
+            COUNT(*) AS line_items_count,
             COALESCE(SUM(ordered_qty), 0) AS requested_qty,
             COALESCE(SUM(accepted_qty), 0) AS accepted_qty,
             COALESCE(SUM(received_qty), 0) AS received_qty,
@@ -687,7 +688,7 @@ def update_header_raw_payload(
     if not po_number:
         return
     synced_at = synced_at or _utc_now()
-    po_items = len(payload.get("orderDetails", {}).get("items") or [])
+    po_items = _payload_item_count(payload)
     order_date = _extract_order_date(payload)
     ship_to, code, city, country = _extract_ship_to(payload)
     amazon_status = payload.get("purchaseOrderState") or payload.get("amazonStatus") or ""
@@ -695,7 +696,7 @@ def update_header_raw_payload(
     sql = f"""
         UPDATE {HEADER_TABLE}
         SET raw_json = ?,
-            po_items_count = ?,
+            po_items_count = COALESCE(?, po_items_count),
             last_source = ?,
             last_source_detail = ?,
             last_synced_at = ?,
@@ -819,6 +820,24 @@ def _hydrate_po_row(row: sqlite3.Row) -> Dict[str, Any]:
     return po
 
 
+def _payload_item_count(payload: Dict[str, Any]) -> Optional[int]:
+    """Return the best available line count from either Vendor Orders shape.
+
+    Amazon's detailed status endpoint returns lines as ``itemStatus`` while the
+    purchase-order endpoint commonly returns ``orderDetails.items``. Some
+    responses include both, so use the largest list and never turn an unknown
+    count into a stored zero.
+    """
+    details = payload.get("orderDetails") or {}
+    candidates = (
+        payload.get("itemStatus"),
+        payload.get("items"),
+        details.get("items") if isinstance(details, dict) else None,
+    )
+    counts = [len(items) for items in candidates if isinstance(items, list)]
+    return max(counts) if counts else None
+
+
 def _prepare_header_row(
     po: Dict[str, Any],
     *,
@@ -849,7 +868,7 @@ def _prepare_header_row(
         or po.get("totalAcceptedCostCurrency")
         or "AED"
     )
-    po_items = len(po.get("orderDetails", {}).get("items") or [])
+    po_items = _payload_item_count(po) or 0
     last_changed_at = (
         po.get("lastUpdatedDate")
         or po.get("orderDetails", {}).get("lastUpdatedDate")
