@@ -428,45 +428,48 @@
       .po-line-received { background-color: #dcfce7; }
       /* PO items modal: summary row */
       .po-items-summary td { border-top: 2px solid #e5e7eb; background-color: #f9fafb; font-weight: 600; }
-      /* Real-Time Sales status label */
-      .rt-sales-status-label { font-size: 12px; margin-top: 4px; color: #666; }
-      .rt-sales-status-busy { color: #d97706; font-weight: 500; }
-      .rt-sales-status-cooldown { color: #b91c1c; font-weight: 500; }
-      .rt-sales-status-idle { color: #059669; font-weight: 500; }
-      .rt-sales-status-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: #475569; }
-      .rt-sales-pill { padding: 4px 10px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-weight: 600; }
-      .rt-sales-pill.alert { background: #fee2e2; color: #b91c1c; }
-      .rt-sales-ledger-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 4px; }
-      .rt-ledger-metric { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; }
-      .rt-ledger-metric-title { font-size: 11px; text-transform: uppercase; color: #6b7280; margin-bottom: 4px; letter-spacing: 0.04em; }
-      .rt-ledger-metric-value { font-size: 18px; font-weight: 700; color: #0f172a; }
-      .rt-ledger-muted { font-size: 12px; color: #6b7280; font-weight: 500; }
-      /* Vendor RT Summary layout */
-      .rt-summary-layout { display: flex; gap: 16px; align-items: flex-start; padding: 12px; }
-      .rt-summary-left { flex: 0 0 32%; max-width: 420px; display: flex; flex-direction: column; gap: 12px; }
-      .rt-summary-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-      .rt-summary-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); }
-      .rt-summary-controls { display: flex; flex-direction: column; gap: 12px; }
-      .rt-summary-controls-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-      .rt-summary-metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-      .rt-summary-table-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; gap: 10px; }
-      .rt-summary-table-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-      .rt-summary-table-wrapper { border: 1px solid var(--border); border-radius: 10px; overflow: auto; max-height: 60vh; position: relative; background: #fff; }
-      .rt-summary-window-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #475569; }
-      .rt-summary-table-label { font-weight: 600; font-size: 14px; color: #0f172a; }
-      .rt-summary-asin-image { width: 72px; height: 72px; object-fit: contain; border-radius: 10px; background: #f8fafc; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
-      #rt-sales-asin-table thead th,
-      #rt-sales-time-table thead th { position: sticky; top: 0; background: #f8fafc; z-index: 2; }
-      #rt-sales-asin-table th,
-      #rt-sales-asin-table td,
-      #rt-sales-time-table th,
-      #rt-sales-time-table td { padding: 10px; }
-      .rt-summary-detail-card { margin-top: 0; }
-      @media (max-width: 1100px) {
-        .rt-summary-layout { flex-direction: column; }
-        .rt-summary-left,
-        .rt-summary-right { max-width: none; width: 100%; }
-        .rt-summary-table-wrapper { max-height: none; }
+      /* Vendor Real Time Summary */
+      .rt-sales-status-label { font-size:12px; color:#666; }
+      .rt-sales-status-busy { color:#d97706; font-weight:500; }
+      .rt-sales-status-cooldown { color:#b91c1c; font-weight:500; }
+      .rt-sales-status-idle { color:#059669; font-weight:500; }
+      .rt-sales-status-strip { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:13px; color:#475569; }
+      .rt-sales-pill { padding:4px 10px; border-radius:999px; background:#e0f2fe; color:#0369a1; font-weight:600; }
+      .rt-sales-pill.alert { background:#fee2e2; color:#b91c1c; }
+      .rt-summary-layout { display:flex; flex-direction:column; gap:12px; padding:12px; min-width:0; }
+      .rt-summary-card, .rt-summary-table-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:12px; box-shadow:0 1px 2px rgba(0, 0, 0, .04); }
+      .rt-summary-controls { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; }
+      .rt-summary-controls label { font-size:14px; font-weight:600; }
+      .rt-summary-controls select { padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px; }
+      .rt-summary-metrics-grid { display:grid; grid-template-columns:repeat(2, minmax(150px, 220px)); gap:10px; }
+      .rt-summary-table-card { display:flex; flex-direction:column; gap:10px; }
+      .rt-summary-table-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+      .rt-summary-table-wrapper { border:1px solid var(--border); border-radius:10px; overflow-y:auto; overflow-x:hidden; max-height:60vh; position:relative; background:#fff; }
+      .rt-summary-window-meta { display:flex; flex-direction:column; gap:4px; font-size:12px; color:#475569; }
+      .rt-summary-table-label { font-weight:600; font-size:14px; color:#0f172a; }
+      .rt-sales-asin-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:12px; padding:12px; }
+      .rt-sales-asin-card { min-width:0; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; background:#fff; cursor:pointer; transition:transform .15s ease, box-shadow .15s ease; }
+      .rt-sales-asin-card:hover, .rt-sales-asin-card:focus { outline:none; transform:translateY(-2px); box-shadow:0 8px 18px rgba(15, 23, 42, .12); }
+      .rt-sales-asin-image-wrap { height:150px; display:flex; align-items:center; justify-content:center; padding:10px; background:#f8fafc; }
+      .rt-summary-asin-image { width:100%; height:100%; object-fit:contain; }
+      .rt-sales-asin-image-placeholder { color:#64748b; font-size:12px; font-weight:600; }
+      .rt-sales-asin-details { display:grid; gap:6px; padding:10px; }
+      .rt-sales-asin-id { font-size:13px; font-weight:800; overflow-wrap:anywhere; }
+      .rt-sales-asin-sku { min-height:16px; font-size:12px; color:#475569; overflow-wrap:anywhere; }
+      .rt-sales-asin-metrics { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding-top:4px; border-top:1px solid #e2e8f0; }
+      .rt-sales-asin-metric-label { display:block; color:#64748b; font-size:10px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+      .rt-sales-asin-metric-value { display:block; margin-top:2px; color:#0f172a; font-size:13px; font-weight:800; overflow-wrap:anywhere; }
+      #rt-sales-time-table thead th { position:sticky; top:0; background:#f8fafc; z-index:2; }
+      #rt-sales-time-table th, #rt-sales-time-table td { padding:10px; }
+      .rt-summary-detail-card { margin-top:0; }
+      @media (max-width:1500px) { .rt-sales-asin-grid { grid-template-columns:repeat(4, minmax(0, 1fr)); } }
+      @media (max-width:1100px) {
+        .rt-sales-asin-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+        .rt-summary-table-wrapper { max-height:none; }
+      }
+      @media (max-width:800px) { .rt-sales-asin-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+      @media (max-width:520px) {
+        .rt-sales-asin-grid, .rt-summary-metrics-grid { grid-template-columns:1fr; }
       }
       /* Out-of-Stock export status */
       .export-status-pending { font-weight: 600; color: #d97706; }
@@ -1138,105 +1141,53 @@
     <div class="panel" id="tab-vrt-summary" style="display:none; margin-top:14px;">
       <h2>Vendor Real Time Summary</h2>
       <div class="rt-summary-layout">
-        <div class="rt-summary-left">
-          <div class="rt-summary-card rt-summary-controls">
-            <div class="rt-summary-controls-row">
-              <label style="font-size:14px; font-weight:600;">Lookback:</label>
-              <select id="rt-sales-lookback" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesLookbackChange()">
+        <div class="rt-summary-card rt-summary-controls">
+          <label>Lookback:</label>
+          <select id="rt-sales-lookback" onchange="onRtSalesLookbackChange()">
                 <option value="2">Trailing 2 hours</option>
                 <option value="4">Trailing 4 hours</option>
                 <option value="8">Trailing 8 hours</option>
                 <option value="12">Trailing 12 hours</option>
                 <option value="24">Trailing 24 hours</option>
                 <option value="48">Trailing 48 hours</option>
-              </select>
-
-              <label style="font-size:14px; font-weight:600;">View By:</label>
-              <select id="rt-sales-view-by" style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); font-size:14px;" onchange="onRtSalesViewByChange()">
-                <option value="asin" selected>ASIN</option>
-                <option value="time">Time</option>
-              </select>
-
-              <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
-            </div>
-            <div class="rt-sales-status-strip">
-              <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
-              <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
-            </div>
-          </div>
-
-          <div class="rt-summary-card">
-            <div id="rt-sales-summary" class="rt-summary-metrics-grid">
-              <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
-                <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
-                <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
-              </div>
-              <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
-                <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
-                <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="rt-summary-card">
-            <div style="font-weight:600; margin-bottom:6px;">Ledger</div>
-            <div id="rt-sales-ledger-dashboard" class="rt-sales-ledger-dashboard">
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Missing</div>
-                <div id="rt-ledger-missing" class="rt-ledger-metric-value">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Requested</div>
-                <div id="rt-ledger-requested" class="rt-ledger-metric-value">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Downloaded</div>
-                <div id="rt-ledger-downloaded" class="rt-ledger-metric-value">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Applied</div>
-                <div id="rt-ledger-applied" class="rt-ledger-metric-value">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Failed</div>
-                <div id="rt-ledger-failed" class="rt-ledger-metric-value">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Last Applied Hour</div>
-                <div id="rt-ledger-last-applied" class="rt-ledger-metric-value rt-ledger-muted">-</div>
-              </div>
-              <div class="rt-ledger-metric">
-                <div class="rt-ledger-metric-title">Next Claimable Hour</div>
-                <div id="rt-ledger-next-claimable" class="rt-ledger-metric-value rt-ledger-muted">-</div>
-              </div>
-            </div>
+          </select>
+          <label>View By:</label>
+          <select id="rt-sales-view-by" onchange="onRtSalesViewByChange()">
+            <option value="asin" selected>ASIN</option>
+            <option value="time">Time</option>
+          </select>
+          <label>Sort:</label>
+          <select id="rt-sales-sort-by" onchange="onRtSalesSortByChange()"></select>
+          <button id="rt-sales-refresh-btn" class="btn" onclick="refreshVendorRtSales()">Refresh Now</button>
+          <div class="rt-sales-status-strip">
+            <div id="rt-sales-sync-status" class="rt-sales-status-label"></div>
+            <div id="rt-sales-cooldown-pill" class="rt-sales-pill">Loading...</div>
           </div>
         </div>
 
-        <div class="rt-summary-right">
-          <div class="rt-summary-table-card">
-            <div class="rt-summary-table-head">
-              <div class="rt-summary-table-label" id="rt-sales-table-title">Top ASINs</div>
-            </div>
+        <div class="rt-summary-metrics-grid">
+          <div style="background:#f0f9ff; border:1px solid #0284c7; border-radius:8px; padding:12px;">
+            <div style="font-size:12px; color:#0c4a6e; font-weight:600;">Total Units</div>
+            <div id="rt-sales-total-units" style="font-size:24px; font-weight:700; color:#0369a1;">-</div>
+          </div>
+          <div style="background:#f0fdf4; border:1px solid #16a34a; border-radius:8px; padding:12px;">
+            <div style="font-size:12px; color:#166534; font-weight:600;">Total Revenue</div>
+            <div id="rt-sales-total-revenue" style="font-size:24px; font-weight:700; color:#15803d;">-</div>
+          </div>
+        </div>
+
+        <div class="rt-summary-table-card">
+          <div class="rt-summary-table-head">
+            <div class="rt-summary-table-label" id="rt-sales-table-title">Top ASINs</div>
             <div class="rt-summary-window-meta">
               <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
               <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
             </div>
-            <div class="rt-summary-table-wrapper">
-              <table id="rt-sales-asin-table" style="table-layout:fixed; width:100%; display:none;">
-                <thead>
-                  <tr>
-                    <th style="width:22%; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('asin')">ASIN <span id="rt-sales-sort-asin" class="rt-sales-sort-arrow"></span></th>
-                    <th style="width:18%; word-break:break-word;">SKU</th>
-                    <th style="width:18%; text-align:center; word-break:break-word;">Image</th>
-                    <th style="width:21%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('units')">Units <span id="rt-sales-sort-units" class="rt-sales-sort-arrow"></span></th>
-                    <th style="width:21%; text-align:right; word-break:break-word;" class="rt-sales-sortable-header" onclick="onRtSalesHeaderClick('revenue')">Revenue <span id="rt-sales-sort-revenue" class="rt-sales-sort-arrow"></span></th>
-                  </tr>
-                </thead>
-                <tbody id="rt-sales-top-asins-rows">
-                <tr><td colspan="5" class="empty">No data yet; use the Audit tab to request missing hours.</td></tr>
-                </tbody>
-              </table>
+          </div>
+          <div class="rt-summary-table-wrapper">
+            <div id="rt-sales-asin-grid" class="rt-sales-asin-grid">
+              <div class="empty">No data yet; use the Audit tab to request missing hours.</div>
+            </div>
               <table id="rt-sales-time-table" style="table-layout:fixed; width:100%; display:none;">
                 <thead>
                   <tr>
@@ -1249,10 +1200,10 @@
                   <tr><td colspan="3" class="empty">No data available</td></tr>
                 </tbody>
               </table>
-            </div>
           </div>
+        </div>
 
-          <div id="rt-sales-asin-detail" class="rt-summary-card rt-summary-detail-card" style="display:none;">
+        <div id="rt-sales-asin-detail" class="rt-summary-card rt-summary-detail-card" style="display:none;">
             <div style="font-weight:600; margin-bottom:8px;">ASIN Hourly Detail: <span id="rt-sales-asin-detail-title">-</span></div>
             <div style="overflow:auto; max-height:35vh; border:1px solid var(--border); border-radius:8px;">
               <table>
@@ -1269,7 +1220,6 @@
               </table>
             </div>
             <button class="btn" style="margin-top:8px; background:#111827;" onclick="closeRtSalesAsinDetail()">Close Detail</button>
-          </div>
         </div>
       </div>
     </div>
@@ -4493,6 +4443,7 @@
       // Reset sort state when switching view
       rtSalesSortState.column = null;
       rtSalesSortState.direction = "asc";
+      syncRtSalesSortControl();
       loadVendorRtSalesSummary();
     }
 
@@ -4574,14 +4525,6 @@
 
     // ========== Sync Status Monitoring ==========
     let rtSalesStatusIntervalId = null;
-    const RT_LEDGER_FIELDS = {
-      missing: "rt-ledger-missing",
-      requested: "rt-ledger-requested",
-      downloaded: "rt-ledger-downloaded",
-      applied: "rt-ledger-applied",
-      failed: "rt-ledger-failed",
-    };
-
     function formatRelativeMinutes(targetIso, referenceIso) {
       if (!targetIso) return null;
       const targetTs = Date.parse(targetIso);
@@ -4598,37 +4541,6 @@
       const dt = new Date(iso);
       if (Number.isNaN(dt.getTime())) return null;
       return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-
-    function formatIsoDisplay(iso) {
-      if (!iso) return "-";
-      try {
-        const dt = new Date(iso);
-        if (Number.isNaN(dt.getTime())) {
-          return iso;
-        }
-        return dt.toISOString().replace(".000Z", "Z");
-      } catch (err) {
-        return iso;
-      }
-    }
-
-    function renderRtSalesLedgerSummary(summary) {
-      const safeSummary = summary || {};
-      Object.entries(RT_LEDGER_FIELDS).forEach(([key, elId]) => {
-        const el = document.getElementById(elId);
-        if (!el) return;
-        const value = safeSummary[key];
-        el.textContent = Number.isFinite(value) ? value : "-";
-      });
-      const lastAppliedEl = document.getElementById("rt-ledger-last-applied");
-      if (lastAppliedEl) {
-        lastAppliedEl.textContent = formatIsoDisplay(safeSummary.last_applied_hour_utc);
-      }
-      const nextClaimableEl = document.getElementById("rt-ledger-next-claimable");
-      if (nextClaimableEl) {
-        nextClaimableEl.textContent = formatIsoDisplay(safeSummary.next_claimable_hour_utc);
-      }
     }
 
     async function updateRtSalesSyncStatus() {
@@ -4650,15 +4562,12 @@
             cooldownPill.textContent = "Status unavailable";
             cooldownPill.className = "rt-sales-pill alert";
           }
-          renderRtSalesLedgerSummary(null);
           return;
         }
 
         const data = await resp.json();
         const workerLock = data.worker_lock || {};
         const cooldown = data.cooldown || { active: false, reason: "none" };
-        const ledgerSummary = data.ledger_summary || {};
-
         const lockHeld = Boolean(workerLock.held);
         const nowIso = data.now_utc || null;
         let lockLabel = "RT Sales: Idle";
@@ -4691,7 +4600,6 @@
           }
         }
 
-        renderRtSalesLedgerSummary(ledgerSummary);
       } catch (err) {
         console.error("[VendorRtSummary] Failed to update sync status", err);
         statusEl.textContent = `${disabledNote} Status inconclusive.`;
@@ -4700,7 +4608,6 @@
           cooldownPill.textContent = "Status unavailable";
           cooldownPill.className = "rt-sales-pill alert";
         }
-        renderRtSalesLedgerSummary(null);
       }
     }
 
@@ -4742,12 +4649,46 @@
       }
     }
 
+    function syncRtSalesSortControl() {
+      const sortSelect = document.getElementById("rt-sales-sort-by");
+      if (!sortSelect) return;
+      const options = rtSalesCurrentViewBy === "time"
+        ? [
+            ["bucket_time:desc", "Newest time first"],
+            ["bucket_time:asc", "Oldest time first"],
+            ["units:desc", "Units: high to low"],
+            ["units:asc", "Units: low to high"],
+            ["revenue:desc", "Revenue: high to low"],
+            ["revenue:asc", "Revenue: low to high"],
+          ]
+        : [
+            ["units:desc", "Units: high to low"],
+            ["units:asc", "Units: low to high"],
+            ["revenue:desc", "Revenue: high to low"],
+            ["revenue:asc", "Revenue: low to high"],
+            ["asin:asc", "ASIN: A to Z"],
+            ["asin:desc", "ASIN: Z to A"],
+          ];
+      const selected = `${rtSalesSortState.column || (rtSalesCurrentViewBy === "time" ? "bucket_time" : "units")}:${rtSalesSortState.direction || "desc"}`;
+      sortSelect.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+      sortSelect.value = options.some(([value]) => value === selected) ? selected : options[0][0];
+    }
+
+    function onRtSalesSortByChange() {
+      const sortSelect = document.getElementById("rt-sales-sort-by");
+      if (!sortSelect) return;
+      const [column, direction] = sortSelect.value.split(":");
+      rtSalesSortState.column = column;
+      rtSalesSortState.direction = direction;
+      saveRtSalesSortState();
+      syncRtSalesSortControl();
+      sortRtSalesTable(column);
+    }
+
     function updateRtSalesArrows() {
-      // Clear all arrows
+      // Only Time view retains table headers; ASIN sorting is controlled by
+      // the toolbar select above the product grid.
       const arrows = [
-        "rt-sales-sort-asin",
-        "rt-sales-sort-units",
-        "rt-sales-sort-revenue",
         "rt-sales-sort-bucket-time",
         "rt-sales-sort-time-units",
         "rt-sales-sort-time-revenue"
@@ -4757,22 +4698,17 @@
         if (el) el.textContent = "";
       });
 
-      // Update relevant arrow based on current sort
-      if (rtSalesCurrentViewBy === "asin") {
-        if (rtSalesSortState.column === "asin") {
-          document.getElementById("rt-sales-sort-asin").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-        } else if (rtSalesSortState.column === "units") {
-          document.getElementById("rt-sales-sort-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-        } else if (rtSalesSortState.column === "revenue") {
-          document.getElementById("rt-sales-sort-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
-        }
-      } else if (rtSalesCurrentViewBy === "time") {
+      if (rtSalesCurrentViewBy === "time") {
+        const setArrow = (id) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+        };
         if (rtSalesSortState.column === "bucket_time") {
-          document.getElementById("rt-sales-sort-bucket-time").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+          setArrow("rt-sales-sort-bucket-time");
         } else if (rtSalesSortState.column === "units") {
-          document.getElementById("rt-sales-sort-time-units").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+          setArrow("rt-sales-sort-time-units");
         } else if (rtSalesSortState.column === "revenue") {
-          document.getElementById("rt-sales-sort-time-revenue").textContent = rtSalesSortState.direction === "asc" ? "▲" : "▼";
+          setArrow("rt-sales-sort-time-revenue");
         }
       }
     }
@@ -4789,6 +4725,7 @@
       }
 
       saveRtSalesSortState();
+      syncRtSalesSortControl();
       sortRtSalesTable(column);
     }
 
@@ -4845,43 +4782,52 @@
     }
 
     function renderRtSalesTable(data) {
-      // Show/hide appropriate table based on view_by
-      const asinTable = document.getElementById("rt-sales-asin-table");
+      // ASINs use product cards; Time remains a compact tabular view.
+      const asinGrid = document.getElementById("rt-sales-asin-grid");
       const timeTable = document.getElementById("rt-sales-time-table");
       const tableTitle = document.getElementById("rt-sales-table-title");
 
       if (rtSalesCurrentViewBy === "asin") {
-        asinTable.style.display = "table";
+        asinGrid.style.display = "grid";
         timeTable.style.display = "none";
         tableTitle.textContent = "Top ASINs";
-        renderAsinTable(data);
+        renderAsinCards(data);
       } else if (rtSalesCurrentViewBy === "time") {
-        asinTable.style.display = "none";
+        asinGrid.style.display = "none";
         timeTable.style.display = "table";
         tableTitle.textContent = "Sales by Time";
         renderTimeTable(data);
       }
     }
 
-    function renderAsinTable(data) {
-      const tbody = document.getElementById("rt-sales-top-asins-rows");
+    function renderAsinCards(data) {
+      const grid = document.getElementById("rt-sales-asin-grid");
       if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">No data available</td></tr>';
+        grid.innerHTML = '<div class="empty">No data available</div>';
         return;
       }
 
-      tbody.innerHTML = data.map(asin_row => {
+      grid.innerHTML = data.map(asin_row => {
         const imageHtml = asin_row.imageUrl
           ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" class="rt-summary-asin-image" loading="eager" decoding="sync" />`
-          : '—';
+          : '<span class="rt-sales-asin-image-placeholder">No image</span>';
+        const asin = escapeHtml(asin_row.asin || "—");
+        const asinForJs = String(asin_row.asin || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        const sku = asin_row.sku ? escapeHtml(asin_row.sku) : "SKU unavailable";
+        const units = (asin_row.units || 0).toLocaleString();
+        const revenue = `${asin_row.currency_code ? asin_row.currency_code + " " : ""}${formatNumberWithCommas(asin_row.revenue || 0)}`;
         return `
-          <tr style="cursor:pointer;" onclick="openRtSalesAsinDetail('${asin_row.asin}')">
-            <td><strong>${asin_row.asin}</strong></td>
-            <td style="font-size:12px;">${asin_row.sku ? escapeHtml(asin_row.sku) : '&mdash;'}</td>
-            <td style="text-align:center;">${imageHtml}</td>
-            <td style="text-align:right;"><strong>${(asin_row.units || 0).toLocaleString()}</strong></td>
-            <td style="text-align:right;"><strong>${asin_row.currency_code ? asin_row.currency_code + ' ' : ''}${formatNumberWithCommas(asin_row.revenue || 0)}</strong></td>
-          </tr>
+          <article class="rt-sales-asin-card" tabindex="0" role="button" aria-label="View hourly detail for ${asin}" onclick="openRtSalesAsinDetail('${asinForJs}')" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRtSalesAsinDetail('${asinForJs}'); }">
+            <div class="rt-sales-asin-image-wrap">${imageHtml}</div>
+            <div class="rt-sales-asin-details">
+              <div class="rt-sales-asin-id">${asin}</div>
+              <div class="rt-sales-asin-sku">${sku}</div>
+              <div class="rt-sales-asin-metrics">
+                <div><span class="rt-sales-asin-metric-label">Units</span><span class="rt-sales-asin-metric-value">${units}</span></div>
+                <div><span class="rt-sales-asin-metric-label">Revenue</span><span class="rt-sales-asin-metric-value">${revenue}</span></div>
+              </div>
+            </div>
+          </article>
         `;
       }).join("");
     }
@@ -4970,6 +4916,7 @@
 
         // Load saved sort state from localStorage
         loadRtSalesSortState();
+        syncRtSalesSortControl();
         
         // Update arrows to show current state
         updateRtSalesArrows();
@@ -4988,6 +4935,7 @@
             rtSalesSortState.column = "units";
             rtSalesSortState.direction = "desc";
           }
+          syncRtSalesSortControl();
           sortRtSalesTable(rtSalesSortState.column);
         }
       } catch (err) {
@@ -4998,10 +4946,13 @@
           updateRtSalesWindowInfo();
           updateRtSalesCoverageInfo();
           renderRtSalesTable([]);
-          const tbody = rtSalesCurrentViewBy === "asin" 
-            ? document.getElementById("rt-sales-top-asins-rows")
-            : document.getElementById("rt-sales-time-rows");
-          if (tbody) tbody.innerHTML = `<tr><td colspan="${rtSalesCurrentViewBy === 'asin' ? 5 : 3}" class="empty">Error: ${err.message}</td></tr>`;
+          if (rtSalesCurrentViewBy === "asin") {
+            const grid = document.getElementById("rt-sales-asin-grid");
+            if (grid) grid.innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
+          } else {
+            const tbody = document.getElementById("rt-sales-time-rows");
+            if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="empty">Error: ${escapeHtml(err.message)}</td></tr>`;
+          }
         }
       }
     }
@@ -5049,6 +5000,8 @@
       loadRtSalesLookback();
       loadRtSalesViewBy();
       loadRtSalesSortState();
+      rtSalesCurrentViewBy = document.getElementById("rt-sales-view-by").value;
+      syncRtSalesSortControl();
       updateRtSalesWindowInfo();
     }
 
