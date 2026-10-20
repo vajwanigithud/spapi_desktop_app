@@ -465,8 +465,18 @@
       .rt-sales-asin-id { font-size:13px; font-weight:800; overflow-wrap:anywhere; }
       .rt-sales-asin-sku { min-height:16px; font-size:12px; color:#475569; overflow-wrap:anywhere; }
       .rt-sales-asin-metrics { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding-top:4px; border-top:1px solid #e2e8f0; }
-      .rt-sales-asin-metric-label { display:block; color:#64748b; font-size:10px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
-      .rt-sales-asin-metric-value { display:block; margin-top:2px; color:#0f172a; font-size:13px; font-weight:800; overflow-wrap:anywhere; }
+      .rt-sales-asin-metric { min-width:0; padding:6px 8px; border:1px solid; border-radius:7px; }
+      .rt-sales-asin-metric.units { background:#eff6ff; border-color:#bfdbfe; }
+      .rt-sales-asin-metric.revenue { background:#f0fdf4; border-color:#bbf7d0; }
+      .rt-sales-asin-metric.revenue.negative { background:#fef2f2; border-color:#fecaca; }
+      .rt-sales-asin-metric-label { display:block; font-size:10px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }
+      .rt-sales-asin-metric.units .rt-sales-asin-metric-label { color:#1d4ed8; }
+      .rt-sales-asin-metric.revenue .rt-sales-asin-metric-label { color:#15803d; }
+      .rt-sales-asin-metric.revenue.negative .rt-sales-asin-metric-label { color:#b91c1c; }
+      .rt-sales-asin-metric-value { display:block; margin-top:2px; font-size:14px; font-weight:800; overflow-wrap:anywhere; }
+      .rt-sales-asin-metric.units .rt-sales-asin-metric-value { color:#1e40af; }
+      .rt-sales-asin-metric.revenue .rt-sales-asin-metric-value { color:#166534; }
+      .rt-sales-asin-metric.revenue.negative .rt-sales-asin-metric-value { color:#b91c1c; }
       #rt-sales-time-table thead th { position:sticky; top:0; background:#f8fafc; z-index:2; }
       #rt-sales-time-table th, #rt-sales-time-table td { padding:10px; }
       .rt-summary-detail-card { margin-top:0; }
@@ -4610,7 +4620,9 @@
         const asinForJs = String(asin_row.asin || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
         const sku = asin_row.sku ? escapeHtml(asin_row.sku) : "SKU unavailable";
         const units = (asin_row.units || 0).toLocaleString();
-        const revenue = `${asin_row.currency_code ? asin_row.currency_code + " " : ""}${formatNumberWithCommas(asin_row.revenue || 0)}`;
+        const revenueNumber = Number(asin_row.revenue || 0);
+        const revenue = `${asin_row.currency_code ? asin_row.currency_code + " " : ""}${formatNumberWithCommas(revenueNumber)}`;
+        const revenueClass = revenueNumber < 0 ? "revenue negative" : "revenue";
         return `
           <article class="rt-sales-asin-card" tabindex="0" role="button" aria-label="View hourly detail for ${asin}" onclick="openRtSalesAsinDetail('${asinForJs}')" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRtSalesAsinDetail('${asinForJs}'); }">
             <div class="rt-sales-asin-image-wrap">${imageHtml}</div>
@@ -4618,8 +4630,8 @@
               <div class="rt-sales-asin-id">${asin}</div>
               <div class="rt-sales-asin-sku">${sku}</div>
               <div class="rt-sales-asin-metrics">
-                <div><span class="rt-sales-asin-metric-label">Units</span><span class="rt-sales-asin-metric-value">${units}</span></div>
-                <div><span class="rt-sales-asin-metric-label">Revenue</span><span class="rt-sales-asin-metric-value">${revenue}</span></div>
+                <div class="rt-sales-asin-metric units"><span class="rt-sales-asin-metric-label">Units</span><span class="rt-sales-asin-metric-value">${units}</span></div>
+                <div class="rt-sales-asin-metric ${revenueClass}"><span class="rt-sales-asin-metric-label">Revenue</span><span class="rt-sales-asin-metric-value">${revenue}</span></div>
               </div>
             </div>
           </article>
