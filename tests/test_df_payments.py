@@ -17,6 +17,7 @@ from services.df_payments import (
     maybe_run_df_gmail_reconcile_auto,
     reconcile_df_payments_from_remittances,
     refresh_df_payments,
+    refresh_df_payment_statuses,
     run_df_gmail_reconcile,
 )
 from services.df_remittances_gmail import (
@@ -134,8 +135,8 @@ def test_df_payments_materialize_and_prune(tmp_path):
     state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=fixed_now)
     orders = state["orders"]
 
-    assert len(orders) == 1
-    order = orders[0]
+    assert len(orders) == 2
+    order = next(order for order in orders if order["purchase_order_number"] == "PO-NEW")
     assert order["purchase_order_number"] == "PO-NEW"
     assert order["items_count"] == 3
     assert order["total_units"] == 4
@@ -155,7 +156,67 @@ def test_df_payments_materialize_and_prune(tmp_path):
     assert round(cashflow[1]["unpaid_amount"], 2) == 36.75
     assert "expected payments" in (cashflow[0]["note"] or "").lower()
 
-    assert state["state"]["rows_90d"] == 1
+    cancelled = next(order for order in orders if order["purchase_order_number"] == "PO-CANCEL")
+    assert cancelled["order_status"] == "CANCELLED"
+    assert state["state"]["rows_90d"] == 2
+
+
+def test_df_payment_status_refresh_updates_old_status_and_retries_failures(tmp_path):
+    db_path = tmp_path / "df_payments_status_refresh.db"
+    ensure_df_payments_tables(db_path)
+    first_check = datetime(2025, 4, 10, 10, 0, tzinfo=timezone.utc)
+    order_date = first_check - timedelta(days=30)
+
+    refresh_df_payments(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        now_utc=first_check,
+        fetcher=lambda **kwargs: {"purchaseOrders": [_make_order("PO-STATUS", order_date, 10)]},
+    )
+
+    def shipped_fetch(po_numbers):
+        assert po_numbers == ["PO-STATUS"]
+        order = _make_order("PO-STATUS", order_date, 10)
+        order["orderDetails"]["orderStatus"] = "SHIPPED"
+        return {"orders": [order], "failed_po_numbers": []}
+
+    refreshed = refresh_df_payment_statuses(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        now_utc=first_check + timedelta(hours=1),
+        order_fetcher=shipped_fetch,
+    )
+    assert refreshed == {"status": "refreshed", "orders_checked": 1, "orders_updated": 1, "orders_failed": 0}
+
+    state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=first_check)
+    assert state["orders"][0]["order_status"] == "SHIPPED"
+    assert state["orders"][0]["status_last_checked_utc"] == (first_check + timedelta(hours=1)).isoformat()
+
+    failed = refresh_df_payment_statuses(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        now_utc=first_check + timedelta(hours=2),
+        order_fetcher=lambda _po_numbers: {"orders": [], "failed_po_numbers": ["PO-STATUS"]},
+    )
+    assert failed["status"] == "partial"
+    state_after_failure = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=first_check)
+    assert state_after_failure["orders"][0]["status_last_checked_utc"] == (first_check + timedelta(hours=1)).isoformat()
+
+    def cancelled_fetch(po_numbers):
+        assert po_numbers == ["PO-STATUS"]
+        order = _make_order("PO-STATUS", order_date, 10)
+        order["orderDetails"]["orderStatus"] = "CANCELLED"
+        return {"orders": [order], "failed_po_numbers": []}
+
+    refresh_df_payment_statuses(
+        MARKETPLACE_ID,
+        db_path=db_path,
+        now_utc=first_check + timedelta(hours=3),
+        order_fetcher=cancelled_fetch,
+    )
+    cancelled_state = get_df_payments_state(MARKETPLACE_ID, db_path=db_path, now_utc=first_check)
+    assert cancelled_state["orders"][0]["order_status"] == "CANCELLED"
+    assert cancelled_state["dashboard"]["invoices_by_month"][1]["total_incl_vat"] == 0.0
 
 
 def test_df_payments_dashboard_windows(tmp_path):
@@ -402,6 +463,11 @@ def test_df_payments_paginate_all_pages(monkeypatch):
         call_index["i"] += 1
         return DummyResp(payload)
 
+    class DummyAuth:
+        def get_rdt(self, _resources):
+            return "test-rdt"
+
+    monkeypatch.setattr("services.df_payments.SpApiAuth", lambda: DummyAuth())
     monkeypatch.setattr("services.df_payments.requests.get", fake_get)
 
     result = _fetch_purchase_orders_from_api(
@@ -479,6 +545,11 @@ def test_df_payments_paginate_and_persist(monkeypatch, tmp_path):
         idx["i"] += 1
         return DummyResp2(payload)
 
+    class DummyAuth:
+        def get_rdt(self, _resources):
+            return "test-rdt"
+
+    monkeypatch.setattr("services.df_payments.SpApiAuth", lambda: DummyAuth())
     monkeypatch.setattr("services.df_payments.requests.get", fake_get)
 
     result = refresh_df_payments(

@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -39,6 +40,8 @@ INCREMENTAL_SCHEDULER_INTERVAL_SECONDS = int(os.getenv("DF_PAYMENTS_SCHEDULER_IN
 GMAIL_RECONCILE_INTERVAL_SECONDS = 24 * 60 * 60
 GMAIL_RECONCILE_DISABLED_BACKOFF_SECONDS = int(os.getenv("DF_GMAIL_DISABLED_BACKOFF_SECONDS", str(6 * 60 * 60)))
 GMAIL_RECONCILE_FAILURE_BACKOFF_SECONDS = int(os.getenv("DF_GMAIL_FAILURE_BACKOFF_SECONDS", str(60 * 60)))
+STATUS_REFRESH_BATCH_SIZE = max(1, min(int(os.getenv("DF_PAYMENTS_STATUS_REFRESH_BATCH_SIZE", "50")), 100))
+STATUS_REFRESH_RDT_BATCH_SIZE = max(1, min(int(os.getenv("DF_PAYMENTS_STATUS_RDT_BATCH_SIZE", "10")), 25))
 
 GMAIL_LAST_ATTEMPT_KEY = "df_gmail_reconcile_last_attempt_utc"
 GMAIL_LAST_SUCCESS_KEY = "df_gmail_reconcile_last_success_utc"
@@ -210,9 +213,8 @@ def _extract_next_token(payload: Any) -> Optional[str]:
 def _build_order_summary(order: Dict[str, Any], *, now_utc: datetime) -> Optional[Dict[str, Any]]:
     details = order.get("orderDetails") or {}
     order_status = (details.get("orderStatus") or order.get("orderStatus") or "").strip().upper()
-    if order_status == "CANCELLED":
-        return None
-
+    if order_status == "CANCELED":
+        order_status = "CANCELLED"
     po_number = (order.get("purchaseOrderNumber") or order.get("poNumber") or "").strip()
     if not po_number:
         return None
@@ -250,7 +252,7 @@ def _build_order_summary(order: Dict[str, Any], *, now_utc: datetime) -> Optiona
 
     return {
         "purchase_order_number": po_number,
-        "customer_order_number": order.get("customerOrderNumber") or "",
+        "customer_order_number": details.get("customerOrderNumber") or order.get("customerOrderNumber") or "",
         "order_date_utc": order_date_utc,
         "order_status": order_status or "UNKNOWN",
         "items_count": items_count,
@@ -260,6 +262,7 @@ def _build_order_summary(order: Dict[str, Any], *, now_utc: datetime) -> Optiona
         "currency_code": currency_code or "AED",
         "sku_list": ", ".join(seen_skus),
         "last_updated_utc": now_utc.replace(microsecond=0).isoformat(),
+        "status_last_checked_utc": now_utc.replace(microsecond=0).isoformat(),
     }
 
 
@@ -274,8 +277,8 @@ def _upsert_orders(
 
     with _connection(db_path) as conn:
         placeholders = (
-            "INSERT INTO df_payments_orders (marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status, items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO df_payments_orders (marketplace_id, purchase_order_number, customer_order_number, order_date_utc, order_status, items_count, total_units, subtotal_amount, vat_amount, currency_code, sku_list, last_updated_utc, status_last_checked_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(marketplace_id, purchase_order_number) DO UPDATE SET "
             "customer_order_number=excluded.customer_order_number, "
             "order_date_utc=excluded.order_date_utc, "
@@ -286,7 +289,8 @@ def _upsert_orders(
             "vat_amount=excluded.vat_amount, "
             "currency_code=excluded.currency_code, "
             "sku_list=excluded.sku_list, "
-            "last_updated_utc=excluded.last_updated_utc"
+            "last_updated_utc=excluded.last_updated_utc, "
+            "status_last_checked_utc=excluded.status_last_checked_utc"
         )
         params = [
             (
@@ -302,6 +306,7 @@ def _upsert_orders(
                 row.get("currency_code"),
                 row.get("sku_list"),
                 row.get("last_updated_utc"),
+                row.get("status_last_checked_utc"),
             )
             for row in summaries
         ]
@@ -370,6 +375,72 @@ def _load_orders(marketplace_id: str, *, db_path: Path) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def _load_status_refresh_candidates(
+    marketplace_id: str,
+    *,
+    db_path: Path,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Return the oldest unchecked PO statuses so every retained PO is revisited.
+
+    Failed detail calls deliberately remain unchecked and therefore are retried on
+    a later pass instead of silently falling out of the refresh rotation.
+    """
+    with _connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM df_payments_orders
+            WHERE marketplace_id = ?
+            ORDER BY
+                CASE WHEN status_last_checked_utc IS NULL OR status_last_checked_utc = '' THEN 0 ELSE 1 END,
+                status_last_checked_utc ASC,
+                order_date_utc ASC,
+                purchase_order_number ASC
+            LIMIT ?
+            """,
+            (marketplace_id, max(1, int(limit))),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _update_status_refresh_state(
+    marketplace_id: str,
+    *,
+    db_path: Path,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    status: Optional[str] = None,
+    error: Optional[str] = None,
+    orders_checked: Optional[int] = None,
+    orders_updated: Optional[int] = None,
+) -> None:
+    """Persist status-refresh telemetry without touching fetch or Gmail state."""
+    with _connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO df_payments_state (
+                marketplace_id,
+                status_refresh_last_started_at,
+                status_refresh_last_finished_at,
+                status_refresh_last_status,
+                status_refresh_last_error,
+                status_refresh_orders_checked,
+                status_refresh_orders_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(marketplace_id) DO UPDATE SET
+                status_refresh_last_started_at=excluded.status_refresh_last_started_at,
+                status_refresh_last_finished_at=excluded.status_refresh_last_finished_at,
+                status_refresh_last_status=excluded.status_refresh_last_status,
+                status_refresh_last_error=excluded.status_refresh_last_error,
+                status_refresh_orders_checked=excluded.status_refresh_orders_checked,
+                status_refresh_orders_updated=excluded.status_refresh_orders_updated
+            """,
+            (marketplace_id, started_at, finished_at, status, error, orders_checked, orders_updated),
+        )
+        conn.commit()
+
+
 def _load_remittances(*, db_path: Path) -> List[Dict[str, Any]]:
     ensure_df_remittances_table(db_path)
     with _connection(db_path) as conn:
@@ -416,7 +487,7 @@ def _aggregate_invoice_totals(marketplace_id: str, *, db_path: Path) -> Dict[str
             """
             SELECT substr(order_date_utc, 1, 7) AS month, SUM(subtotal_amount + vat_amount) AS total
             FROM df_payments_orders
-            WHERE marketplace_id = ?
+            WHERE marketplace_id = ? AND COALESCE(order_status, '') != 'CANCELLED'
             GROUP BY substr(order_date_utc, 1, 7)
             """,
             (marketplace_id,),
@@ -434,7 +505,9 @@ def _aggregate_cashflow_totals(marketplace_id: str, *, db_path: Path) -> Dict[st
             """
             SELECT substr(order_date_utc, 1, 7) AS month, SUM(subtotal_amount + vat_amount) AS total
             FROM df_payments_orders
-            WHERE marketplace_id = ? AND (payment_status IS NULL OR payment_status != 'PAID')
+            WHERE marketplace_id = ?
+              AND COALESCE(order_status, '') != 'CANCELLED'
+              AND (payment_status IS NULL OR payment_status != 'PAID')
             GROUP BY substr(order_date_utc, 1, 7)
             """,
             (marketplace_id,),
@@ -488,7 +561,7 @@ def _get_state_row(marketplace_id: str, *, db_path: Path) -> Dict[str, Any]:
     with _connection(db_path) as conn:
         row = conn.execute(
             """
-            SELECT marketplace_id, last_fetch_started_at, last_fetch_finished_at, last_fetch_status, last_error, last_lookback_days, rows_90d, pages_fetched, fetched_orders_total, unique_po_total, rows_in_db_window, limit_used, last_incremental_started_at, last_incremental_finished_at, last_incremental_status, last_incremental_error, last_seen_order_date_utc, last_incremental_orders_upserted, last_incremental_pages_fetched, incremental_last_attempt_at_utc, incremental_last_success_at_utc, incremental_cooldown_until_utc
+            SELECT marketplace_id, last_fetch_started_at, last_fetch_finished_at, last_fetch_status, last_error, last_lookback_days, rows_90d, pages_fetched, fetched_orders_total, unique_po_total, rows_in_db_window, limit_used, last_incremental_started_at, last_incremental_finished_at, last_incremental_status, last_incremental_error, last_seen_order_date_utc, last_incremental_orders_upserted, last_incremental_pages_fetched, incremental_last_attempt_at_utc, incremental_last_success_at_utc, incremental_cooldown_until_utc, status_refresh_last_started_at, status_refresh_last_finished_at, status_refresh_last_status, status_refresh_last_error, status_refresh_orders_checked, status_refresh_orders_updated
             FROM df_payments_state
             WHERE marketplace_id = ?
             """,
@@ -518,6 +591,12 @@ def _get_state_row(marketplace_id: str, *, db_path: Path) -> Dict[str, Any]:
             "incremental_last_attempt_at_utc": None,
             "incremental_last_success_at_utc": None,
             "incremental_cooldown_until_utc": None,
+            "status_refresh_last_started_at": None,
+            "status_refresh_last_finished_at": None,
+            "status_refresh_last_status": None,
+            "status_refresh_last_error": None,
+            "status_refresh_orders_checked": None,
+            "status_refresh_orders_updated": None,
         }
     return dict(row)
 
@@ -754,6 +833,12 @@ def get_df_payments_state(
         "incremental_auto_enabled": state_row.get("incremental_auto_enabled"),
         "incremental_worker_status": state_row.get("incremental_worker_status"),
         "incremental_worker_details": state_row.get("incremental_worker_details"),
+        "status_refresh_last_started_at": state_row.get("status_refresh_last_started_at"),
+        "status_refresh_last_finished_at": state_row.get("status_refresh_last_finished_at"),
+        "status_refresh_last_status": state_row.get("status_refresh_last_status"),
+        "status_refresh_last_error": state_row.get("status_refresh_last_error"),
+        "status_refresh_orders_checked": state_row.get("status_refresh_orders_checked"),
+        "status_refresh_orders_updated": state_row.get("status_refresh_orders_updated"),
     }
     state_row["diagnostics"] = diagnostics
     return {
@@ -1013,6 +1098,173 @@ def _fetch_purchase_orders_from_api(
     }
 
 
+def _extract_single_purchase_order(payload: Any) -> Optional[Dict[str, Any]]:
+    """Extract one PO from the getOrder response without retaining raw customer data."""
+    if not isinstance(payload, dict):
+        return None
+    candidate = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    if not isinstance(candidate, dict):
+        return None
+    if candidate.get("purchaseOrderNumber") or candidate.get("poNumber"):
+        return candidate
+    return None
+
+
+def _fetch_purchase_order_details_from_api(po_numbers: List[str]) -> Dict[str, Any]:
+    """Read the current Amazon status for a paced batch of already-known POs.
+
+    RDT scopes are requested in small groups.  A failed PO is returned separately
+    so it remains eligible for the next sweep; it is never marked fresh by error.
+    """
+    unique_pos = list(dict.fromkeys(str(po or "").strip() for po in po_numbers if str(po or "").strip()))
+    if not unique_pos:
+        return {"orders": [], "failed_po_numbers": []}
+
+    auth_client = SpApiAuth()
+    orders: List[Dict[str, Any]] = []
+    failures: List[str] = []
+
+    for offset in range(0, len(unique_pos), STATUS_REFRESH_RDT_BATCH_SIZE):
+        chunk = unique_pos[offset : offset + STATUS_REFRESH_RDT_BATCH_SIZE]
+        paths = [f"{DF_ORDERS_PATH}/{quote(po, safe='')}" for po in chunk]
+        try:
+            rdt = auth_client.get_rdt([{"method": "GET", "path": path} for path in paths])
+            if not rdt:
+                raise RuntimeError("Failed to obtain restricted data token for DF order status refresh")
+        except Exception as exc:
+            LOGGER.warning("[DF Payments] Status refresh RDT failed for %s POs: %s", len(chunk), exc)
+            failures.extend(chunk)
+            continue
+
+        headers = {"accept": "application/json", "x-amz-access-token": rdt}
+        for po_number, path in zip(chunk, paths):
+            try:
+                response = requests.get(f"{SPAPI_HOST}{path}", headers=headers, timeout=30)
+                if response.status_code >= 400:
+                    LOGGER.warning(
+                        "[DF Payments] Status refresh failed for PO %s (HTTP %s)",
+                        po_number,
+                        response.status_code,
+                    )
+                    failures.append(po_number)
+                    continue
+                order = _extract_single_purchase_order(response.json())
+                if not order:
+                    LOGGER.warning("[DF Payments] Status refresh returned no order payload for PO %s", po_number)
+                    failures.append(po_number)
+                    continue
+                orders.append(order)
+            except Exception as exc:
+                LOGGER.warning("[DF Payments] Status refresh request failed for PO %s: %s", po_number, exc)
+                failures.append(po_number)
+
+    return {"orders": orders, "failed_po_numbers": failures}
+
+
+def refresh_df_payment_statuses(
+    marketplace_id: str = DEFAULT_MARKETPLACE_ID,
+    *,
+    db_path: Path = DEFAULT_CATALOG_DB_PATH,
+    now_utc: Optional[datetime] = None,
+    batch_size: int = STATUS_REFRESH_BATCH_SIZE,
+    order_fetcher: Optional[Callable[[List[str]], Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Refresh a bounded, fair batch of stored Amazon PO statuses.
+
+    This is intentionally independent of the created-date list endpoint.  It
+    closes the historical-status gap while preserving the Gmail payment flow.
+    Callers must hold ``_df_scan_lock`` when this runs beside an order refresh.
+    """
+    ensure_df_payments_tables(db_path)
+    effective_now = now_utc or _now_utc()
+    candidates = _load_status_refresh_candidates(
+        marketplace_id,
+        db_path=db_path,
+        limit=max(1, min(int(batch_size), 100)),
+    )
+    if not candidates:
+        return {"status": "idle", "orders_checked": 0, "orders_updated": 0, "orders_failed": 0}
+
+    started_iso = _iso(effective_now)
+    _update_status_refresh_state(
+        marketplace_id,
+        db_path=db_path,
+        started_at=started_iso,
+        status="IN_PROGRESS",
+        error=None,
+        orders_checked=0,
+        orders_updated=0,
+    )
+
+    candidate_by_po = {str(row["purchase_order_number"]): row for row in candidates}
+    try:
+        fetch = order_fetcher or _fetch_purchase_order_details_from_api
+        fetched = fetch(list(candidate_by_po)) or {}
+        orders_payload = fetched.get("orders", []) if isinstance(fetched, dict) else []
+        summaries: List[Dict[str, Any]] = []
+        changed_statuses = 0
+        for order in orders_payload:
+            summary = _build_order_summary(order, now_utc=effective_now)
+            if not summary:
+                continue
+            po_number = summary["purchase_order_number"]
+            previous = candidate_by_po.get(po_number)
+            if not previous:
+                LOGGER.warning("[DF Payments] Ignoring unexpected PO returned by status refresh: %s", po_number)
+                continue
+            # Some cancellation responses omit line details.  Retain the last
+            # known values for payment/reconciliation auditability while the
+            # cancelled order is excluded from invoice and cash-flow totals.
+            if summary.get("order_status") == "CANCELLED" and not summary.get("items_count"):
+                for field in ("customer_order_number", "order_date_utc", "items_count", "total_units", "subtotal_amount", "vat_amount", "currency_code", "sku_list"):
+                    if previous.get(field) not in (None, ""):
+                        summary[field] = previous[field]
+            if (previous.get("order_status") or "").upper() != (summary.get("order_status") or "").upper():
+                changed_statuses += 1
+            summary["marketplace_id"] = marketplace_id
+            summaries.append(summary)
+
+        upserted = _upsert_orders(marketplace_id, summaries, db_path=db_path)
+        reported_failures = fetched.get("failed_po_numbers", []) if isinstance(fetched, dict) else list(candidate_by_po)
+        refreshed_pos = {row["purchase_order_number"] for row in summaries}
+        # A malformed or truncated response must not create a false "fresh"
+        # result.  Unreturned selected POs stay eligible for the next pass.
+        failed_po_numbers = sorted(
+            set(str(po) for po in reported_failures) | (set(candidate_by_po) - refreshed_pos)
+        )
+        finished_iso = _iso(_now_utc())
+        result_status = "SUCCESS" if not failed_po_numbers else "PARTIAL"
+        _update_status_refresh_state(
+            marketplace_id,
+            db_path=db_path,
+            started_at=started_iso,
+            finished_at=finished_iso,
+            status=result_status,
+            error=None if not failed_po_numbers else f"{len(failed_po_numbers)} PO status checks will retry",
+            orders_checked=upserted,
+            orders_updated=changed_statuses,
+        )
+        return {
+            "status": "refreshed" if not failed_po_numbers else "partial",
+            "orders_checked": upserted,
+            "orders_updated": changed_statuses,
+            "orders_failed": len(failed_po_numbers),
+        }
+    except Exception as exc:
+        _update_status_refresh_state(
+            marketplace_id,
+            db_path=db_path,
+            started_at=started_iso,
+            finished_at=_iso(_now_utc()),
+            status="ERROR",
+            error=str(exc),
+            orders_checked=0,
+            orders_updated=0,
+        )
+        LOGGER.error("[DF Payments] Status refresh failed: %s", exc, exc_info=True)
+        return {"status": "error", "orders_checked": 0, "orders_updated": 0, "orders_failed": len(candidates)}
+
+
 def _refresh_df_payments_unlocked(
     marketplace_id: str = DEFAULT_MARKETPLACE_ID,
     *,
@@ -1062,6 +1314,13 @@ def _refresh_df_payments_unlocked(
                 summaries.append(summary)
 
         upserted = _upsert_orders(marketplace_id, summaries, db_path=db_path)
+        # Test/custom fetchers stay fully offline.  Live Amazon fetches also
+        # advance a bounded direct-PO status sweep for older records.
+        status_refresh = (
+            refresh_df_payment_statuses(marketplace_id, db_path=db_path, now_utc=effective_now)
+            if fetcher is None
+            else {"status": "not_run", "orders_checked": 0, "orders_updated": 0, "orders_failed": 0}
+        )
         pruned = _prune_old_orders(marketplace_id, now_utc=effective_now, db_path=db_path)
         rows_90d = _count_orders(marketplace_id, db_path=db_path)
         max_order_iso = _max_order_date(marketplace_id, db_path=db_path)
@@ -1111,6 +1370,7 @@ def _refresh_df_payments_unlocked(
             "rows_in_db_window": rows_in_window,
             "limit_used": fetched_meta.get("limit_used") if fetched_meta.get("limit_used") else fetch_limit,
             "last_seen_order_date_utc": max_order_iso,
+            "status_refresh": status_refresh,
         }
     except Exception as exc:
         finished_iso = _now_utc().isoformat()
@@ -1241,6 +1501,13 @@ def incremental_refresh_df_payments(
                 summaries.append(summary)
 
         upserted = _upsert_orders(marketplace_id, summaries, db_path=db_path)
+        # The incremental list query finds new POs; the direct sweep checks a
+        # fair batch of historical POs whose Amazon status may have changed.
+        status_refresh = (
+            refresh_df_payment_statuses(marketplace_id, db_path=db_path, now_utc=effective_now)
+            if fetcher is None
+            else {"status": "not_run", "orders_checked": 0, "orders_updated": 0, "orders_failed": 0}
+        )
         pruned = _prune_old_orders(marketplace_id, now_utc=effective_now, db_path=db_path)
         rows_90d = _count_orders(marketplace_id, db_path=db_path)
         window_start = effective_now - timedelta(days=MAX_LOOKBACK_DAYS)
@@ -1310,6 +1577,7 @@ def incremental_refresh_df_payments(
             "last_seen_order_date_utc": chosen_max_iso,
             "next_eligible_utc": cooldown_until_iso,
             "triggered_by": triggered_by,
+            "status_refresh": status_refresh,
         }
     except Exception as exc:
         finished_dt = now_utc or _now_utc()
