@@ -2361,8 +2361,7 @@ def _get_realtime_sales_by_asin(
     
     query += """
     GROUP BY vrs.asin
-    ORDER BY units DESC
-    LIMIT 50
+    ORDER BY units DESC, revenue DESC, vrs.asin ASC
     """
     
     rows = conn.execute(query, params).fetchall()

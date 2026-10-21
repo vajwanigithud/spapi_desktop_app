@@ -446,6 +446,8 @@
       .rt-summary-inline-metric.revenue .rt-summary-inline-metric-label { color:#166534; }
       .rt-summary-table-card { display:flex; flex-direction:column; gap:10px; }
       .rt-summary-table-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+      .rt-summary-table-title-group { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+      .rt-sales-grid-summary { color:#475569; font-size:12px; }
       .rt-summary-table-wrapper { border:1px solid var(--border); border-radius:10px; overflow-y:auto; overflow-x:hidden; max-height:60vh; position:relative; background:#fff; }
       .rt-summary-window-meta { display:flex; flex-direction:column; gap:4px; font-size:12px; color:#475569; }
       .rt-summary-table-label { font-weight:600; font-size:14px; color:#0f172a; }
@@ -1155,7 +1157,10 @@
 
         <div class="rt-summary-table-card">
           <div class="rt-summary-table-head">
-            <div class="rt-summary-table-label" id="rt-sales-table-title">Top ASINs</div>
+          <div class="rt-summary-table-title-group">
+            <div class="rt-summary-table-label" id="rt-sales-table-title">ASIN Sales</div>
+            <div id="rt-sales-grid-summary" class="rt-sales-grid-summary" aria-live="polite"></div>
+          </div>
             <div class="rt-summary-window-meta">
               <div id="rt-sales-window-info" class="rt-sales-window-info"></div>
               <div id="rt-sales-coverage-info" class="rt-sales-window-info" style="display:none;"></div>
@@ -4588,16 +4593,24 @@
       const asinGrid = document.getElementById("rt-sales-asin-grid");
       const timeTable = document.getElementById("rt-sales-time-table");
       const tableTitle = document.getElementById("rt-sales-table-title");
+      const gridSummary = document.getElementById("rt-sales-grid-summary");
 
       if (rtSalesCurrentViewBy === "asin") {
         asinGrid.style.display = "grid";
         timeTable.style.display = "none";
-        tableTitle.textContent = "Top ASINs";
+        tableTitle.textContent = "ASIN Sales";
+        if (gridSummary) {
+          const productCount = (data || []).length;
+          gridSummary.textContent = productCount
+            ? `${productCount.toLocaleString()} products shown · all product sales included`
+            : "No product sales in this window";
+        }
         renderAsinCards(data);
       } else if (rtSalesCurrentViewBy === "time") {
         asinGrid.style.display = "none";
         timeTable.style.display = "table";
         tableTitle.textContent = "Sales by Time";
+        if (gridSummary) gridSummary.textContent = "";
         renderTimeTable(data);
       }
     }
@@ -4611,7 +4624,7 @@
 
       grid.innerHTML = data.map(asin_row => {
         const imageHtml = asin_row.imageUrl
-          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" class="rt-summary-asin-image" loading="eager" decoding="sync" />`
+          ? `<img src="${asin_row.imageUrl}" alt="${asin_row.asin}" class="rt-summary-asin-image" loading="lazy" decoding="async" />`
           : '<span class="rt-sales-asin-image-placeholder">No image</span>';
         const asin = escapeHtml(asin_row.asin || "—");
         const asinForJs = String(asin_row.asin || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
