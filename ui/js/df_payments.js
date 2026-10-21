@@ -44,15 +44,30 @@
     const el = document.getElementById("dfp-status");
     if (!el) return;
     el.textContent = message;
-    el.style.color = isError ? "#b91c1c" : "var(--muted)";
+    el.classList.remove("is-good", "is-info", "is-waiting", "is-error");
+    const isWorking = /loading|fetching|scan in progress|reconciling/i.test(message);
+    el.classList.add(isError ? "is-error" : (isWorking ? "is-info" : "is-good"));
   }
 
   function renderStatus(state, rowsCount) {
     const lastFetch = state?.last_fetch_finished_at || state?.last_fetch_started_at;
     const lastLabel = lastFetch ? formatUaeLabel(lastFetch) : "—";
     const rowsLabel = rowsCount != null ? rowsCount : state?.rows_90d || 0;
-    const errorLabel = state?.last_error ? safe(state.last_error) : "None";
-    setStatus(`Last fetch: ${lastLabel} | Rows (90d): ${rowsLabel} | Error: ${errorLabel}`);
+    const ordersCountEl = document.getElementById("dfp-orders-count");
+    if (ordersCountEl) ordersCountEl.textContent = numberFormatter.format(rowsLabel);
+    const lastFetchEl = document.getElementById("dfp-last-fetch");
+    if (lastFetchEl) lastFetchEl.textContent = `↻ Updated: ${lastLabel}`;
+
+    const errorMessage = state?.last_error;
+    if (errorMessage) {
+      setStatus("⚠ Refresh needs attention", true);
+      const statusEl = document.getElementById("dfp-status");
+      if (statusEl) statusEl.title = String(errorMessage);
+    } else {
+      setStatus("● Up to date");
+      const statusEl = document.getElementById("dfp-status");
+      if (statusEl) statusEl.removeAttribute("title");
+    }
 
     const autoEl = document.getElementById("dfp-auto-status");
     if (autoEl) {
@@ -64,25 +79,29 @@
       const statusLabel = state?.incremental_worker_status || state?.last_incremental_status || "—";
       const reason = state?.incremental_wait_reason || state?.incremental_worker_details || "";
       const enabled = state?.incremental_auto_enabled !== false;
-      autoEl.textContent = enabled
-        ? `Auto incremental: ${statusLabel} | last: ${lastInc ? formatUaeLabel(lastInc) : "—"} | next: ${nextLabel}${reason ? ` (${reason})` : ""}`
-        : "Auto incremental: disabled until baseline Fetch Orders runs";
+      autoEl.classList.remove("is-good", "is-info", "is-waiting", "is-error");
+      if (!enabled) {
+        autoEl.textContent = "◷ Auto refresh: set up required";
+        autoEl.classList.add("is-waiting");
+      } else if ((statusLabel || "").toLowerCase() === "error") {
+        autoEl.textContent = "⚠ Auto refresh: retrying";
+        autoEl.classList.add("is-error");
+      } else if (nextAuto) {
+        autoEl.textContent = `◷ Next refresh: ${nextLabel}`;
+        autoEl.classList.add("is-info");
+      } else {
+        autoEl.textContent = "↻ Auto refresh: ready";
+        autoEl.classList.add("is-good");
+      }
+      autoEl.title = `Last automatic refresh: ${lastInc ? formatUaeLabel(lastInc) : "—"}${reason ? `\n${reason}` : ""}`;
     }
   }
 
   function renderDiagnostics(diagnostics) {
-    const el = document.getElementById("dfp-range");
-    if (!el) return;
-    if (!diagnostics) {
-      el.textContent = "Loaded: — orders | Range: — → — (UTC)";
-      return;
-    }
+    const ordersEl = document.getElementById("dfp-orders-meta");
+    if (!ordersEl || !diagnostics) return;
     const count = diagnostics.orders_count != null ? diagnostics.orders_count : "—";
-    const minDate = diagnostics.min_order_date_utc || "—";
-    const maxDate = diagnostics.max_order_date_utc || "—";
-    const pages = diagnostics.pages_fetched != null ? diagnostics.pages_fetched : "—";
-    const lookback = diagnostics.lookback_days_applied != null ? diagnostics.lookback_days_applied : "—";
-    el.textContent = `Loaded: ${count} orders | Range: ${minDate} → ${maxDate} (UTC) | Pages: ${pages} | Lookback applied: ${lookback}d`;
+    ordersEl.title = `Orders currently stored: ${count}`;
   }
 
   function renderInvoices(invoices) {

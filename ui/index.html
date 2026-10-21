@@ -199,22 +199,16 @@
     .worker-card[data-status="error"] { border-color:#fecaca; }
     /* DF Payments */
     #df-payments-tab table { font-size:13px; }
-    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
+    .dfp-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:12px; }
     .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
-    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
-    .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
-    .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
-    .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
-    .dfp-badge-muted { font-size:12px; color:var(--muted); font-weight:600; }
-    .dfp-mini-table { width:100%; border-collapse: collapse; }
-    .dfp-mini-table th, .dfp-mini-table td { padding:6px 8px; border:1px solid var(--border); }
-    .dfp-table-wrap { padding:12px; overflow:auto; }
-    .dfp-sku { max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:top; }
-    /* DF Payments */
-    #df-payments-tab table { font-size:13px; }
-    .dfp-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:12px; }
-    .dfp-controls select { padding:6px 10px; border-radius:8px; border:1px solid var(--border); }
-    .dfp-status { font-size:12px; color:var(--muted); font-weight:600; }
+    .dfp-meta { display:flex; align-items:center; gap:6px; flex:1 1 420px; flex-wrap:wrap; min-width:0; }
+    .dfp-status { font-size:12px; font-weight:700; }
+    .dfp-status-chip { display:inline-flex; align-items:center; gap:5px; min-height:28px; padding:4px 9px; border:1px solid #dbe5f0; border-radius:999px; background:#f8fafc; color:#475569; white-space:nowrap; }
+    .dfp-status-chip strong { color:#0f172a; }
+    .dfp-status-chip.is-good { color:#047857; background:#ecfdf5; border-color:#a7f3d0; }
+    .dfp-status-chip.is-info { color:#1d4ed8; background:#eff6ff; border-color:#bfdbfe; }
+    .dfp-status-chip.is-waiting { color:#a16207; background:#fffbeb; border-color:#fde68a; }
+    .dfp-status-chip.is-error { color:#b91c1c; background:#fef2f2; border-color:#fecaca; }
     .dfp-dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; padding:0 12px 12px 12px; }
     .dfp-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:10px; }
     .dfp-card-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
@@ -990,9 +984,12 @@
         <button class="btn" id="dfp-fetch-btn" type="button">Fetch Orders</button>
         <button class="btn btn-outline-secondary" id="dfp-incremental-btn" type="button">Incremental Scan</button>
         <button class="btn" id="dfp-reconcile-btn" type="button" style="background:#0f766e;">Reconcile Paid (Gmail)</button>
-        <div id="dfp-status" class="dfp-status">Last fetch: — UAE | Rows (90d): — | Error: —</div>
-        <div id="dfp-range" class="dfp-status">Loaded: — orders | Range: — → — (UTC)</div>
-        <div id="dfp-auto-status" class="dfp-status">Auto incremental: waiting…</div>
+        <div class="dfp-meta" aria-label="DF Payments refresh status">
+          <span id="dfp-orders-meta" class="dfp-status-chip">▦ <strong id="dfp-orders-count">—</strong> orders</span>
+          <span id="dfp-last-fetch" class="dfp-status-chip">↻ Updated: —</span>
+          <span id="dfp-auto-status" class="dfp-status-chip is-waiting">◷ Auto refresh: checking…</span>
+          <span id="dfp-status" class="dfp-status dfp-status-chip" aria-live="polite">● Loading</span>
+        </div>
       </div>
 
       <div class="dfp-dashboard">
