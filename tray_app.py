@@ -60,13 +60,42 @@ def _wait_for_server(timeout_seconds=30) -> bool:
 
 
 def _kill_listeners_on_port(port=PORT):
-    # Kills only the process(es) LISTENING on that port.
-    # Uses built-in netstat + taskkill (no extra deps).
-    cmd = (
-        'cmd /c for /f "tokens=5" %a in (\'netstat -ano ^| findstr :%d ^| findstr LISTENING\') do taskkill /F /PID %a'
-        % port
-    )
-    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """Stop every process tree that owns a listening socket on this app port."""
+    if os.name != "nt":
+        return []
+
+    try:
+        output = subprocess.check_output(
+            ["netstat", "-ano", "-p", "tcp"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        return []
+
+    pids = set()
+    for line in output.splitlines():
+        columns = line.split()
+        if len(columns) < 5 or columns[0].upper() != "TCP":
+            continue
+        local_address, state, pid_text = columns[1], columns[3].upper(), columns[4]
+        if state != "LISTENING" or not local_address.endswith(f":{port}"):
+            continue
+        try:
+            pids.add(int(pid_text))
+        except ValueError:
+            continue
+
+    for pid in pids:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    return sorted(pids)
 
 
 def _open_browser():
@@ -163,27 +192,30 @@ class TrayApp:
             except Exception:
                 pass
 
-            # Wait a moment and notify
-            time.sleep(0.4)
-            if _port_is_listening():
+            if _wait_for_server(timeout_seconds=12):
                 self._notify("Started on port 8001.")
             else:
                 self._notify("Tried to start, but port 8001 is still not listening.")
+            self.icon.update_menu()
 
     def stop_server(self, icon=None, item=None):
         with self._server_lock:
-            if not _port_is_listening():
-                self._notify("Not running.")
-                return
-
-            # Try targeted kill by port (most reliable)
             _kill_listeners_on_port(PORT)
-            time.sleep(0.3)
+            deadline = time.time() + 8
+            while _port_is_listening() and time.time() < deadline:
+                time.sleep(0.2)
+
+            try:
+                if os.path.exists(PID_PATH):
+                    os.remove(PID_PATH)
+            except OSError:
+                pass
 
             if not _port_is_listening():
                 self._notify("Stopped.")
             else:
                 self._notify("Stop attempted, but port 8001 is still listening.")
+            self.icon.update_menu()
 
     def exit_app(self, icon=None, item=None):
         # Don’t auto-stop on exit (safer). If you want it, tell me.

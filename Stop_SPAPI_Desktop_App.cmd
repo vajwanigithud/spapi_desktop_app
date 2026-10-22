@@ -1,6 +1,8 @@
-Set shell = CreateObject("WScript.Shell")
+@echo off
+setlocal
 
-' Kill only processes listening on port 8001
-cmd = "cmd /c for /f ""tokens=5"" %%a in ('netstat -ano ^| findstr :8001 ^| findstr LISTENING') do taskkill /F /PID %%a"
+rem Stop the process tree that owns the SP-API listener on port 8001.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$processIds = @(Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue ^| Select-Object -ExpandProperty OwningProcess -Unique); foreach ($processId in $processIds) { taskkill /F /T /PID $processId ^| Out-Null }"
 
-shell.Run cmd, 0, True
+endlocal
