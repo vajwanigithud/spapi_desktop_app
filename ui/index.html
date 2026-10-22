@@ -610,24 +610,36 @@
         background: #3498db;
         color: white;
       }
-      /* Inventory row color coding */
-      .inv-zero-sellable {
-        background-color: #fff4e6 !important;
+      /* Inventory table: compact, neutral product rows. */
+      #inv-table {
+        table-layout: fixed;
       }
-      .inv-aged {
-        background-color: #e8f0ff !important;
+      #inv-table th,
+      #inv-table td {
+        padding: 6px 10px;
+        vertical-align: middle;
       }
-      .inv-unhealthy {
-        background-color: #ffeaea !important;
+      #inv-table tbody tr,
+      #inv-table tbody tr:hover {
+        background: #fff;
       }
-      .inv-row-zero {
-        /* placeholder for zero inventory rows */
+      #inv-table th:first-child,
+      #inv-table td:first-child {
+        width: 18%;
       }
-      .inv-row-aged {
-        /* placeholder for aged rows */
+      #inv-table th:nth-child(2),
+      #inv-table td:nth-child(2) {
+        width: 96px;
       }
-      .inv-row-unhealthy {
-        /* placeholder for unhealthy rows */
+      #inv-table th:nth-child(3),
+      #inv-table td:nth-child(3) {
+        width: 24%;
+      }
+      #inv-table th:nth-child(4),
+      #inv-table td:nth-child(4),
+      #inv-table th:nth-child(5),
+      #inv-table td:nth-child(5) {
+        width: 20%;
       }
       .text-right {
         text-align: right;
@@ -648,16 +660,40 @@
       }
       /* Image column */
       .inv-image-col {
-        width: 80px;
-        min-width: 80px;
-        max-width: 80px;
+        width: 96px;
+        min-width: 96px;
+        max-width: 96px;
         text-align: center;
       }
-      /* Title column - narrower with text wrap */
+      /* Model column stays compact while preserving the full value in its title. */
       .inv-title-col {
-        max-width: 320px;
-        white-space: normal;
-        word-break: break-word;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 600;
+      }
+      .inv-product-image {
+        width: 68px;
+        height: 68px;
+        object-fit: contain;
+        display: block;
+        margin: auto;
+        background: #fff;
+        border-radius: 8px;
+      }
+      .inv-metric {
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
+      .inv-metric-value {
+        display: inline-flex;
+        min-width: 58px;
+        justify-content: center;
+        padding: 5px 10px;
+        border: 1px solid #dbe3ef;
+        border-radius: 7px;
+        background: #f8fafc;
+        font-weight: 700;
       }
       /* Sticky footer */
       #inv-table tfoot {
@@ -5487,42 +5523,26 @@
 
       rows.forEach((r) => {
         const asin = r.asin || '';
-        const title = getInventoryDisplayTitle(r);
 
         const sellable = getSellableUnits(r);
-        const unsellable = r.unsellable_onhand_units ?? r.unsellableOnHandInventoryUnits ?? 0;
-        const total = sellable + unsellable;
-
-        const aged = r.aged90plus_sellable_units ?? r.aged90PlusDaysSellableInventoryUnits ?? 0;
-        const unhealthy = r.unhealthy_units ?? r.unhealthyInventoryUnits ?? 0;
         totalSellable += sellable;
         const sales30dValue = getSales30dValue(r);
         totalSales30d += sales30dValue;
-
-        // Color coding
-        let rowClass = '';
-        if (sellable === 0 && total > 0) {
-          rowClass = 'inv-zero-sellable';
-        } else if (aged > 0) {
-          rowClass = 'inv-aged';
-        } else if (unhealthy > 0) {
-          rowClass = 'inv-unhealthy';
-        }
 
         const asinLink = `<a href="https://vendorcentral.amazon.ae/hz/vendor/members/catalogue?ref=vcnav&asin=${encodeURIComponent(asin)}" target="_blank" style="color:#0284c7; text-decoration:none;">${escapeHtml(asin)}</a>`;
 
         const imgUrl = getInventoryImageUrl(r);
         const imgHtml = imgUrl
-          ? `<img src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" style="max-width:50px; max-height:50px; object-fit:contain; border-radius:6px;" />`
+          ? `<img class="inv-product-image" src="${escapeHtml(imgUrl)}" alt="${escapeHtml(asin)}" />`
           : '';
 
         bodyHtml += `
-          <tr class="${rowClass}">
+          <tr>
             <td>${asinLink}</td>
             <td class="inv-image-col">${imgHtml}</td>
-            <td class="inv-title-col">${escapeHtml(r.sku_model || '—')}</td>
-            <td class="text-right">${sellable}</td>
-            <td class="text-right">${sales30dValue}</td>
+            <td class="inv-title-col" title="${escapeHtml(r.sku_model || '—')}">${escapeHtml(r.sku_model || '—')}</td>
+            <td class="inv-metric"><span class="inv-metric-value">${sellable}</span></td>
+            <td class="inv-metric"><span class="inv-metric-value">${sales30dValue}</span></td>
           </tr>
         `;
       });
