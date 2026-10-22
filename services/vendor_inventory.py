@@ -7,6 +7,7 @@ hourly real-time feed, it contains one consistent reporting date for every ASIN.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -110,12 +111,29 @@ def _sales_30d_map(marketplace_id: str) -> Dict[str, int]:
     query = """
         SELECT asin, SUM(ordered_units) AS units
         FROM vendor_realtime_sales
-        WHERE marketplace_id = ? AND hour_start_utc >= ?
+        WHERE marketplace_id = ?
+          AND datetime(hour_start_utc) >= datetime(?)
         GROUP BY asin
     """
     with db.get_db_connection() as conn:
         source_rows = conn.execute(query, (marketplace_id, cutoff)).fetchall()
     return {str(row["asin"]).strip().upper(): _safe_int(row["units"]) for row in source_rows if row["asin"]}
+
+
+def _catalog_model_number(payload: Any) -> str:
+    """Extract the vendor-facing model / part number from cached Catalog data."""
+    try:
+        catalog_payload = json.loads(payload) if isinstance(payload, str) else payload
+        summaries = catalog_payload.get("summaries") if isinstance(catalog_payload, dict) else []
+        for summary in summaries or []:
+            if not isinstance(summary, dict):
+                continue
+            value = summary.get("modelNumber") or summary.get("partNumber")
+            if value:
+                return str(value).strip()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return ""
 
 
 def _decorate_with_catalog_and_sales(conn: Any, rows: List[Dict[str, Any]], marketplace_id: str) -> List[Dict[str, Any]]:
@@ -127,12 +145,18 @@ def _decorate_with_catalog_and_sales(conn: Any, rows: List[Dict[str, Any]], mark
         if not chunk:
             continue
         placeholders = ",".join("?" for _ in chunk)
-        for item in conn.execute(f"SELECT asin, title, image FROM spapi_catalog WHERE UPPER(asin) IN ({placeholders})", chunk).fetchall():
-            catalog[str(item["asin"]).strip().upper()] = dict(item)
+        for item in conn.execute(
+            f"SELECT asin, title, image, payload FROM spapi_catalog WHERE UPPER(asin) IN ({placeholders})",
+            chunk,
+        ).fetchall():
+            catalog_item = dict(item)
+            catalog_item["sku_model"] = _catalog_model_number(catalog_item.get("payload"))
+            catalog[str(item["asin"]).strip().upper()] = catalog_item
     for row in rows:
         meta = catalog.get(row["asin"], {})
         row["title"] = meta.get("title") or ""
         row["image_url"] = meta.get("image") or ""
+        row["sku_model"] = meta.get("sku_model") or ""
         row["sales_30d"] = sales.get(row["asin"], 0)
     return rows
 

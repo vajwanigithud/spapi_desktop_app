@@ -1290,15 +1290,11 @@
       <div class="inventory-toolbar">
         <div class="inventory-toolbar-left">
           <span id="inv-week-label" class="muted-text"></span>
-          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <div id="inv-coverage-label" class="muted-text" style="font-size:12px; line-height:1.3;"></div>
-            <a id="inv-coverage-why" href="#" style="font-size:12px; color:#2563eb; text-decoration:none; display:none;" onclick="openInventoryCoverageModal(); return false;">ⓘ Why coverage is low?</a>
-          </div>
         </div>
         <div class="inventory-toolbar-right">
           <button id="inv-refresh-btn" class="btn" onclick="refreshCurrentInventorySnapshot()">Refresh Inventory</button>
           <span id="inv-status-label" class="muted-text"></span>
-          <input type="text" id="inv-search" placeholder="Search ASIN or title…" oninput="renderVendorInventoryCurrentSubtab()" />
+          <input type="text" id="inv-search" placeholder="Search ASIN or SKU / Model No.…" oninput="renderVendorInventoryCurrentSubtab()" />
           <div class="inv-quick-filters">
             <button id="inv-qf-all" class="inv-quick-filter-btn active" onclick="setQuickFilter('all')">All</button>
             <button id="inv-qf-zero" class="inv-quick-filter-btn" onclick="setQuickFilter('zero')">Zero Stock</button>
@@ -1306,10 +1302,6 @@
             <button id="inv-qf-unhealthy" class="inv-quick-filter-btn" style="display:none;" onclick="setQuickFilter('unhealthy')">Legacy Excess</button>
           </div>
         </div>
-      </div>
-
-      <div id="inv-asof-helper" class="muted-text" style="font-size:12px; line-height:1.3;">
-        Daily Amazon inventory baseline. Includes the complete ASIN set returned by Amazon for the selected reporting date.
       </div>
 
       <!-- Inner subtabs -->
@@ -4895,8 +4887,6 @@
 
     function updateInventoryFreshnessLabel(meta) {
       const labelEl = document.getElementById('inv-week-label');
-      const coverageEl = document.getElementById('inv-coverage-label');
-      const coverageWhyEl = document.getElementById('inv-coverage-why');
       if (!labelEl) return;
       const metaSafe = vendorInventoryMeta || meta || {};
       const count = Array.isArray(vendorInventorySnapshot) ? vendorInventorySnapshot.length : 0;
@@ -4905,48 +4895,11 @@
           as_of: metaSafe.as_of || metaSafe.generated_at || metaSafe.as_of_utc,
           as_of_uae: metaSafe.as_of_uae,
         }) || metaSafe.as_of_utc || '—';
-      const coverageLabel = metaSafe.coverage_label;
-      const scopeExplanation = metaSafe.inventory_scope_explanation;
-      if (coverageEl) {
-        if (coverageLabel) {
-          const parts = [coverageLabel];
-          if (scopeExplanation) {
-            parts.push(scopeExplanation);
-          }
-          coverageEl.textContent = parts.join(' - ');
-          coverageEl.style.display = 'block';
-          if (coverageWhyEl) coverageWhyEl.style.display = 'inline-flex';
-        } else {
-          coverageEl.textContent = '';
-          coverageEl.style.display = 'none';
-          if (coverageWhyEl) coverageWhyEl.style.display = 'none';
-        }
-      }
-      const windowStart =
-        metaSafe.window_start_uae ||
-        metaSafe.report_window_start_uae ||
-        metaSafe.window_start_local ||
-        metaSafe.window_start_utc ||
-        metaSafe.report_window_start_utc ||
-        metaSafe.window_start;
-      const windowEnd =
-        metaSafe.window_end_uae ||
-        metaSafe.report_window_end_uae ||
-        metaSafe.window_end_local ||
-        metaSafe.window_end_utc ||
-        metaSafe.report_window_end_utc ||
-        metaSafe.window_end;
-
-      let labelParts = [`Daily Inventory | Loaded ${count} ASINs`];
-      if (windowStart || windowEnd) {
-        const windowSegments = [];
-        if (windowStart) windowSegments.push(windowStart);
-        if (windowEnd) windowSegments.push(windowEnd);
-        const windowText = windowSegments.length === 2 ? `${windowSegments[0]} -> ${windowSegments[1]}` : windowSegments.join('');
-        labelParts.push(`Window: ${windowText}`);
-      } else if (asOfLabel) {
-        labelParts.push(`As of ${asOfLabel}`);
-      }
+      const labelParts = [
+        'Daily Amazon Inventory',
+        `${count.toLocaleString()} ASINs`,
+        `Report date: ${metaSafe.report_date || asOfLabel}`,
+      ];
       labelEl.textContent = labelParts.join(' | ');
     }
 
@@ -5468,7 +5421,7 @@
       if (q) {
         rows = rows.filter((r) =>
           (r.asin || '').toLowerCase().includes(q) ||
-          getInventoryDisplayTitle(r).toLowerCase().includes(q)
+          (r.sku_model || '').toLowerCase().includes(q)
         );
       }
 
@@ -5485,8 +5438,8 @@
           aVal = (a.asin || '').toLowerCase();
           bVal = (b.asin || '').toLowerCase();
         } else if (invSortColumn === 'title') {
-          aVal = getInventoryDisplayTitle(a).toLowerCase();
-          bVal = getInventoryDisplayTitle(b).toLowerCase();
+          aVal = (a.sku_model || '').toLowerCase();
+          bVal = (b.sku_model || '').toLowerCase();
         } else if (invSortColumn === 'sellable') {
           aVal = getSellableUnits(a);
           bVal = getSellableUnits(b);
@@ -5519,7 +5472,7 @@
         <tr>
           <th onclick="sortInventoryTableBy('asin')">ASIN ${arrow('asin')}</th>
           <th class="inv-image-col">Image</th>
-          <th onclick="sortInventoryTableBy('title')">Title ${arrow('title')}</th>
+          <th onclick="sortInventoryTableBy('title')">SKU / Model No. ${arrow('title')}</th>
           <th onclick="sortInventoryTableBy('sellable')">Sellable ${arrow('sellable')}</th>
           <th onclick="sortInventoryTableBy('sales30d')">Last 30d Sales ${arrow('sales30d')}</th>
         </tr>
@@ -5567,7 +5520,7 @@
           <tr class="${rowClass}">
             <td>${asinLink}</td>
             <td class="inv-image-col">${imgHtml}</td>
-            <td class="inv-title-col">${escapeHtml(title)}</td>
+            <td class="inv-title-col">${escapeHtml(r.sku_model || '—')}</td>
             <td class="text-right">${sellable}</td>
             <td class="text-right">${sales30dValue}</td>
           </tr>
