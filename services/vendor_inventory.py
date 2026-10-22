@@ -212,18 +212,25 @@ def refresh_vendor_inventory_snapshot(conn: Any, marketplace_id: str) -> Dict[st
 
 
 def get_vendor_inventory_snapshot_for_ui(conn: Any, marketplace_id: str) -> List[Dict[str, Any]]:
-    # Data written by the retired hourly feed has no daily-report identity.
-    # Never present it as the new daily baseline while the first full report is
-    # still being obtained.
-    if not db.get_app_kv(conn, LAST_SUCCESSFUL_DATE_KEY):
-        return []
+    # Keep the last complete snapshot visible while Amazon prepares the first
+    # replacement daily report. A failed or delayed report must not blank the
+    # Inventory tab.
     rows = [dict(row) for row in db.get_vendor_inventory_snapshot(conn, marketplace_id)]
     rows.sort(key=lambda row: (-_safe_int(row.get("sellable_onhand_units")), row.get("asin") or ""))
     return _decorate_with_catalog_and_sales(conn, rows, marketplace_id)
 
 
 def get_inventory_snapshot_metadata(conn: Any) -> Dict[str, Optional[str]]:
+    report_date = db.get_app_kv(conn, LAST_SUCCESSFUL_DATE_KEY)
+    refreshed_at = db.get_app_kv(conn, LAST_REFRESH_AT_KEY)
+    if not report_date:
+        # Preserve the last known report date from the prior inventory
+        # snapshot until the new daily importer completes its first run.
+        report_date = db.get_app_kv(conn, "vendor_inventory_last_week_end")
+    if not refreshed_at:
+        row = conn.execute("SELECT MAX(updated_at) AS updated_at FROM vendor_inventory_asin").fetchone()
+        refreshed_at = row["updated_at"] if row else None
     return {
-        "report_date": db.get_app_kv(conn, LAST_SUCCESSFUL_DATE_KEY),
-        "refreshed_at": db.get_app_kv(conn, LAST_REFRESH_AT_KEY),
+        "report_date": report_date,
+        "refreshed_at": refreshed_at,
     }
