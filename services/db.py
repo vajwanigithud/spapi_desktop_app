@@ -389,11 +389,15 @@ def ensure_vendor_inventory_table() -> None:
 
 def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict]) -> dict[str, Any]:
     """
-    Accumulator-only upsert into vendor_inventory_asin for the given marketplace_id.
-    - Inserts new ASINs
-    - Updates existing ASINs
-    - NEVER deletes or prunes rows
-    Returns lightweight metadata for observability.
+    Atomically replace the complete Vendor Inventory report for one marketplace.
+
+    This table is the daily inventory baseline.  It must never retain ASINs
+    omitted by a newer successful report: doing so would combine quantities
+    from different reporting dates and make the total unreliable.
+
+    Callers only invoke this with a non-empty, validated full report.  If
+    Amazon has not published a new report or returns an error, callers leave
+    the existing baseline untouched.
     """
     try:
         columns = [
@@ -408,32 +412,25 @@ def replace_vendor_inventory_snapshot(conn, marketplace_id: str, rows: list[dict
             "updated_at"
         ]
 
-        if rows:
-            placeholders = ", ".join(["?" for _ in columns])
-            update_columns = [col for col in columns if col not in ("marketplace_id", "asin")]
-            update_clause = ", ".join([f"{col} = excluded.{col}" for col in update_columns])
-            insert_sql = f"""
-            INSERT INTO vendor_inventory_asin ({', '.join(columns)})
-            VALUES ({placeholders})
-            ON CONFLICT(marketplace_id, asin) DO UPDATE SET {update_clause}
-            """
+        if not rows:
+            raise ValueError("Refusing to replace inventory baseline with an empty report")
 
-            values = [tuple(row.get(col) for col in columns) for row in rows]
-            conn.executemany(insert_sql, values)
-        else:
-            logger.info(f"[DB] No vendor_inventory_asin rows to upsert for {marketplace_id}")
+        placeholders = ", ".join(["?" for _ in columns])
+        insert_sql = f"""
+        INSERT INTO vendor_inventory_asin ({', '.join(columns)})
+        VALUES ({placeholders})
+        """
+        values = [tuple(row.get(col) for col in columns) for row in rows]
+        conn.execute("DELETE FROM vendor_inventory_asin WHERE marketplace_id = ?", (marketplace_id,))
+        conn.executemany(insert_sql, values)
 
         conn.commit()
 
-        logger.info(f"[DB] Upserted vendor_inventory_asin rows for {marketplace_id}: {len(rows)} rows (no deletes)")
+        logger.info(f"[DB] Replaced vendor_inventory_asin baseline for {marketplace_id}: {len(rows)} rows")
 
         return {
-            "prune_attempted": False,
-            "prune_skipped_reason": "disabled",
-            "prune_min_keep_count": 0,
-            "pruned_rows": 0,
-            "prune_kept_count": len(rows or []),
-            "prune_before_count": None,
+            "replaced": True,
+            "rows_written": len(rows),
         }
     except Exception as exc:
         logger.error(f"[DB] Failed to upsert vendor_inventory_asin snapshot: {exc}", exc_info=True)

@@ -83,7 +83,6 @@ def request_vendor_report(
     - Applies sensible defaults per report type.
     - Handles:
       * GET_VENDOR_FORECASTING_REPORT  -> no date range allowed
-      * GET_VENDOR_REAL_TIME_INVENTORY_REPORT -> end must be <= last completed hour
     """
 
     params = params or {}
@@ -145,10 +144,6 @@ def request_vendor_report(
         # Forecast reports expect RETAIL (or omission). Avoid VENDOR_FULFILLED which causes FATAL.
         if selling_program is None:
             selling_program = "RETAIL"
-    elif report_type == "GET_VENDOR_REAL_TIME_INVENTORY_REPORT":
-        # Use RETAIL unless explicitly overridden.
-        if selling_program is None:
-            selling_program = "RETAIL"
 
     # ── Special cases for date handling ──────────────────────────────
 
@@ -162,42 +157,6 @@ def request_vendor_report(
             )
         data_start = None
         data_end = None
-
-    # 2) REAL-TIME INVENTORY: hourly data; can't ask for "now" exactly
-    if report_type == "GET_VENDOR_REAL_TIME_INVENTORY_REPORT" and data_end is not None:
-        now_utc = datetime.now(timezone.utc)
-
-        # Last fully available hour (be conservative: one full hour behind)
-        last_full_hour = (
-            now_utc.replace(minute=0, second=0, microsecond=0)
-            - timedelta(hours=1)
-        )
-
-        if data_end.tzinfo is None:
-            data_end = data_end.replace(tzinfo=timezone.utc)
-
-        if data_end > last_full_hour:
-            logger.info(
-                "[spapi_reports] Adjusting RT inventory data_end from %s to %s "
-                "to satisfy hourly availability.",
-                data_end.isoformat(),
-                last_full_hour.isoformat(),
-            )
-            data_end = last_full_hour
-
-        if data_start is not None:
-            if data_start.tzinfo is None:
-                data_start = data_start.replace(tzinfo=timezone.utc)
-            if data_start >= data_end:
-                # keep at least a small window (3 days back)
-                new_start = data_end - timedelta(days=3)
-                logger.info(
-                    "[spapi_reports] Adjusting RT inventory data_start from %s to %s "
-                    "to keep it before data_end.",
-                    data_start.isoformat(),
-                    new_start.isoformat(),
-                )
-                data_start = new_start
 
     # ── Build createReport payload ───────────────────────────────────
 

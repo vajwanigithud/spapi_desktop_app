@@ -21,7 +21,7 @@
       containerId: "workers-section-inventory",
       label: "Inventory Refresh",
       keys: ["rt_inventory_refresh", "inventory_materializer"],
-      description: "Refreshes Amazon realtime inventory and materializes the snapshot.",
+      description: "Refreshes Amazon's daily Vendor Inventory report and replaces the inventory snapshot.",
       defaultMode: "auto",
     },
     {

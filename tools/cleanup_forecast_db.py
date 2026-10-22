@@ -10,7 +10,6 @@ import sys
 FORECAST_TABLES = [
     "vendor_forecast",
     "vendor_sales_history",
-    "vendor_rt_inventory",
     "forecast_blacklist",
     "report_jobs",
 ]

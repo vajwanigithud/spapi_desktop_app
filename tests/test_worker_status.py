@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routes import worker_status_routes as routes
-from services import vendor_inventory_realtime as rt_inventory
+from services import vendor_inventory as inventory_service
 from services import vendor_realtime_sales as rt_sales
 
 
@@ -32,7 +32,7 @@ def _stub_worker_status_dependencies(
     monkeypatch.setattr(routes, "_utcnow", lambda: now_utc)
     monkeypatch.setattr(routes, "get_db_connection", lambda: contextlib.nullcontext(None))
     monkeypatch.setattr(routes, "ensure_app_kv_table", lambda: None)
-    monkeypatch.setattr(rt_inventory, "COOLDOWN_HOURS", 1, raising=False)
+    monkeypatch.setattr(inventory_service, "LAST_REFRESH_AT_KEY", "vendor_inventory_last_refresh_utc")
     monkeypatch.setattr(routes, "get_app_kv", lambda *_args, **_kwargs: inventory_last_refresh_iso)
     monkeypatch.setattr(
         routes,
@@ -197,7 +197,7 @@ def test_inventory_cooldown_marked_waiting(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
 
-    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "daily_inventory_refresh")
     assert worker["status"] == "waiting"
     assert worker["next_run_utc"] is not None
     assert "cooldown" in (worker["message"] or "").lower()
@@ -224,7 +224,7 @@ def test_inventory_error_shows_reason(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
 
-    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "daily_inventory_refresh")
     assert worker["status"] == "error"
     assert worker["message"] == error_reason
     assert worker["next_run_utc"] is None
@@ -250,7 +250,7 @@ def test_inventory_cooldown_with_error_shows_waiting(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
 
-    refresh_worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "rt_inventory_refresh")
+    refresh_worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "daily_inventory_refresh")
     materializer_worker = next(w for w in data["domains"]["inventory"]["workers"] if w["key"] == "inventory_materializer")
 
     for worker in (refresh_worker, materializer_worker):

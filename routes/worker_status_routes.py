@@ -8,12 +8,11 @@ from fastapi import APIRouter, FastAPI, Query
 
 from config import MARKETPLACE_IDS
 from services.activity_log import add_activity
-from services import vendor_inventory_realtime as rt_inventory
+from services import vendor_inventory as inventory_service
 from services import vendor_realtime_sales as rt_sales
 from services.db import ensure_app_kv_table, get_app_kv, get_db_connection
 from services.df_payments import get_df_gmail_reconcile_metadata, get_df_payments_worker_metadata
 from services.vendor_po_status_store import get_vendor_po_status_payload
-from services.vendor_rt_inventory_state import get_refresh_metadata
 from services.vendor_rt_sales_ledger import get_ledger_summary, get_worker_lock
 from services.worker_runtime_state import get_worker_runtime_state
 
@@ -27,6 +26,20 @@ MARKETPLACE_IDS_ENV = [
     mp.strip() for mp in (os.getenv("MARKETPLACE_IDS") or os.getenv("MARKETPLACE_ID", "")).split(",") if mp.strip()
 ]
 DEFAULT_MARKETPLACE_ID = MARKETPLACE_IDS[0] if MARKETPLACE_IDS else (MARKETPLACE_IDS_ENV[0] if MARKETPLACE_IDS_ENV else "A2VIGQ35RCS4UG")
+
+
+def get_refresh_metadata(_marketplace_id: str) -> Dict[str, Any]:
+    """Expose the daily inventory refresh time to the worker-status panel."""
+    with get_db_connection() as conn:
+        metadata = inventory_service.get_inventory_snapshot_metadata(conn)
+    refreshed_at = metadata.get("refreshed_at")
+    return {
+        "in_progress": False,
+        "last_refresh_started_at": refreshed_at,
+        "last_refresh_finished_at": refreshed_at,
+        "last_refresh_status": "SUCCESS" if refreshed_at else None,
+        "last_error": None,
+    }
 
 
 def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -222,7 +235,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     try:
         ensure_app_kv_table()
         with get_db_connection() as conn:
-            last_refresh_raw = get_app_kv(conn, rt_inventory.COOLDOWN_KV_KEY)
+            last_refresh_raw = get_app_kv(conn, inventory_service.LAST_REFRESH_AT_KEY)
     except Exception as exc:
         last_refresh_raw = None
         base_details = f"Cooldown read failed: {exc}"
@@ -231,7 +244,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     if last_refresh_dt:
         last_run_dt = last_refresh_dt
         last_run_iso = last_refresh_dt.isoformat()
-        cooldown_until_dt = last_refresh_dt + timedelta(hours=getattr(rt_inventory, "COOLDOWN_HOURS", 1))
+        cooldown_until_dt = last_refresh_dt + timedelta(days=1)
         next_eligible_dt = cooldown_until_dt
 
     try:
@@ -270,8 +283,8 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
 
     workers.append(
         {
-            "key": "rt_inventory_refresh",
-            "name": "Realtime Inventory Refresh",
+            "key": "daily_inventory_refresh",
+            "name": "Daily Inventory Refresh",
             "status": status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
@@ -282,7 +295,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "expected_interval_minutes": None,
             "grace_minutes": None,
             "overdue_by_minutes": overdue_by_minutes,
-            "what": "Fetches Amazon RT inventory and stores snapshot",
+            "what": "Fetches Amazon's daily Vendor Inventory report",
             "mode": "auto",
         }
     )
@@ -291,8 +304,8 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
     materializer_details = details
     workers.append(
         {
-            "key": "inventory_materializer",
-            "name": "Inventory Materializer",
+            "key": "inventory_baseline",
+            "name": "Inventory Baseline",
             "status": materializer_status,
             "last_run_at_uae": _fmt_uae(last_run_iso),
             "last_run_utc": _fmt_iso_utc(last_run_dt or last_run_iso),
@@ -303,7 +316,7 @@ def _inventory_domain(now_utc: datetime, marketplace_id: str) -> Dict[str, Any]:
             "expected_interval_minutes": None,
             "grace_minutes": None,
             "overdue_by_minutes": overdue_by_minutes,
-            "what": "Writes inventory snapshot into SQLite safely",
+            "what": "Stores the verified daily inventory baseline",
             "mode": "auto",
         }
     )
@@ -643,8 +656,8 @@ def get_worker_status(manual: bool = Query(False)) -> Dict[str, Any]:
             "title": "Inventory",
             "workers": [
                 {
-                    "key": "rt_inventory_refresh",
-                    "name": "Realtime Inventory Refresh",
+                    "key": "daily_inventory_refresh",
+                    "name": "Daily Inventory Refresh",
                     "status": "error",
                     "last_run_at_uae": None,
                     "last_run_utc": None,
@@ -655,7 +668,7 @@ def get_worker_status(manual: bool = Query(False)) -> Dict[str, Any]:
                     "expected_interval_minutes": None,
                     "grace_minutes": None,
                     "overdue_by_minutes": 0,
-                    "what": "Fetches Amazon RT inventory and stores snapshot",
+                    "what": "Fetches Amazon's daily Vendor Inventory report",
                     "mode": "auto",
                 },
                 {

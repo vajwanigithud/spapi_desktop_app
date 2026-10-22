@@ -39,7 +39,7 @@ def _inventory_row(marketplace_id: str, asin: str, sellable_units: int, start: s
     }
 
 
-def test_upsert_preserves_existing_asins(tmp_path, monkeypatch):
+def test_replacement_removes_asins_absent_from_new_baseline(tmp_path, monkeypatch):
     db_path = tmp_path / "inventory.db"
     monkeypatch.setattr(db_service, "CATALOG_DB_PATH", db_path)
     ensure_vendor_inventory_table()
@@ -71,15 +71,13 @@ def test_upsert_preserves_existing_asins(tmp_path, monkeypatch):
         final_snapshot = get_vendor_inventory_snapshot(conn, marketplace_id)
 
     data_by_asin = {row["asin"]: row for row in final_snapshot}
-    assert set(data_by_asin) == {"ASIN-A", "ASIN-B"}
+    assert set(data_by_asin) == {"ASIN-A"}
     assert data_by_asin["ASIN-A"]["sellable_onhand_units"] == 9
     assert data_by_asin["ASIN-A"]["start_date"] == updated_start
     assert data_by_asin["ASIN-A"]["end_date"] == updated_end
-    assert data_by_asin["ASIN-B"]["sellable_onhand_units"] == 2
-    assert data_by_asin["ASIN-B"]["start_date"] == start_b
 
 
-def test_partial_payload_accumulates_asins(tmp_path, monkeypatch):
+def test_replacement_rejects_empty_baseline(tmp_path, monkeypatch):
     db_path = tmp_path / "inventory.db"
     monkeypatch.setattr(db_service, "CATALOG_DB_PATH", db_path)
     ensure_vendor_inventory_table()
@@ -98,22 +96,12 @@ def test_partial_payload_accumulates_asins(tmp_path, monkeypatch):
 
     assert len(first) == 2
 
-    # Second payload omits ASIN-A and introduces ASIN-C (partial/windowed report)
-    later = "2024-03-02T00:00:00Z"
-    second_rows = [
-        _inventory_row(marketplace_id, "ASIN-B", 7, later, later, later),
-        _inventory_row(marketplace_id, "ASIN-C", 3, later, later, later),
-    ]
-
     with get_db_connection() as conn:
-        replace_vendor_inventory_snapshot(conn, marketplace_id, second_rows)
+        try:
+            replace_vendor_inventory_snapshot(conn, marketplace_id, [])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("empty inventory baseline must be rejected")
         final = get_vendor_inventory_snapshot(conn, marketplace_id)
-
-    asins = {row["asin"] for row in final}
-    assert asins == {"ASIN-A", "ASIN-B", "ASIN-C"}
-    # Count is monotonic non-decreasing
-    assert len(final) >= len(first)
-    # ASIN-B quantity updated, ASIN-A retained
-    by_asin = {row["asin"]: row for row in final}
-    assert by_asin["ASIN-B"]["sellable_onhand_units"] == 7
-    assert by_asin["ASIN-A"]["sellable_onhand_units"] == 5
+    assert len(final) == len(first)

@@ -19,14 +19,8 @@ except ImportError:  # pragma: no cover
 # Imports from application (NO HTTP, NO FastAPI startup)
 # ---------------------------------------------------------------------------
 from services.catalog_images import attach_image_urls  # noqa: E402
-from services.vendor_inventory_realtime import (  # noqa: E402
-    decorate_items_with_sales,
-    load_sales_30d_map,
-)
-from services.vendor_rt_inventory_state import (  # noqa: E402
-    DEFAULT_CATALOG_DB_PATH,
-    get_state_rows,
-)
+from services.db import get_db_connection  # noqa: E402
+from services.vendor_inventory import get_vendor_inventory_snapshot_for_ui  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths / constants
@@ -123,13 +117,9 @@ def project_vendor_pos(raw_items: Any) -> List[str]:
 # Snapshot capture (READ-ONLY)
 # ---------------------------------------------------------------------------
 def capture_rt_inventory_projection(marketplace_id: str = DEFAULT_MARKETPLACE_ID) -> Any:
-    db_path = pathlib.Path(DEFAULT_CATALOG_DB_PATH)
-    items = get_state_rows(marketplace_id, db_path=db_path)
-
-    # decorate (read-only)
+    with get_db_connection() as conn:
+        items = get_vendor_inventory_snapshot_for_ui(conn, marketplace_id)
     attach_image_urls(items)
-    sales_30d_map = load_sales_30d_map(str(db_path))  # str() avoids WindowsPath bind issues
-    decorate_items_with_sales(items, sales_30d_map)
 
     payload = {
         "marketplace_id": marketplace_id,

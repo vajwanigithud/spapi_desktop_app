@@ -112,8 +112,6 @@ from routes.df_payments_routes import register_df_payments_routes
 from routes.print_log_routes import register_print_log_routes
 from routes.printer_health_routes import register_printer_health_routes
 from routes.printer_routes import register_printer_routes
-from routes.vendor_inventory_realtime_routes import register_vendor_inventory_realtime_routes
-from routes.vendor_rt_inventory_routes import register_vendor_rt_inventory_routes
 from routes.vendor_rt_sales_routes import register_vendor_rt_sales_routes
 from routes.worker_status_routes import register_worker_status_routes
 from services import spapi_reports
@@ -158,10 +156,10 @@ from services.json_cache import (
 from services.perf import get_recent_timings, time_block
 from services.utils_barcodes import is_asin, normalize_barcode
 from services.vendor_inventory import (
+    get_inventory_snapshot_metadata,
     get_vendor_inventory_snapshot_for_ui,
     refresh_vendor_inventory_snapshot,
 )
-from services.vendor_inventory_realtime import get_cached_realtime_inventory_snapshot
 from services.vendor_notifications import (
     clear_po_refresh_flag,
     get_po_notification_flags,
@@ -327,8 +325,6 @@ register_activity_log_routes(app)
 register_barcode_print_routes(app)
 register_printer_health_routes(app)
 register_print_log_routes(app)
-register_vendor_inventory_realtime_routes(app)
-register_vendor_rt_inventory_routes(app)
 register_vendor_rt_sales_routes(app)
 register_worker_status_routes(app)
 register_df_payments_routes(app)
@@ -350,8 +346,8 @@ def startup_event():
         start_vendor_rt_sales_startup_backfill_thread()
         # Start auto-sync loop in background thread
         start_vendor_rt_sales_auto_sync()
-        # Start realtime inventory auto-refresh loop (single-flight + cooldown inside)
-        start_vendor_rt_inventory_auto_refresh()
+        # Start the daily Vendor Inventory refresh loop.
+        start_vendor_inventory_auto_refresh()
         start_df_payments_incremental_scheduler()
         if guided_scheduler_enabled():
             start_guided_worker_scheduler()
@@ -378,7 +374,7 @@ def shutdown_event():
         logger.warning(f"[Shutdown] Failed to stop catalog fetch worker cleanly: {exc}")
     try:
         stop_vendor_rt_sales_auto_sync()
-        stop_vendor_rt_inventory_auto_refresh()
+        stop_vendor_inventory_auto_refresh()
     except Exception as exc:
         logger.warning(f"[Shutdown] Failed to signal realtime workers cleanly: {exc}")
 
@@ -755,11 +751,11 @@ VENDOR_RT_SALES_QUEUED_RETRY_SECONDS = 60
 _rt_sales_auto_sync_thread = None
 _rt_sales_auto_sync_stop = False
 
-# Vendor RT Inventory auto-refresh (realtime inventory snapshot)
-VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED", "false").lower() != "false"
-VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES = int(os.getenv("VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES", "60"))
-_rt_inventory_auto_refresh_thread = None
-_rt_inventory_auto_refresh_stop = False
+# Vendor Inventory daily refresh
+VENDOR_INVENTORY_AUTO_REFRESH_ENABLED = os.getenv("VENDOR_INVENTORY_AUTO_REFRESH_ENABLED", "true").lower() != "false"
+VENDOR_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES = 24 * 60
+_inventory_auto_refresh_thread = None
+_inventory_auto_refresh_stop = False
 
 
 def start_vendor_rt_sales_startup_backfill_thread():
@@ -1338,91 +1334,78 @@ def stop_vendor_rt_sales_auto_sync():
 
 
 # ========================================
-# Vendor Real-Time Inventory Auto-Refresh
+# Vendor Inventory Daily Auto-Refresh
 # ========================================
 
 
-def _rt_inventory_sleep(interval_seconds: int) -> None:
+def _inventory_sleep(interval_seconds: int) -> None:
     """Sleep in small chunks so the stop flag can be checked frequently."""
     chunk = 5
     slept = 0
-    while not _rt_inventory_auto_refresh_stop and slept < interval_seconds:
+    while not _inventory_auto_refresh_stop and slept < interval_seconds:
         remaining = interval_seconds - slept
         time.sleep(chunk if remaining > chunk else remaining)
         slept += chunk if remaining > chunk else remaining
 
 
-def vendor_rt_inventory_auto_refresh_loop():
-    """Background loop to refresh realtime inventory roughly hourly."""
-    global _rt_inventory_auto_refresh_stop
+def vendor_inventory_auto_refresh_loop():
+    """Background loop that refreshes the complete Vendor Inventory baseline daily."""
+    global _inventory_auto_refresh_stop
 
-    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
-        logger.info("[RtInventoryAutoRefresh] Disabled via config; loop will not run")
+    if not VENDOR_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[VendorInventoryAutoRefresh] Disabled via config; loop will not run")
         return
 
-    interval_seconds = max(60, VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES * 60)
+    interval_seconds = VENDOR_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES * 60
     marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
     marketplace_id = marketplace_ids[0]
 
     logger.info(
-        "[RtInventoryAutoRefresh] Started for %s; interval=%s minutes",
+        "[VendorInventoryAutoRefresh] Started for %s; interval=%s minutes",
         marketplace_id,
-        VENDOR_RT_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES,
+        VENDOR_INVENTORY_AUTO_REFRESH_INTERVAL_MINUTES,
     )
 
-    while not _rt_inventory_auto_refresh_stop:
+    while not _inventory_auto_refresh_stop:
         try:
-            from services.vendor_inventory_realtime import (
-                DEFAULT_LOOKBACK_HOURS,
-                refresh_realtime_inventory_snapshot,
-            )
-            from services.vendor_rt_inventory_sync import refresh_vendor_rt_inventory_singleflight
-
-            result = refresh_vendor_rt_inventory_singleflight(
-                marketplace_id,
-                hours=DEFAULT_LOOKBACK_HOURS,
-                sync_callable=lambda mp_id, **_kwargs: refresh_realtime_inventory_snapshot(
-                    mp_id,
-                    lookback_hours=DEFAULT_LOOKBACK_HOURS,
-                ),
-            )
-            status = result.get("status")
-            logger.info("[RtInventoryAutoRefresh] Cycle complete status=%s", status)
+            with get_db_connection() as conn:
+                result = refresh_vendor_inventory_snapshot(conn, marketplace_id)
+            logger.info("[VendorInventoryAutoRefresh] Cycle complete status=%s", result.get("status"))
         except Exception as exc:  # pragma: no cover - defensive
-            logger.error("[RtInventoryAutoRefresh] Cycle failed: %s", exc, exc_info=True)
+            logger.error("[VendorInventoryAutoRefresh] Cycle failed: %s", exc, exc_info=True)
 
-        _rt_inventory_sleep(interval_seconds)
+        _inventory_sleep(interval_seconds)
 
 
-def start_vendor_rt_inventory_auto_refresh():
-    """Start the vendor realtime inventory auto-refresh thread."""
-    global _rt_inventory_auto_refresh_thread, _rt_inventory_auto_refresh_stop
+def start_vendor_inventory_auto_refresh():
+    """Start the vendor inventory daily auto-refresh thread."""
+    global _inventory_auto_refresh_thread, _inventory_auto_refresh_stop
 
-    if not VENDOR_RT_INVENTORY_AUTO_REFRESH_ENABLED:
-        logger.info("[RtInventoryAutoRefresh] Disabled via config; not starting thread")
+    if not VENDOR_INVENTORY_AUTO_REFRESH_ENABLED:
+        logger.info("[VendorInventoryAutoRefresh] Disabled via config; not starting thread")
         return
 
-    if _rt_inventory_auto_refresh_thread is not None and _rt_inventory_auto_refresh_thread.is_alive():
-        logger.warning("[RtInventoryAutoRefresh] Already running; skipping duplicate start")
+    if _inventory_auto_refresh_thread is not None and _inventory_auto_refresh_thread.is_alive():
+        logger.warning("[VendorInventoryAutoRefresh] Already running; skipping duplicate start")
         return
 
-    _rt_inventory_auto_refresh_stop = False
+    _inventory_auto_refresh_stop = False
     import threading
 
-    _rt_inventory_auto_refresh_thread = threading.Thread(
-        target=vendor_rt_inventory_auto_refresh_loop,
+    _inventory_auto_refresh_thread = threading.Thread(
+        target=vendor_inventory_auto_refresh_loop,
         daemon=True,
-        name="VendorRtInventoryAutoRefresh",
+        name="VendorInventoryAutoRefresh",
     )
-    _rt_inventory_auto_refresh_thread.start()
-    logger.info("[RtInventoryAutoRefresh] Background thread started")
+    _inventory_auto_refresh_thread.start()
+    logger.info("[VendorInventoryAutoRefresh] Background thread started")
 
 
-def stop_vendor_rt_inventory_auto_refresh():
-    """Signal the daemon loop during application shutdown without changing its schedule."""
-    global _rt_inventory_auto_refresh_stop
-    _rt_inventory_auto_refresh_stop = True
-    logger.info("[RtInventoryAutoRefresh] Stop requested")
+def stop_vendor_inventory_auto_refresh():
+    """Signal the daily inventory refresh loop during application shutdown."""
+    global _inventory_auto_refresh_stop
+    _inventory_auto_refresh_stop = True
+    logger.info("[VendorInventoryAutoRefresh] Stop requested")
 
 
 
@@ -3760,8 +3743,8 @@ def synthesize_precutover_hours(max_days: int = 3):
 @app.post("/api/vendor-inventory/refresh")
 def api_vendor_inventory_refresh():
     """
-    Downloads GET_VENDOR_INVENTORY_REPORT (weekly),
-    extracts latest week's per-ASIN snapshot,
+    Downloads the latest available daily GET_VENDOR_INVENTORY_REPORT,
+    extracts its complete per-ASIN snapshot,
     stores into vendor_inventory_asin table.
     Returns number of ASINs ingested.
     """
@@ -3774,13 +3757,15 @@ def api_vendor_inventory_refresh():
         logger.info(f"[VendorInventory] Refresh requested for {marketplace_id}")
         
         with get_db_connection() as conn:
-            count = refresh_vendor_inventory_snapshot(conn, marketplace_id)
+            result = refresh_vendor_inventory_snapshot(conn, marketplace_id)
         
-        logger.info(f"[VendorInventory] Refresh complete: {count} ASINs stored")
+        logger.info(f"[VendorInventory] Refresh complete: {result.get('rows')} ASINs stored")
         
         return {
-            "status": "ok",
-            "ingested_asins": count,
+            "status": result.get("status", "refreshed"),
+            "ingested_asins": result.get("rows", 0),
+            "report_date": result.get("report_date"),
+            "last_updated_date": result.get("last_updated_date"),
             "marketplace_id": marketplace_id,
         }
     
@@ -3802,7 +3787,7 @@ def api_vendor_inventory_refresh():
 @app.get("/api/vendor-inventory/snapshot")
 def api_vendor_inventory_snapshot():
     """
-    Returns stored snapshot (latest week only)
+    Returns the stored daily snapshot
     for UI rendering.
     
     Sorted by sellable_onhand_units DESC, then ASIN ASC.
@@ -3815,6 +3800,7 @@ def api_vendor_inventory_snapshot():
         
         with get_db_connection() as conn:
             rows = get_vendor_inventory_snapshot_for_ui(conn, marketplace_id)
+            metadata = get_inventory_snapshot_metadata(conn)
         
         # Convert Row objects to dicts if needed
         items = [dict(row) if hasattr(row, 'keys') else row for row in rows]
@@ -3825,6 +3811,9 @@ def api_vendor_inventory_snapshot():
             "status": "ok",
             "count": len(items),
             "items": items,
+            "report_date": metadata.get("report_date"),
+            "generated_at": metadata.get("refreshed_at"),
+            "as_of_utc": metadata.get("report_date"),
         }
     
     except Exception as e:
@@ -3834,38 +3823,6 @@ def api_vendor_inventory_snapshot():
             "error": str(e),
             "count": 0,
             "items": [],
-        }
-
-
-@app.get("/api/vendor-inventory/debug")
-def api_vendor_inventory_debug():
-    """
-    Developer-only debug route:
-    Shows latest raw JSON returned from the GET_VENDOR_INVENTORY_REPORT call.
-    
-    DO NOT consume this in UI — for debugging only.
-    """
-    try:
-        from services.vendor_inventory import fetch_latest_vendor_inventory_report_json
-        
-        marketplace_ids = MARKETPLACE_IDS if MARKETPLACE_IDS else ["A2VIGQ35RCS4UG"]
-        marketplace_id = marketplace_ids[0]
-        
-        logger.info(f"[VendorInventory] Debug: Fetching raw report for {marketplace_id}")
-        
-        data = fetch_latest_vendor_inventory_report_json(marketplace_id)
-        
-        return {
-            "status": "ok",
-            "marketplace_id": marketplace_id,
-            "report_data": data,
-        }
-    
-    except Exception as e:
-        logger.error(f"[VendorInventory] Debug request failed: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "error": str(e),
         }
 
 
@@ -4051,13 +4008,14 @@ def update_po_status(po_number: str, payload: PoStatusUpdate):
 
 def _load_inventory_asin_set() -> Set[str]:
     try:
-        snapshot = get_cached_realtime_inventory_snapshot()
+        marketplace_id = (MARKETPLACE_IDS or ["A2VIGQ35RCS4UG"])[0]
+        with get_db_connection() as conn:
+            rows = get_vendor_inventory_snapshot_for_ui(conn, marketplace_id)
     except Exception as exc:
-        logger.warning(f"[Catalog] Failed to read realtime inventory snapshot: {exc}")
+        logger.warning(f"[Catalog] Failed to read daily vendor inventory snapshot: {exc}")
         return set()
-    items = snapshot.get("items") or []
     result: Set[str] = set()
-    for item in items:
+    for item in rows:
         if not isinstance(item, dict):
             continue
         asin = (item.get("asin") or "").strip().upper()
